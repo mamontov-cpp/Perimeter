@@ -1,5 +1,8 @@
 #pragma once
 
+#include "WorldFiles.h"
+
+#include <optional>
 #include <string>
 #include <vector>
 #include <cstdint>
@@ -13,6 +16,7 @@
 //   - Load a world via Terra API (prepare → selectUsedWorld → fullLoad).
 //   - Unload the world (worldFree).
 //   - Track whether the loaded world has been modified (vMap.worldChanged).
+//   - Provide file-level access to a world folder (WorldFiles).
 // ============================================================================
 
 namespace MapEditor {
@@ -117,6 +121,18 @@ public:
 
     /// Return the current session state.
     SessionState state() const;
+
+    // -----------------------------------------------------------------------
+    // File-level access to world folders (WorldFiles)
+    // -----------------------------------------------------------------------
+
+    /// WorldFiles for a scanned world folder (RESOURCE/Worlds/<name>).
+    /// Returns std::nullopt when no game directory is set or the index is out
+    /// of range.
+    std::optional<WorldFiles> worldFilesFor(size_t worldIndex) const;
+
+    /// WorldFiles for the world that is currently loaded/selected.
+    std::optional<WorldFiles> currentWorldFiles() const;
 
 private:
     std::string gameDir_;

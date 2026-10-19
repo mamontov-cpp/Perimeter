@@ -35,6 +35,8 @@ ENDIF()
 ADD_LIBRARY(MapEditorCore STATIC
         core/Placeholder.cpp
         core/preflight.cpp
+        core/IniDocument.cpp
+        core/WorldFiles.cpp
         core/EditorSession.cpp
 )
 

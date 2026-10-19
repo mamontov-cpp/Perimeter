@@ -45,8 +45,12 @@
 
 // preflight.h (MapEditorCore) — no Terra dependency.
 #include "preflight.h"
+// WorldFiles (MapEditorCore) — file-level world folder access.
+#include "WorldFiles.h"
 // errh_wrapper.h (MapEditorSupport) — ErrH crash handler setup.
 #include "errh_wrapper.h"
+// shims.h (MapEditorSupport) — ReadIniString, the game's SimpleIni reader.
+#include "shims.h"
 
 // Terra / XTool — for vMap and Terra API in the test.
 #include "terra.h"
@@ -72,6 +76,17 @@ static std::vector<uint8_t> readFileBytes(const fs::path& path)
     return std::vector<uint8_t>(
         (std::istreambuf_iterator<char>(f)),
         std::istreambuf_iterator<char>());
+}
+
+static bool writeFileBytes(const fs::path& path, const std::vector<uint8_t>& bytes)
+{
+    std::ofstream f(path, std::ios::binary | std::ios::trunc);
+    if (!f) {
+        return false;
+    }
+    f.write(reinterpret_cast<const char*>(bytes.data()),
+            static_cast<std::streamsize>(bytes.size()));
+    return f.good();
 }
 
 static void copyDirRecursive(const fs::path& src, const fs::path& dst)
@@ -383,6 +398,408 @@ static int runTests(const std::string& gameDirStr)
         printf("[INFO] world.ini is also byte-identical to the original.\n");
     } else {
         printf("[INFO] world.ini was reformatted (semantically equal), as expected.\n");
+    }
+
+    // ------------------------------------------------------------------
+    // Step 7: WorldFiles — world.ini read/edit/write round-trip.
+    // ------------------------------------------------------------------
+    printf("\n[TEST 7] WorldFiles: world.ini read/edit/write...\n");
+
+    MapEditor::WorldFiles worldFiles(tempWorldDir);
+
+    // Baseline is the file as it is on disk right now: TEST 6 let SimpleIni
+    // rewrite it, and that state must survive WorldFiles unchanged.
+    const std::vector<uint8_t> iniBaseline = readFileBytes(savedIni);
+    if (iniBaseline.empty()) {
+        fprintf(stderr, "[FAIL] world.ini is missing before the WorldFiles checks.\n");
+        return 1;
+    }
+
+    // 7.1: an untouched document must be written back byte-for-byte.
+    {
+        auto document = worldFiles.readIni();
+        if (!document) {
+            fprintf(stderr, "[FAIL] WorldFiles::readIni() failed.\n");
+            return 1;
+        }
+        if (!worldFiles.writeIni(*document)) {
+            fprintf(stderr, "[FAIL] WorldFiles::writeIni() failed.\n");
+            return 1;
+        }
+        if (readFileBytes(savedIni) != iniBaseline) {
+            fprintf(stderr, "[FAIL] world.ini changed across a read/write cycle.\n");
+            return 1;
+        }
+        printf("[PASS] untouched world.ini is byte-stable (%zu bytes).\n",
+               iniBaseline.size());
+    }
+
+    // 7.2: typed getters agree with the file / the loaded world.
+    int mapWidth = 0;
+    int mapHeight = 0;
+    int hZeroPlastValue = 0;
+    {
+        const auto mapPower = worldFiles.readMapPower();
+        if (!mapPower || mapPower->first < 1 || mapPower->second < 1) {
+            fprintf(stderr, "[FAIL] could not read [Global Parameters] Map Power X/Y.\n");
+            return 1;
+        }
+        mapWidth = 1 << mapPower->first;
+        mapHeight = 1 << mapPower->second;
+        if (mapWidth != static_cast<int>(vMap.H_SIZE) ||
+            mapHeight != static_cast<int>(vMap.V_SIZE)) {
+            fprintf(stderr,
+                    "[FAIL] world.ini map power (%d,%d -> %dx%d) does not match "
+                    "the loaded map (%ux%u).\n",
+                    mapPower->first, mapPower->second, mapWidth, mapHeight,
+                    vMap.H_SIZE, vMap.V_SIZE);
+            return 1;
+        }
+
+        const auto hZeroPlast = worldFiles.readHZeroPlast();
+        if (!hZeroPlast || *hZeroPlast < 0 || *hZeroPlast > 255) {
+            fprintf(stderr, "[FAIL] [Global Parameters] hZeroPlast is missing or invalid.\n");
+            return 1;
+        }
+        hZeroPlastValue = *hZeroPlast;
+
+        const std::string hzpKey =
+            std::string(MapEditor::WorldIni::GlobalParameters) + '\x1f' +
+            MapEditor::WorldIni::HZeroPlast;
+        const auto expectedHzp = savedIniValues.find(hzpKey);
+        if (expectedHzp == savedIniValues.end() ||
+            std::to_string(hZeroPlastValue) != expectedHzp->second) {
+            fprintf(stderr, "[FAIL] hZeroPlast=%d disagrees with the semantic INI parse.\n",
+                    hZeroPlastValue);
+            return 1;
+        }
+
+        const auto version = worldFiles.readStorageVersion();
+        const std::string versionKey =
+            std::string(MapEditor::WorldIni::Storage) + '\x1f' +
+            MapEditor::WorldIni::Version;
+        const auto expectedVersion = savedIniValues.find(versionKey);
+        if (!version || expectedVersion == savedIniValues.end() ||
+            *version != expectedVersion->second) {
+            fprintf(stderr, "[FAIL] [Storage] Version is missing or wrong.\n");
+            return 1;
+        }
+
+        if (worldFiles.readIniInt(MapEditor::WorldIni::GlobalParameters,
+                                  "No Such Key")) {
+            fprintf(stderr, "[FAIL] a missing key was reported as present.\n");
+            return 1;
+        }
+
+        printf("[PASS] typed getters agree with the file (map %dx%d, hZeroPlast=%d, "
+               "storage version '%s').\n",
+               mapWidth, mapHeight, hZeroPlastValue, version->c_str());
+    }
+
+    // 7.3: an in-place edit touches exactly one key and is readable by the
+    //      same SimpleIni reader the game uses.
+    {
+        const int newValue = (hZeroPlastValue == 177) ? 178 : 177;
+        if (!worldFiles.writeHZeroPlast(newValue)) {
+            fprintf(stderr, "[FAIL] WorldFiles::writeHZeroPlast() failed.\n");
+            return 1;
+        }
+
+        const auto editedValues = parseIni(savedIni);
+        size_t changedKeys = 0;
+        std::string changedKey;
+        for (const auto& kv : savedIniValues) {
+            const auto it = editedValues.find(kv.first);
+            if (it == editedValues.end() || it->second != kv.second) {
+                ++changedKeys;
+                changedKey = kv.first;
+            }
+        }
+        const std::string hzpKey =
+            std::string(MapEditor::WorldIni::GlobalParameters) + '\x1f' +
+            MapEditor::WorldIni::HZeroPlast;
+        const auto editedHzp = editedValues.find(hzpKey);
+        if (changedKeys != 1 || changedKey != hzpKey ||
+            editedHzp == editedValues.end() ||
+            editedHzp->second != std::to_string(newValue)) {
+            fprintf(stderr,
+                    "[FAIL] editing hZeroPlast changed %zu key(s) (last: '%s').\n",
+                    changedKeys, changedKey.c_str());
+            return 1;
+        }
+
+        char iniBuffer[64] = {};
+        ReadIniString(MapEditor::WorldIni::GlobalParameters,
+                      MapEditor::WorldIni::HZeroPlast, "", iniBuffer,
+                      static_cast<uint32_t>(sizeof(iniBuffer)),
+                      savedIni.u8string());
+        if (std::string(iniBuffer) != std::to_string(newValue)) {
+            fprintf(stderr,
+                    "[FAIL] SimpleIni reads hZeroPlast='%s', expected '%d'.\n",
+                    iniBuffer, newValue);
+            return 1;
+        }
+        printf("[PASS] in-place edit changes only hZeroPlast and stays readable by SimpleIni.\n");
+
+        if (!worldFiles.writeHZeroPlast(hZeroPlastValue)) {
+            fprintf(stderr, "[FAIL] restoring hZeroPlast failed.\n");
+            return 1;
+        }
+        if (readFileBytes(savedIni) != iniBaseline) {
+            fprintf(stderr, "[FAIL] restoring the old value did not reproduce world.ini.\n");
+            return 1;
+        }
+        printf("[PASS] restoring the old value reproduces world.ini byte-for-byte.\n");
+    }
+
+    // 7.4: adding a key to an existing section and a whole new section.
+    {
+        if (!worldFiles.writeIniString(MapEditor::WorldIni::RenderingParameters,
+                                       "Editor Probe", "42") ||
+            !worldFiles.writeIniString("Editor Test Section", "Probe",
+                                       "hello world")) {
+            fprintf(stderr, "[FAIL] appending new keys/sections failed.\n");
+            return 1;
+        }
+
+        const auto document = worldFiles.readIni();
+        if (!document) {
+            fprintf(stderr, "[FAIL] world.ini unreadable after appending keys.\n");
+            return 1;
+        }
+        // Lookups are case-insensitive, like SimpleIni.
+        const auto existing = document->getValue("rendering parameters", "EDITOR PROBE");
+        const auto appended = document->getValue("Editor Test Section", "Probe");
+        if (!existing || *existing != "42" || !appended ||
+            *appended != "hello world") {
+            fprintf(stderr, "[FAIL] appended keys cannot be read back.\n");
+            return 1;
+        }
+
+        char iniBuffer[64] = {};
+        ReadIniString("Editor Test Section", "Probe", "", iniBuffer,
+                      static_cast<uint32_t>(sizeof(iniBuffer)),
+                      savedIni.u8string());
+        if (std::string(iniBuffer) != "hello world") {
+            fprintf(stderr, "[FAIL] SimpleIni cannot read the appended section.\n");
+            return 1;
+        }
+        printf("[PASS] new keys/sections are appended and readable by SimpleIni.\n");
+
+        // Drop the probe lines again so later checks see the baseline file.
+        if (!writeFileBytes(savedIni, iniBaseline)) {
+            fprintf(stderr, "[FAIL] could not restore the world.ini baseline.\n");
+            return 1;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Step 8: WorldFiles — palettes, hardness, XML, leveled texture.
+    // ------------------------------------------------------------------
+    printf("\n[TEST 8] WorldFiles: palettes / hardness / xml / leveled texture...\n");
+
+    const fs::path probeDir = tempRoot / "worldfiles_probe";
+    fs::remove_all(probeDir);
+    fs::create_directories(probeDir);
+    MapEditor::WorldFiles probe(probeDir);
+
+    // 8.1: inGeo.act / inDam.act (768-byte BGR palettes).
+    {
+        MapEditor::GeoDamPalettes palettes;
+        if (!worldFiles.readPalettes(palettes)) {
+            fprintf(stderr, "[FAIL] WorldFiles::readPalettes() failed.\n");
+            return 1;
+        }
+
+        const std::vector<uint8_t> geoOriginal =
+            readFileBytes(originalWorldDir / "inGeo.act");
+        const std::vector<uint8_t> damOriginal =
+            readFileBytes(originalWorldDir / "inDam.act");
+        if (geoOriginal.size() != MapEditor::GeoDamPalettes::SizeBytes ||
+            damOriginal.size() != MapEditor::GeoDamPalettes::SizeBytes) {
+            fprintf(stderr, "[FAIL] source palettes are not 768 bytes long.\n");
+            return 1;
+        }
+        if (std::vector<uint8_t>(palettes.geo.begin(), palettes.geo.end()) != geoOriginal ||
+            std::vector<uint8_t>(palettes.dam.begin(), palettes.dam.end()) != damOriginal) {
+            fprintf(stderr, "[FAIL] read palettes differ from inGeo.act / inDam.act.\n");
+            return 1;
+        }
+
+        if (!probe.writePalettes(palettes)) {
+            fprintf(stderr, "[FAIL] WorldFiles::writePalettes() failed.\n");
+            return 1;
+        }
+        if (readFileBytes(probeDir / "inGeo.act") != geoOriginal ||
+            readFileBytes(probeDir / "inDam.act") != damOriginal) {
+            fprintf(stderr, "[FAIL] written palettes are not byte-identical.\n");
+            return 1;
+        }
+        printf("[PASS] inGeo.act / inDam.act round-trip byte-identically (768 bytes each).\n");
+    }
+
+    // 8.2: hardness.bin (uint16 width/height + packed 2-bit values).
+    {
+        MapEditor::HardnessData hardness;
+        if (!worldFiles.readHardness(hardness)) {
+            fprintf(stderr, "[FAIL] WorldFiles::readHardness() failed.\n");
+            return 1;
+        }
+
+        const auto expectedDims =
+            MapEditor::HardnessData::dimensionsForMap(mapWidth, mapHeight);
+        if (hardness.width != expectedDims.first ||
+            hardness.height != expectedDims.second) {
+            fprintf(stderr,
+                    "[FAIL] hardness grid is %ux%u, expected %ux%u for a %dx%d map.\n",
+                    static_cast<unsigned>(hardness.width),
+                    static_cast<unsigned>(hardness.height),
+                    static_cast<unsigned>(expectedDims.first),
+                    static_cast<unsigned>(expectedDims.second), mapWidth, mapHeight);
+            return 1;
+        }
+
+        const std::vector<uint8_t> hardnessOriginal =
+            readFileBytes(originalWorldDir / "hardness.bin");
+        if (hardnessOriginal.empty()) {
+            fprintf(stderr, "[FAIL] source hardness.bin is missing.\n");
+            return 1;
+        }
+
+        // A mismatched payload must be rejected before anything is written.
+        MapEditor::HardnessData broken = hardness;
+        broken.packed.pop_back();
+        if (probe.writeHardness(broken)) {
+            fprintf(stderr, "[FAIL] writeHardness() accepted a truncated payload.\n");
+            return 1;
+        }
+
+        if (!probe.writeHardness(hardness)) {
+            fprintf(stderr, "[FAIL] WorldFiles::writeHardness() failed.\n");
+            return 1;
+        }
+        if (readFileBytes(probeDir / "hardness.bin") != hardnessOriginal) {
+            fprintf(stderr, "[FAIL] written hardness.bin is not byte-identical.\n");
+            return 1;
+        }
+        printf("[PASS] hardness.bin round-trips (%ux%u grid, %zu bytes).\n",
+               static_cast<unsigned>(hardness.width),
+               static_cast<unsigned>(hardness.height), hardness.packed.size());
+    }
+
+    // 8.3: geoPal.xml / geoTx.xml copy and rewrite.
+    {
+        const fs::path xmlDir = tempRoot / "worldfiles_xml";
+        fs::remove_all(xmlDir);
+        fs::create_directories(xmlDir);
+        MapEditor::WorldFiles xmlWorld(xmlDir);
+
+        if (xmlWorld.copyLayerXmlFrom(tempRoot / "does_not_exist")) {
+            fprintf(stderr, "[FAIL] copyLayerXmlFrom() accepted a missing source.\n");
+            return 1;
+        }
+        if (!xmlWorld.copyLayerXmlFrom(originalWorldDir)) {
+            fprintf(stderr, "[FAIL] WorldFiles::copyLayerXmlFrom() failed.\n");
+            return 1;
+        }
+
+        const std::vector<uint8_t> geoXmlOriginal =
+            readFileBytes(originalWorldDir / "geoPal.xml");
+        const std::vector<uint8_t> txXmlOriginal =
+            readFileBytes(originalWorldDir / "geoTx.xml");
+        if (geoXmlOriginal.empty() || txXmlOriginal.empty()) {
+            fprintf(stderr, "[FAIL] source XML files are missing.\n");
+            return 1;
+        }
+        if (readFileBytes(xmlDir / "geoPal.xml") != geoXmlOriginal ||
+            readFileBytes(xmlDir / "geoTx.xml") != txXmlOriginal) {
+            fprintf(stderr, "[FAIL] copied XML files are not byte-identical.\n");
+            return 1;
+        }
+
+        const auto geoXml = xmlWorld.readGeoPalXml();
+        if (!geoXml || !xmlWorld.writeGeoPalXml(*geoXml)) {
+            fprintf(stderr, "[FAIL] geoPal.xml text read/write failed.\n");
+            return 1;
+        }
+        if (readFileBytes(xmlDir / "geoPal.xml") != geoXmlOriginal) {
+            fprintf(stderr, "[FAIL] geoPal.xml changed across a text round-trip.\n");
+            return 1;
+        }
+        printf("[PASS] geoPal.xml / geoTx.xml copy and text round-trip byte-identically.\n");
+    }
+
+    // 8.4: leveledSurfaceTexture.tga validation and round-trip.
+    {
+        std::vector<uint8_t> texture;
+        if (!worldFiles.readLeveledTexture(texture)) {
+            fprintf(stderr, "[FAIL] WorldFiles::readLeveledTexture() failed.\n");
+            return 1;
+        }
+        const auto header = MapEditor::LeveledTextureHeader::fromBytes(texture);
+        if (!header) {
+            fprintf(stderr, "[FAIL] leveledSurfaceTexture.tga has no TGA header.\n");
+            return 1;
+        }
+        if (header->width > mapWidth || header->height > mapHeight ||
+            !header->isPowerOfTwoSized()) {
+            fprintf(stderr, "[FAIL] unexpected leveled texture header.\n");
+            return 1;
+        }
+
+        const auto errors = MapEditor::WorldFiles::validateLeveledTexture(
+            texture, mapWidth, mapHeight);
+        if (!errors.empty()) {
+            fprintf(stderr, "[FAIL] a valid leveled texture was rejected:\n");
+            for (const auto& error : errors) {
+                fprintf(stderr, "  - %s\n", error.c_str());
+            }
+            return 1;
+        }
+
+        // A map that is too small for the texture must be rejected.
+        if (!MapEditor::WorldFiles::validateLeveledTexture(
+                 texture, mapWidth / 4, mapHeight / 4).empty()) {
+            fprintf(stderr, "[FAIL] a texture larger than the map was accepted.\n");
+            return 1;
+        }
+
+        // A true-color (unpalettized) TGA must be rejected.
+        std::vector<uint8_t> trueColor(18, 0);
+        trueColor[1] = 0;                         // no color map
+        trueColor[2] = 2;                         // uncompressed true-color
+        trueColor[12] = 0x00;
+        trueColor[13] = 0x01;                     // width 256
+        trueColor[14] = 0x00;
+        trueColor[15] = 0x01;                     // height 256
+        trueColor[16] = 24;                       // 24 bits per pixel
+        if (MapEditor::WorldFiles::validateLeveledTexture(
+                trueColor, mapWidth, mapHeight).empty()) {
+            fprintf(stderr, "[FAIL] a true-color TGA was accepted.\n");
+            return 1;
+        }
+        if (probe.writeLeveledTexture(trueColor, mapWidth, mapHeight)) {
+            fprintf(stderr, "[FAIL] writeLeveledTexture() wrote an invalid texture.\n");
+            return 1;
+        }
+
+        const std::vector<uint8_t> textureOriginal =
+            readFileBytes(originalWorldDir / "leveledSurfaceTexture.tga");
+        if (textureOriginal.empty()) {
+            fprintf(stderr, "[FAIL] source leveledSurfaceTexture.tga is missing.\n");
+            return 1;
+        }
+        if (!probe.writeLeveledTexture(texture, mapWidth, mapHeight)) {
+            fprintf(stderr, "[FAIL] WorldFiles::writeLeveledTexture() failed.\n");
+            return 1;
+        }
+        if (readFileBytes(probeDir / "leveledSurfaceTexture.tga") != textureOriginal) {
+            fprintf(stderr, "[FAIL] written leveledSurfaceTexture.tga is not byte-identical.\n");
+            return 1;
+        }
+        printf("[PASS] leveledSurfaceTexture.tga validates (%ux%u) and round-trips.\n",
+               static_cast<unsigned>(header->width),
+               static_cast<unsigned>(header->height));
     }
 
     // Cleanup temp.

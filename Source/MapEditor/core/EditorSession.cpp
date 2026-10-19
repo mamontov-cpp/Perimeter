@@ -269,4 +269,27 @@ SessionState EditorSession::state() const
     return state_;
 }
 
+// ---------------------------------------------------------------------------
+// File-level access to world folders (WorldFiles)
+// ---------------------------------------------------------------------------
+
+std::optional<WorldFiles> EditorSession::worldFilesFor(size_t worldIndex) const
+{
+    if (!hasGameDir() || worldIndex >= worldList_.size()) {
+        return std::nullopt;
+    }
+    // dirKey is the content-relative path Terra reports for the folder, e.g.
+    // "RESOURCE/Worlds/COMPASS".
+    const fs::path dir = fs::u8path(gameDir_) / fs::u8path(worldList_[worldIndex].dirKey);
+    return WorldFiles(dir);
+}
+
+std::optional<WorldFiles> EditorSession::currentWorldFiles() const
+{
+    if (currentWorldIndex_ < 0) {
+        return std::nullopt;
+    }
+    return worldFilesFor(static_cast<size_t>(currentWorldIndex_));
+}
+
 } // namespace MapEditor
