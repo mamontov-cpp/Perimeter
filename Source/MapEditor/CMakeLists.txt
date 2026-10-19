@@ -34,6 +34,7 @@ ENDIF()
 # ---------------------------------------------------------------------------
 ADD_LIBRARY(MapEditorCore STATIC
         core/Placeholder.cpp
+        core/preflight.cpp
 )
 
 TARGET_INCLUDE_DIRECTORIES(MapEditorCore PUBLIC
@@ -48,6 +49,8 @@ TARGET_COMPILE_OPTIONS(MapEditorCore PRIVATE ${PERIMETER_COMPILE_OPTIONS})
 ADD_LIBRARY(MapEditorSupport STATIC
         shim/shims.cpp
         shim/content_root.cpp
+        shim/errh_wrapper.cpp
+        shim/game_stubs.cpp
 )
 
 TARGET_INCLUDE_DIRECTORIES(MapEditorSupport PUBLIC
@@ -58,6 +61,9 @@ TARGET_COMPILE_OPTIONS(MapEditorSupport PRIVATE ${PERIMETER_COMPILE_OPTIONS})
 
 TARGET_INCLUDE_DIRECTORIES(MapEditorSupport PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/../XTool"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../Terra"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../tx3d"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../PluginMAX"
 )
 
 TARGET_LINK_LIBRARIES(MapEditorSupport PUBLIC
@@ -113,3 +119,8 @@ IF(PERIMETER_WINDOWS)
         MESSAGE(WARNING "Map editor: windeployqt not found, map_editor may need Qt bin/ in PATH to start")
     ENDIF()
 ENDIF()
+
+# ---------------------------------------------------------------------------
+# map_editor_tests — headless round-trip test
+# ---------------------------------------------------------------------------
+ADD_SUBDIRECTORY(tests)
