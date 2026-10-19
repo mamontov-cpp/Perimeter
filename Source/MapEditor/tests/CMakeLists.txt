@@ -7,6 +7,12 @@
 
 ADD_EXECUTABLE(map_editor_tests
         main.cpp
+        TestHarness.cpp
+        TestFiles.cpp
+        PreflightTests.cpp
+        WorldRoundTripTests.cpp
+        WorldFilesIniTests.cpp
+        WorldFilesDataTests.cpp
 )
 
 SET_TARGET_PROPERTIES(map_editor_tests PROPERTIES
@@ -14,6 +20,7 @@ SET_TARGET_PROPERTIES(map_editor_tests PROPERTIES
 )
 
 TARGET_INCLUDE_DIRECTORIES(map_editor_tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
         "${CMAKE_CURRENT_SOURCE_DIR}/../core"
         "${CMAKE_CURRENT_SOURCE_DIR}/../shim"
         "${CMAKE_CURRENT_SOURCE_DIR}/../../XTool"
