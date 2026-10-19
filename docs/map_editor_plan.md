@@ -56,6 +56,12 @@
 
 **Ошибки:** `ErrH.Abort` — `[[noreturn]]` (`XTool/xerrhand.h:51`), значит редактору нужен preflight-валидатор и аварийный автосейв, а не «поймать исключение».
 
+## 1.1 Где находятся основные SDK
+
+Работа ведётся с использованием инструмента Microsoft Visual Studio 2026, игра уже собрана с ним.  Инструменты (компилятор) доступны через вызов в C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat, который меняет PATH так чтобы компилятор стал доступен.
+
+Путь к Qt 6 и его инструментам - D:\SDKs\Qt\6.12.0\msvc2022_64, если нужны исходники, они есть в D:\SDKs\Qt\6.12.0\Src. По D:\SDKs\Qt\6.12.0\msvc2022_64\bin соответственно лежат основные инструменты Qt 6, в D:\SDKs\Qt\6.12.0\msvc2022_64\lib библиотеки.
+
 ## 3. Ключевые архитектурные решения
 
 1. **Отдельное приложение `map_editor` (Qt6 Widgets), не встроенное в игру.** Источники — `Source/MapEditor/`, опция CMake `OPTION_MAP_EDITOR` (по умолчанию OFF), `ADD_SUBDIRECTORY("MapEditor")` в `Source/CMakeLists.txt` под условием. Игровая сборка не меняется.
