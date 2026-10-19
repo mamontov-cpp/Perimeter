@@ -12,6 +12,8 @@
 
 #include "files/files.h"
 
+namespace MapEditor {
+
 void init_content_root()
 {
     // Use current working directory as content root (the game folder).
@@ -30,3 +32,5 @@ void init_content_root()
     printf("MapEditor: Content root initialized: %s\n",
            get_content_root_path_str().c_str());
 }
+
+} // namespace MapEditor

@@ -35,10 +35,18 @@ ENDIF()
 ADD_LIBRARY(MapEditorCore STATIC
         core/Placeholder.cpp
         core/preflight.cpp
+        core/EditorSession.cpp
 )
 
 TARGET_INCLUDE_DIRECTORIES(MapEditorCore PUBLIC
         "${CMAKE_CURRENT_SOURCE_DIR}/core"
+)
+
+TARGET_INCLUDE_DIRECTORIES(MapEditorCore PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/../XTool"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../Terra"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../tx3d"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../PluginMAX"
 )
 
 TARGET_COMPILE_OPTIONS(MapEditorCore PRIVATE ${PERIMETER_COMPILE_OPTIONS})
@@ -77,6 +85,8 @@ SET(MAP_EDITOR_APP_SRCS
         ui/main.cpp
         ui/MainWindow.cpp
         ui/MainWindow.h
+        ui/GameDirManager.cpp
+        ui/GameDirManager.h
 )
 
 ADD_EXECUTABLE(map_editor ${MAP_EDITOR_APP_SRCS})
@@ -90,11 +100,19 @@ SET_TARGET_PROPERTIES(map_editor PROPERTIES
 
 TARGET_INCLUDE_DIRECTORIES(map_editor PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/ui"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../Terra"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../XTool"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../tx3d"
 )
 
 TARGET_LINK_LIBRARIES(map_editor PRIVATE
         MapEditorCore
         MapEditorSupport
+        Terra
+        tx3d
+        XTool
+        Util
+        SDL2::SDL2
         ${MAP_EDITOR_QT_LIBS}
 )
 

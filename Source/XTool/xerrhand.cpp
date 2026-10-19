@@ -2,6 +2,9 @@
 #include <iostream>
 #include <filesystem>
 #include <csignal>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <sstream>
 #include <vector>
 #include <thread>
@@ -338,8 +341,38 @@ void XErrorHandler::SetupStdio(bool disable_redirect) const {
     std::ios_base::sync_with_stdio();
 }
 
+// Defined in XUTIL/XClock.cpp (no header declares them).
+extern uint64_t perf_freq;
+extern uint64_t freq_ms;
+extern uint64_t freq_us;
+extern uint64_t counter_at_init;
+
+// Guard-free clock init for use inside Abort itself: clocki() contains
+// xassert(counter_at_init) which would recurse Abort -> clocki -> xassert -> Abort.
+static void abortSafeInitClock() {
+    if (perf_freq == 0) {
+        perf_freq = SDL_GetPerformanceFrequency();
+        freq_ms = perf_freq / static_cast<uint64_t>(1000);
+        freq_us = perf_freq / static_cast<uint64_t>(1000000);
+        counter_at_init = SDL_GetPerformanceCounter();
+    }
+}
+
 void XErrorHandler::Abort(const char* message, int code, int val, const char* subj)
 {
+    abortSafeInitClock();
+
+    // Re-entrancy guard: if Abort is entered again while already running (for example
+    // from a crash inside the stack-trace collector or a signal handler), report the
+    // original location once and terminate hard instead of looping forever.
+    static bool inAbort = false;
+    if (inAbort) {
+        fprintf(stderr, "XErrorHandler::Abort re-entered! Aborting hard.\n");
+        fflush(stderr);
+        _exit(code);
+    }
+    inAbort = true;
+
     fprintf(stderr, "XErrorHandler::Abort called!\n");
 	if (restore_func) {
 		restore_func();
@@ -377,6 +410,7 @@ void XErrorHandler::Abort(const char* message, int code, int val, const char* su
     std::string str =  stream.str();
 
     fprintf(stderr, "%s\n", str.c_str());
+    fflush(stderr);
 
     ShowErrorMessage(str.c_str());
 
