@@ -43,6 +43,28 @@ TARGET_INCLUDE_DIRECTORIES(MapEditorCore PUBLIC
 TARGET_COMPILE_OPTIONS(MapEditorCore PRIVATE ${PERIMETER_COMPILE_OPTIONS})
 
 # ---------------------------------------------------------------------------
+# MapEditorSupport - shims for game-only symbols (RandomGenerator, INI, etc.)
+# ---------------------------------------------------------------------------
+ADD_LIBRARY(MapEditorSupport STATIC
+        shim/shims.cpp
+        shim/content_root.cpp
+)
+
+TARGET_INCLUDE_DIRECTORIES(MapEditorSupport PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/shim"
+)
+
+TARGET_COMPILE_OPTIONS(MapEditorSupport PRIVATE ${PERIMETER_COMPILE_OPTIONS})
+
+TARGET_INCLUDE_DIRECTORIES(MapEditorSupport PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/../XTool"
+)
+
+TARGET_LINK_LIBRARIES(MapEditorSupport PUBLIC
+        XTool
+)
+
+# ---------------------------------------------------------------------------
 # map_editor - Qt Widgets application
 # ---------------------------------------------------------------------------
 SET(MAP_EDITOR_APP_SRCS
@@ -66,6 +88,7 @@ TARGET_INCLUDE_DIRECTORIES(map_editor PRIVATE
 
 TARGET_LINK_LIBRARIES(map_editor PRIVATE
         MapEditorCore
+        MapEditorSupport
         ${MAP_EDITOR_QT_LIBS}
 )
 
