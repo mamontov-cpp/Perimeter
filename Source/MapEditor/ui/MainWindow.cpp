@@ -2,12 +2,11 @@
 
 #include <EditorSession.h>
 #include <GameDirManager.h>
+#include <ViewportWidget.h>
 
 #include <QApplication>
-#include <QDir>
 #include <QFileDialog>
 #include <QHBoxLayout>
-#include <QLabel>
 #include <QListWidget>
 #include <QMainWindow>
 #include <QMenu>
@@ -29,14 +28,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     buildMenuBar();
     buildStatusBar();
-
-    auto *central = new QLabel(
-        QStringLiteral("Perimeter Map Editor\nT1.1: EditorSession integrated.\n"
-                       "Use File \u2192 Select Game Directory to get started."),
-        this);
-    central->setAlignment(Qt::AlignCenter);
-    central->setWordWrap(true);
-    setCentralWidget(central);
+    buildViewport();
 
     updateStatusBar();
 }
@@ -45,6 +37,52 @@ MainWindow::~MainWindow()
 {
     delete session_;
     delete gameDirMgr_;
+    delete viewport_;
+}
+
+// ---------------------------------------------------------------------------
+// Viewport
+// ---------------------------------------------------------------------------
+
+void MainWindow::buildViewport()
+{
+    viewport_ = new MapEditor::ViewportWidget(this);
+
+    // Connect cursor position signal to status bar.
+    connect(viewport_, &MapEditor::ViewportWidget::cursorMapPosition,
+            this, &MainWindow::updateCursorInfo);
+
+    setCentralWidget(viewport_);
+}
+
+void MainWindow::onWorldLoaded()
+{
+    // Rebind the viewport to pick up the newly loaded world.
+    if (viewport_ && session_) {
+        viewport_->setSession(session_);
+    }
+    updateStatusBar();
+}
+
+void MainWindow::onWorldUnload()
+{
+    if (viewport_ && session_) {
+        viewport_->setSession(session_);
+    }
+    updateStatusBar();
+}
+
+void MainWindow::updateCursorInfo(int mapX, int mapY)
+{
+    QString info = QString(tr("X: %1  Y: %2")).arg(mapX).arg(mapY);
+    statusBar()->showMessage(info, 3000);
+}
+
+void MainWindow::onZoomToFit()
+{
+    if (viewport_) {
+        viewport_->zoomToFit();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -78,11 +116,32 @@ void MainWindow::buildMenuBar()
     QAction *actQuit = fileMenu->addAction(tr("E&xit"));
     actQuit->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Q));
     connect(actQuit, &QAction::triggered, this, &QApplication::quit);
+
+    buildViewMenu(menuBar());
+}
+
+void MainWindow::buildViewMenu(QMenuBar *menuBar)
+{
+    QMenu *viewMenu = menuBar->addMenu(tr("&View"));
+
+    QAction *actGrid = viewMenu->addAction(tr("&Grid"));
+    actGrid->setCheckable(true);
+    actGrid->setChecked(true);
+    actGrid->setShortcut(QKeySequence(Qt::Key_G));
+    connect(actGrid, &QAction::toggled, this, [this](bool checked) {
+        if (viewport_) {
+            viewport_->setGridVisible(checked);
+        }
+    });
+
+    QAction *actFit = viewMenu->addAction(tr("Zoom to &Fit"));
+    actFit->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_0));
+    connect(actFit, &QAction::triggered, this, &MainWindow::onZoomToFit);
 }
 
 void MainWindow::buildStatusBar()
 {
-    statusBar()->showMessage(tr("Map editor \u2014 T1.1"));
+    statusBar()->showMessage(tr("Map editor \u2014 T2.2 Viewport"));
 }
 
 // ---------------------------------------------------------------------------
@@ -205,12 +264,15 @@ void MainWindow::showWorldListDialog()
 void MainWindow::onActionLoadWorld()
 {
     showWorldListDialog();
+    if (session_->isWorldLoaded()) {
+        onWorldLoaded();
+    }
 }
 
 void MainWindow::onActionUnloadWorld()
 {
     session_->unloadWorld();
-    updateStatusBar();
+    onWorldUnload();
 }
 
 // ---------------------------------------------------------------------------

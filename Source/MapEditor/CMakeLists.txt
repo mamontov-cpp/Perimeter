@@ -90,6 +90,8 @@ SET(MAP_EDITOR_APP_SRCS
         ui/MainWindow.h
         ui/GameDirManager.cpp
         ui/GameDirManager.h
+        ui/ViewportWidget.cpp
+        ui/ViewportWidget.h
 )
 
 ADD_EXECUTABLE(map_editor ${MAP_EDITOR_APP_SRCS})
