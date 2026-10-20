@@ -1,22 +1,204 @@
 #include "MainWindow.h"
 
+#include <View3DRenderer.h>
 #include <EditorSession.h>
 #include <GameDirManager.h>
 #include <ViewportWidget.h>
 
+#include <QAction>
 #include <QApplication>
 #include <QCloseEvent>
 #include <QFileDialog>
 #include <QHBoxLayout>
 #include <QInputDialog>
+#include <QLabel>
 #include <QListWidget>
 #include <QMainWindow>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QPainter>
+#include <QPixmap>
 #include <QPushButton>
+#include <QPolygonF>
 #include <QStatusBar>
+#include <QToolBar>
+#include <QTransform>
 #include <QVBoxLayout>
+
+namespace {
+
+// ---------------------------------------------------------------------------
+// Toolbar icons — painted once per action with QPainter so the view toolbar
+// does not depend on any icon theme being installed.
+// ---------------------------------------------------------------------------
+
+constexpr qreal kDeg = 3.14159265358979323846 / 180.0;
+const QColor kInk(45, 45, 45);
+const QColor kAccent(0, 96, 170);
+
+/// Small filled arrow head at `tip` pointing into `direction` (degrees,
+/// screen coords: y grows downwards).
+void drawArrowHead(QPainter &p, const QPointF &tip, double directionDeg,
+                   double length = 6.0, double halfWidth = 3.0)
+{
+    const double a = directionDeg * kDeg;
+    const QPointF dir(std::cos(a), std::sin(a));
+    const QPointF normal(-dir.y(), dir.x());
+    QPolygonF head;
+    head << tip
+         << tip - dir * length + normal * halfWidth
+         << tip - dir * length - normal * halfWidth;
+    p.drawPolygon(head);
+}
+
+void drawGroundLine(QPainter &p, double y)
+{
+    p.drawLine(QPointF(4.0, y), QPointF(18.0, y));
+}
+
+/// Arc-with-arrow rotation icon; `mirror` flips the arc direction by about
+/// the vertical axis (drawn explicitly — no QPixmap::transformed involved).
+QIcon makeRotateIcon(bool mirror)
+{
+    QPixmap pm(22, 22);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setPen(QPen(kInk, 2.0));
+
+    const QRectF circle(4.0, 4.0, 14.0, 14.0);
+    const double gapCenterDeg = 45.0;   // gap centred on the 45° ray…
+    const double spanDeg = 270.0;       // …270° long
+
+    // CCW (left rotation) draws from the gap start going counter-clockwise;
+    // the mirrored (right rotation) draws clockwise from the same gap.
+    if (mirror) {
+        p.drawArc(circle,
+                  static_cast<int>((gapCenterDeg - 15.0) * 16),
+                  static_cast<int>(-spanDeg * 16));
+    } else {
+        p.drawArc(circle,
+                  static_cast<int>((gapCenterDeg + 15.0) * 16),
+                  static_cast<int>(spanDeg * 16));
+    }
+
+    // Arrow head at the arc end, tangent to the drawing direction.
+    const QPointF center = circle.center();
+    const double radius = circle.width() / 2.0;
+    const double endAngle = gapCenterDeg
+        + (mirror ? -15.0 - spanDeg : 15.0 + spanDeg);
+    const double endAngleRad = endAngle * kDeg;
+    const QPointF end(center.x() + radius * std::cos(endAngleRad),
+                      center.y() - radius * std::sin(endAngleRad));
+    // Tangent: for CCW arcs the position angle grows, for CW it shrinks.
+    const double turn = mirror ? -1.0 : 1.0;
+    drawArrowHead(p, end, std::atan2(turn * radius * std::cos(endAngleRad),
+                                     turn * radius * std::sin(endAngleRad)) / kDeg);
+    return QIcon(pm);
+}
+
+QIcon makeTiltIcon(bool up)
+{
+    QPixmap pm(22, 22);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setPen(QPen(kInk, 2.0));
+    // Horizon the camera tilts about.
+    drawGroundLine(p, 16.0);
+    if (up) {
+        p.drawLine(QPointF(11.0, 14.0), QPointF(11.0, 6.0));
+        drawArrowHead(p, QPointF(11.0, 6.0), -90.0);
+    } else {
+        p.drawLine(QPointF(11.0, 5.0), QPointF(11.0, 13.0));
+        drawArrowHead(p, QPointF(11.0, 13.0), 90.0);
+    }
+    return QIcon(pm);
+}
+
+QIcon makeLiftIcon(bool up)
+{
+    QPixmap pm(22, 22);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setPen(QPen(kInk, 2.0));
+    // Ground the camera lifts from.
+    drawGroundLine(p, 18.0);
+    // The camera itself as a floating box + its height "rail".
+    const qreal boxY = up ? 4.0 : 11.0;
+    QPen rail(kAccent, 1.5, Qt::DotLine);
+    p.setPen(rail);
+    p.drawLine(QPointF(11.0, boxY + 4.0), QPointF(11.0, 18.0));
+    p.setPen(QPen(kInk, 2.0));
+    p.setBrush(Qt::NoBrush);
+    p.drawRoundedRect(QRectF(7.5, boxY, 7.0, 4.5), 1.5, 1.5);
+    return QIcon(pm);
+}
+
+QIcon makeZoomIcon(bool in)
+{
+    QPixmap pm(22, 22);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setPen(QPen(kAccent, 2.0));
+    p.setBrush(Qt::NoBrush);
+    p.drawEllipse(QRectF(4.0, 4.0, 11.0, 11.0));
+    p.drawLine(QPointF(14.0, 14.0), QPointF(19.0, 19.0));
+    p.setPen(QPen(kInk, 2.0));
+    p.drawLine(QPointF(6.0, 9.5), QPointF(13.0, 9.5));
+    if (in) {
+        p.drawLine(QPointF(9.5, 6.0), QPointF(9.5, 13.0));
+    }
+    return QIcon(pm);
+}
+
+QIcon makeResetIcon()
+{
+    QPixmap pm(22, 22);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setPen(QPen(kInk, 2.0));
+    // Corner brackets of a "frame"…
+    const double r = 4.0, half = 7.0;
+    const QPointF c(11.0, 11.0);
+    for (int corner = 0; corner < 4; ++corner) {
+        const double dx = (corner & 1) ? half : -half;
+        const double dy = (corner & 2) ? half : -half;
+        const QPointF cornerPoint = c + QPointF(dx, dy);
+        p.drawLine(cornerPoint, cornerPoint - QPointF(dx * 0.5, 0.0));
+        p.drawLine(cornerPoint, cornerPoint - QPointF(0.0, dy * 0.5));
+    }
+    // …and the frame centre it refers to.
+    p.setBrush(QBrush(kAccent));
+    p.setPen(Qt::NoPen);
+    p.drawEllipse(c, 2.5, 2.5);
+    return QIcon(pm);
+}
+
+QIcon makeModeIcon(bool oblique)
+{
+    QPixmap pm(22, 22);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setPen(QPen(oblique ? kAccent : kInk, 2.0));
+    p.setBrush(Qt::NoBrush);
+    p.drawRoundedRect(QRectF(2.0, 5.0, 18.0, 12.0), 3.0, 3.0);
+    QFont font = p.font();
+    font.setPointSizeF(6.5);
+    font.setBold(true);
+    p.setFont(font);
+    p.drawText(QRectF(2.0, 5.0, 18.0, 12.0), Qt::AlignCenter,
+               oblique ? QStringLiteral("3D")
+                       : QStringLiteral("2D"));
+    return QIcon(pm);
+}
+
+} // namespace
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -29,6 +211,7 @@ MainWindow::MainWindow(QWidget *parent)
     gameDirMgr_ = new GameDirManager();
 
     buildMenuBar();
+    buildViewToolbar();
     buildStatusBar();
     buildViewport();
 
@@ -39,7 +222,7 @@ MainWindow::~MainWindow()
 {
     delete session_;
     delete gameDirMgr_;
-    delete viewport_;
+    // viewport_ is a child widget; deleted by the parent.
 }
 
 // ---------------------------------------------------------------------------
@@ -53,6 +236,15 @@ void MainWindow::buildViewport()
     // Connect cursor position signal to status bar.
     connect(viewport_, &MapEditor::ViewportWidget::cursorMapPosition,
             this, &MainWindow::updateCursorInfo);
+
+    // Keep the toolbar in sync with whatever the viewport does (mouse
+    // orbit/pan/zoom change the camera too, not only the actions).
+    connect(viewport_, &MapEditor::ViewportWidget::viewModeChanged, this,
+            [this](MapEditor::ViewportWidget::ViewMode mode) {
+                onViewportViewModeChanged(static_cast<int>(mode));
+            });
+    connect(viewport_, &MapEditor::ViewportWidget::obliqueCameraChanged,
+            this, &MainWindow::onObliqueCameraChanged);
 
     setCentralWidget(viewport_);
 }
@@ -76,6 +268,11 @@ void MainWindow::onWorldUnload()
 
 void MainWindow::updateCursorInfo(int mapX, int mapY)
 {
+    if (viewport_ && viewport_->viewMode() == MapEditor::ViewportWidget::ViewMode::Oblique) {
+        // The oblique view has no linear screen→cell mapping; the viewport
+        // does not emit positions there.
+        return;
+    }
     QString info = QString(tr("X: %1  Y: %2")).arg(mapX).arg(mapY);
     statusBar()->showMessage(info, 3000);
 }
@@ -84,6 +281,45 @@ void MainWindow::onZoomToFit()
 {
     if (viewport_) {
         viewport_->zoomToFit();
+    }
+}
+
+void MainWindow::onActionToggle3D()
+{
+    if (viewport_) {
+        viewport_->toggleViewMode();
+    }
+}
+
+void MainWindow::onViewportViewModeChanged(int mode)
+{
+    if (actView3D_) {
+        actView3D_->setChecked(mode ==
+            static_cast<int>(MapEditor::ViewportWidget::ViewMode::Oblique));
+    }
+    updateViewReadout();
+}
+
+void MainWindow::onObliqueCameraChanged(const MapEditor::View3DCamera &)
+{
+    updateViewReadout();
+}
+
+void MainWindow::updateViewReadout()
+{
+    if (!viewReadout_ || !viewport_) {
+        return;
+    }
+    if (viewport_->viewMode() == MapEditor::ViewportWidget::ViewMode::Oblique) {
+        const MapEditor::View3DCamera &cam = viewport_->obliqueCamera();
+        viewReadout_->setText(tr("3D    rot %1\u00B0  tilt %2\u00B0  lift %3  focus %4")
+                                  .arg(qRound(cam.turnAngleDeg))
+                                  .arg(qRound(cam.leanDeg))
+                                  .arg(cam.cameraDZ)
+                                  .arg(cam.focusC));
+    } else {
+        viewReadout_->setText(tr("2D    zoom %1%")
+                                  .arg(qRound(viewport_->zoom() * 100)));
     }
 }
 
@@ -163,25 +399,177 @@ void MainWindow::buildEditMenu(QMenuBar *menuBar)
 void MainWindow::buildViewMenu(QMenuBar *menuBar)
 {
     QMenu *viewMenu = menuBar->addMenu(tr("&View"));
+    const auto create = [&viewMenu]() { return viewMenu->addAction(QString()); };
 
-    QAction *actGrid = viewMenu->addAction(tr("&Grid"));
-    actGrid->setCheckable(true);
-    actGrid->setChecked(true);
-    actGrid->setShortcut(QKeySequence(Qt::Key_G));
-    connect(actGrid, &QAction::toggled, this, [this](bool checked) {
+    // ------------------------------------------------------------------
+    // TopDown / common
+    // ------------------------------------------------------------------
+    actGrid_ = create();
+    actGrid_->setText(tr("&Grid"));
+    actGrid_->setCheckable(true);
+    actGrid_->setChecked(true);
+    actGrid_->setShortcut(QKeySequence(Qt::Key_G));
+    connect(actGrid_, &QAction::toggled, this, [this](bool checked) {
         if (viewport_) {
             viewport_->setGridVisible(checked);
         }
     });
 
-    QAction *actFit = viewMenu->addAction(tr("Zoom to &Fit"));
-    actFit->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_0));
-    connect(actFit, &QAction::triggered, this, &MainWindow::onZoomToFit);
+    actZoomToFit_ = create();
+    actZoomToFit_->setText(tr("Zoom to &Fit"));
+    actZoomToFit_->setIcon(makeResetIcon());
+    actZoomToFit_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_0));
+    connect(actZoomToFit_, &QAction::triggered, this, &MainWindow::onZoomToFit);
+
+    viewMenu->addSeparator();
+
+    // ------------------------------------------------------------------
+    // Oblique (3D) camera (T2.3)
+    // ------------------------------------------------------------------
+    actView3D_ = create();
+    actView3D_->setText(tr("&3D View"));
+    actView3D_->setIcon(makeModeIcon(true));
+    actView3D_->setToolTip(
+        tr("Switch the viewport between the flat 2D palette and the tilted "
+           "3D voxel view (F9)"));
+    actView3D_->setCheckable(true);
+    actView3D_->setShortcut(QKeySequence(Qt::Key_F9));
+    connect(actView3D_, &QAction::triggered, this, &MainWindow::onActionToggle3D);
+
+    actRotateLeft_ = create();
+    actRotateLeft_->setText(tr("Rotate &Left"));
+    actRotateLeft_->setIcon(makeRotateIcon(false));
+    actRotateLeft_->setToolTip(tr("Rotate the 3D camera 15\u00B0 left (Ctrl+Left)"));
+    actRotateLeft_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Left));
+    connect(actRotateLeft_, &QAction::triggered, this, [this] {
+        if (viewport_) viewport_->adjustObliqueRotation(-15.0);
+    });
+
+    actRotateRight_ = create();
+    actRotateRight_->setText(tr("Rotate &Right"));
+    actRotateRight_->setIcon(makeRotateIcon(true));
+    actRotateRight_->setToolTip(tr("Rotate the 3D camera 15\u00B0 right (Ctrl+Right)"));
+    actRotateRight_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Right));
+    connect(actRotateRight_, &QAction::triggered, this, [this] {
+        if (viewport_) viewport_->adjustObliqueRotation(15.0);
+    });
+
+    actTiltUp_ = create();
+    actTiltUp_->setText(tr("Tilt &Up"));
+    actTiltUp_->setIcon(makeTiltIcon(true));
+    actTiltUp_->setToolTip(
+        tr("Look further along the horizon (Ctrl+Up); "
+           "Ctrl+Up/Ctrl+Down change the camera pitch"));
+    actTiltUp_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Up));
+    connect(actTiltUp_, &QAction::triggered, this, [this] {
+        if (viewport_) viewport_->adjustObliqueTilt(5.0);
+    });
+
+    actTiltDown_ = create();
+    actTiltDown_->setText(tr("Tilt &Down"));
+    actTiltDown_->setIcon(makeTiltIcon(false));
+    actTiltDown_->setToolTip(tr("Look more down onto the surface (Ctrl+Down)"));
+    actTiltDown_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Down));
+    connect(actTiltDown_, &QAction::triggered, this, [this] {
+        if (viewport_) viewport_->adjustObliqueTilt(-5.0);
+    });
+
+    actLiftUp_ = create();
+    actLiftUp_->setText(tr("Camera &Higher"));
+    actLiftUp_->setIcon(makeLiftIcon(true));
+    actLiftUp_->setToolTip(tr("Lift the 3D camera one step (Page Up)"));
+    actLiftUp_->setShortcut(QKeySequence(Qt::Key_PageUp));
+    connect(actLiftUp_, &QAction::triggered, this, [this] {
+        if (viewport_) viewport_->adjustObliqueLift(100);
+    });
+
+    actLiftDown_ = create();
+    actLiftDown_->setText(tr("Camera &Lower"));
+    actLiftDown_->setIcon(makeLiftIcon(false));
+    actLiftDown_->setToolTip(tr("Lower the 3D camera one step (Page Down)"));
+    actLiftDown_->setShortcut(QKeySequence(Qt::Key_PageDown));
+    connect(actLiftDown_, &QAction::triggered, this, [this] {
+        if (viewport_) viewport_->adjustObliqueLift(-100);
+    });
+
+    viewMenu->addSeparator();
+
+    actZoomIn_ = create();
+    actZoomIn_->setText(tr("Zoom &In"));
+    actZoomIn_->setIcon(makeZoomIcon(true));
+    actZoomIn_->setToolTip(tr("Zoom in (Ctrl+=; the 3D view moves the camera closer)"));
+    actZoomIn_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Equal));
+    connect(actZoomIn_, &QAction::triggered, this, [this] {
+        if (viewport_) viewport_->zoomStep(1.25);
+    });
+
+    actZoomOut_ = create();
+    actZoomOut_->setText(tr("Zoom &Out"));
+    actZoomOut_->setIcon(makeZoomIcon(false));
+    actZoomOut_->setToolTip(tr("Zoom out (Ctrl+-; the 3D view moves the camera away)"));
+    actZoomOut_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Minus));
+    connect(actZoomOut_, &QAction::triggered, this, [this] {
+        if (viewport_) viewport_->zoomStep(0.8);
+    });
+
+    actResetView_ = create();
+    actResetView_->setText(tr("&Reset View"));
+    actResetView_->setToolTip(tr("2D — fit the map; 3D — default camera"));
+    actResetView_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Home));
+    connect(actResetView_, &QAction::triggered, this, [this] {
+        if (!viewport_) return;
+        if (viewport_->viewMode() == MapEditor::ViewportWidget::ViewMode::Oblique) {
+            viewport_->resetObliqueView();
+        } else {
+            viewport_->zoomToFit();
+        }
+    });
+}
+
+void MainWindow::buildViewToolbar()
+{
+    QToolBar *bar = addToolBar(tr("View"));
+    bar->setObjectName(QStringLiteral("ViewToolbar"));
+    bar->setMovable(false);
+    bar->setFloatable(false);
+    bar->setIconSize(QSize(22, 22));
+    bar->setStyleSheet(
+        QStringLiteral("QToolButton:enabled:hover, QToolButton:enabled:checked "
+                       "{ background: rgba(0, 96, 170, 35); border-radius: 4px; }"));
+
+    bar->addSeparator();
+    bar->addAction(actGrid_);
+    bar->addAction(actZoomToFit_);
+    bar->addSeparator();
+    bar->addAction(actView3D_);
+    bar->addSeparator();
+    bar->addAction(actRotateLeft_);
+    bar->addAction(actRotateRight_);
+    bar->addAction(actTiltUp_);
+    bar->addAction(actTiltDown_);
+    bar->addSeparator();
+    bar->addAction(actLiftUp_);
+    bar->addAction(actLiftDown_);
+    bar->addSeparator();
+    bar->addAction(actZoomIn_);
+    bar->addAction(actZoomOut_);
+    bar->addAction(actResetView_);
+
+    // A compact live readout of the active camera.
+    viewReadout_ = new QLabel(bar);
+    viewReadout_->setObjectName(QStringLiteral("viewReadout"));
+    viewReadout_->setStyleSheet(
+        QStringLiteral("QLabel { color: #303030; padding: 0 10px; }"));
+    // Spacing for the monospace-ish look without a fixed width.
+    QFont font = viewReadout_->font();
+    font.setPointSizeF(8.5);
+    viewReadout_->setFont(font);
+    bar->addWidget(viewReadout_);
 }
 
 void MainWindow::buildStatusBar()
 {
-    statusBar()->showMessage(tr("Map editor \u2014 T2.2 Viewport"));
+    statusBar()->showMessage(tr("Map editor"));
 }
 
 // ---------------------------------------------------------------------------
@@ -492,6 +880,15 @@ void MainWindow::updateActionStates()
     }
     if (actClearUndoHistory_) {
         actClearUndoHistory_->setEnabled(worldLoaded);
+    }
+    // View actions make sense only when there is something to look at.
+    for (QAction *action : {actZoomToFit_, actView3D_, actRotateLeft_,
+                            actRotateRight_, actTiltUp_, actTiltDown_,
+                            actLiftUp_, actLiftDown_, actZoomIn_,
+                            actZoomOut_, actResetView_}) {
+        if (action) {
+            action->setEnabled(worldLoaded);
+        }
     }
 }
 

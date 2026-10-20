@@ -8,32 +8,42 @@
 #include <cstdint>
 #include <vector>
 
+#include "View3DRenderer.h"
+
 namespace MapEditor {
 
 class EditorSession;
 class ViewportRenderer;
 
 // ============================================================================
-// MapEditor UI — ViewportWidget (T2.2).
+// MapEditor UI — ViewportWidget (T2.2, T2.3).
 //
-// Qt viewport that shows the 2D top-down raster produced by ViewportRenderer
-// (T2.1) and adds editor navigation/preview on top of it:
+// Qt viewport over a world raster with two view modes:
 //
-//   * Pan  — middle-button or right-button drag.
-//   * Zoom — mouse wheel, centred on the cursor, clamped to the plan range
-//            "1:1 … fit" (fit = whole map visible, 1:1 = one map cell per
-//            screen pixel; no interpolation beyond 1:1).
-//   * Double-click — back to fit.
+//   * TopDown (T2.2) — the 2D top-down raster produced by ViewportRenderer
+//     (T2.1):
+//       - Pan  — middle-button or right-button drag.
+//       - Zoom — mouse wheel, centred on the cursor, clamped to the plan
+//         range "1:1 … fit" (fit = whole map visible, 1:1 = one map cell per
+//         screen pixel; no interpolation beyond 1:1).
+//       - Double-click — back to fit.
+//   * Oblique (T2.3) — the tilted voxel window of View3DRenderer over
+//     vrtMap::viewV2D (window width clamped to MAX_XSIZE_VX_WINDOW=640):
+//       - Pan  — middle/right drag; the camera walks on the ground plane.
+//       - Orbit — left drag: horizontal moves turn the camera around Z,
+//         vertical moves tilt it.
+//       - Zoom — mouse wheel, mapped to the focal length (focusC), the
+//         centre map cell stays in place.
+//     The 3D camera itself is driven both interactively here and from the
+//     MainWindow view toolbar (setObliqueCamera/adjust* methods + the
+//     obliqueCameraChanged signal). Overlays (grid/brush/markers) still come
+//     from the 2D pipeline — they are TopDown-only in T2.3.
 //
-//   * Cursor → map cell conversion (screenToMap) and a coordinate/zoom readout.
-//   * Brush preview — filled-outline circle/square stamp at the cursor cell.
-//   * Grid — fine (kmGrid, 4 cells) and coarse (kmGridChA, 64 cells) lines,
-//     drawn only where they are actually resolvable on screen.
-//   * Markers and spawn points — overlay dots/labels (data is fed in from
-//     T7/T8; the widget itself only draws them).
+//   * Cursor → map cell conversion (screenToMap) and a coordinate/zoom readout
+//     (TopDown mode).
 //
-// The base raster is painted by wrapping ViewportRenderer's ARGB32 cache in a
-// zero-copy QImage and letting QPainter scale it — no per-cell fillRect loop.
+// Both base rasters are painted from zero-copy QImages: the ARGB32 cache of
+// ViewportRenderer and the RGB16 (565) frame of View3DRenderer.
 // All vMap access happens in the UI thread (Terra is not thread-safe).
 // ============================================================================
 
@@ -95,6 +105,24 @@ public:
     // View state
     // -----------------------------------------------------------------------
 
+    /// Which representation the widget shows.
+    enum class ViewMode
+    {
+        TopDown, ///< Flat 1:1 palette view with overlays (T2.1/T2.2).
+        Oblique, ///< Tilted 3D voxel window over viewV2D (T2.3).
+    };
+
+    ViewMode viewMode() const { return viewMode_; }
+    /// Switch the visible mode. Each mode keeps its own camera state.
+    void setViewMode(ViewMode mode);
+    void toggleViewMode()
+    {
+        setViewMode(viewMode_ == ViewMode::TopDown ? ViewMode::Oblique
+                                                   : ViewMode::TopDown);
+    }
+
+    // ---- TopDown state -----------------------------------------------------
+
     /// Zoom: 1.0 = 1 map cell per screen pixel, fitScale() = whole map visible.
     double zoom() const { return zoom_; }
     /// Lower zoom bound for the current map/widget size.
@@ -104,6 +132,27 @@ public:
     void centerOnMap();
     /// Fit the whole map into the widget.
     void zoomToFit();
+    /// One zoom step for the toolbar actions; works in both modes
+    /// (factor > 1 zooms in, < 1 zooms out).
+    void zoomStep(double factor);
+
+    // ---- Oblique (3D) state -------------------------------------------------
+
+    /// Read-only camera state of the 3D view (editor units, see View3DCamera).
+    const View3DCamera &obliqueCamera() const { return obliqueCamera_; }
+
+    /// Replace the whole camera state (clamped inside).
+    void setObliqueCamera(const View3DCamera &camera);
+
+    /// Fine-grained camera helpers for the view toolbar; each one clamps the
+    /// affected fields and emits obliqueCameraChanged() when something moved.
+    void adjustObliqueRotation(double deltaDeg); ///< ± degrees around Z.
+    void adjustObliqueTilt(double deltaDeg);     ///< ± degrees of lean.
+    void adjustObliqueLift(int deltaCells);      ///< ± cameraDZ cells.
+    void adjustObliqueFocus(int deltaCells);     ///< ± focal length cells.
+
+    /// Back to the default camera and map centre.
+    void resetObliqueView();
 
     // -----------------------------------------------------------------------
     // Overlays
@@ -138,6 +187,10 @@ public:
 signals:
     /// Emitted when the cursor moves over a different map cell.
     void cursorMapPosition(int mapX, int mapY);
+    /// Emitted after setViewMode().
+    void viewModeChanged(MapEditor::ViewportWidget::ViewMode mode);;    /// Emitted after every successful 3D camera change (toolbar, wheel,
+    /// orbit, pan) so MainWindow can refresh its readout/labels.
+    void obliqueCameraChanged(const MapEditor::View3DCamera &camera);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -154,6 +207,7 @@ private:
     void clampZoom();
 
     void drawBaseRaster(QPainter &painter);
+    void draw3DRaster(QPainter &painter);
     void drawGrid(QPainter &painter);
     void drawBrushPreview(QPainter &painter);
     void drawMarkers(QPainter &painter);
@@ -161,12 +215,23 @@ private:
     void drawHud(QPainter &painter);
     QRect visibleCellRange() const;
 
+    /// Pan of the 3D camera over the ground plane after a screen-drag of the
+    /// given pixel deltas — inverse view-basis mapping, see the .cpp.
+    void panObliqueBy(double dxCursorPx, double dyCursorPx);
+
     EditorSession *session_ = nullptr;
     ViewportRenderer *renderer_ = nullptr;
+
+    ViewMode viewMode_ = ViewMode::TopDown;
+    View3DRenderer *view3d_ = nullptr;
 
     double zoom_ = 1.0;
     double fitScale_ = 1.0;
     QPointF panOffset_;
+
+    // 3D camera and look-at; wrap of obliqueCenter_ happens at render time.
+    View3DCamera obliqueCamera_{};
+    QPointF obliqueCenter_;
 
     BrushPreviewShape brushShape_ = BrushPreviewShape::Circle;
     int brushRadius_ = kFineGridCell;
@@ -178,6 +243,8 @@ private:
 
     bool panning_ = false;
     QPointF panStart_;
+    /// Orbit drag (left button, Oblique mode).
+    bool orbiting_ = false;
 
     std::vector<MapMarker> markers_;
     std::vector<SpawnPoint> spawns_;
@@ -189,8 +256,10 @@ private:
     static constexpr double kMinGridSpacingPx = 4.0;
     /// Margin kept around the map when fitting.
     static constexpr int kFitMarginPx = 12;
-    /// Wheel zoom step.
+    /// Wheel zoom step / default toolbar zoom factor.
     static constexpr double kZoomStep = 1.25;
+    /// Degrees the orbit drag moves for one screen pixel.
+    static constexpr double kOrbitDegPerPx = 0.3;
 };
 
 } // namespace MapEditor

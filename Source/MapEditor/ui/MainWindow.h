@@ -6,10 +6,13 @@ class GameDirManager;
 class QCloseEvent;
 class QAction;
 class QDialog;
+class QLabel;
+class QToolBar;
 
 namespace MapEditor {
 class EditorSession;
 class ViewportWidget;
+struct View3DCamera;
 }
 
 // Top level window of the map editor.
@@ -18,6 +21,9 @@ class ViewportWidget;
 // T1.4 — File menu Save/Save As + Edit menu Undo/Redo/Clear history calling
 //        EditorSession, unsaved-changes prompts on load/unload/close.
 // T2.2 — integrates ViewportWidget as the central widget.
+// T2.3 — View menu + view toolbar for the oblique 3D camera: 2D/3D switch,
+//        rotate, tilt, camera lift, zoom, reset; buttons carry live values in
+//        their tooltips and get in sync with the viewport via signals.
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
@@ -41,6 +47,7 @@ private slots:
     void onActionRedo();
     void onActionClearUndoHistory();
     void onZoomToFit();
+    void onActionToggle3D();
 
     /// React to a world load: update the viewport and status bar.
     void onWorldLoaded();
@@ -51,12 +58,22 @@ private slots:
     /// Update status bar text with cursor position from the viewport.
     void updateCursorInfo(int mapX, int mapY);
 
+    /// Refresh the view readout toolbar after the viewport changed its mode.
+    void onViewportViewModeChanged(int mode);
+
+    /// Refresh the view readout toolbar after the 3D camera moved.
+    void onObliqueCameraChanged(const MapEditor::View3DCamera &camera);
+
 private:
     void buildMenuBar();
     void buildEditMenu(QMenuBar *menuBar);
     void buildViewMenu(QMenuBar *menuBar);
+    void buildViewToolbar();
     void buildStatusBar();
     void buildViewport();
+
+    /// Update the toolbar label that mirrors the oblique camera state.
+    void updateViewReadout();
 
     /// Show the world list dialog so the user can pick a world to load.
     void showWorldListDialog();
@@ -87,4 +104,21 @@ private:
     QAction *actUndo_ = nullptr;
     QAction *actRedo_ = nullptr;
     QAction *actClearUndoHistory_ = nullptr;
+
+    // View actions — shared between the View menu and the view toolbar.
+    QAction *actGrid_ = nullptr;
+    QAction *actZoomToFit_ = nullptr;
+    QAction *actView3D_ = nullptr;
+    QAction *actRotateLeft_ = nullptr;
+    QAction *actRotateRight_ = nullptr;
+    QAction *actTiltUp_ = nullptr;
+    QAction *actTiltDown_ = nullptr;
+    QAction *actLiftUp_ = nullptr;
+    QAction *actLiftDown_ = nullptr;
+    QAction *actZoomIn_ = nullptr;
+    QAction *actZoomOut_ = nullptr;
+    QAction *actResetView_ = nullptr;
+
+    // Toolbar readout of the current 3D camera.
+    QLabel *viewReadout_ = nullptr;
 };

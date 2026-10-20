@@ -16,6 +16,7 @@ ADD_EXECUTABLE(map_editor_tests
         SaveWorldTests.cpp
         UndoHistoryTests.cpp
         ViewportRendererTests.cpp
+        View3DRendererTests.cpp
 )
 
 SET_TARGET_PROPERTIES(map_editor_tests PROPERTIES
