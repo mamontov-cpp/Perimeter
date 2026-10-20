@@ -38,6 +38,7 @@ ADD_LIBRARY(MapEditorCore STATIC
         core/IniDocument.cpp
         core/WorldFiles.cpp
         core/EditorSession.cpp
+        core/ViewportRenderer.cpp
 )
 
 TARGET_INCLUDE_DIRECTORIES(MapEditorCore PUBLIC

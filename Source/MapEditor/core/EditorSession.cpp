@@ -3,6 +3,7 @@
 // ============================================================================
 
 #include "EditorSession.h"
+#include "ViewportRenderer.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -225,6 +226,14 @@ bool EditorSession::loadWorld(size_t worldIndex)
         return false;
     }
 
+    // Compute RnrBuf lighting and At_SHADOW exactly like
+    // terUniverse::universalLoad does after loading a world
+    // (Source/Game/Universe.cpp): fullLoad() itself never runs the renderer —
+    // its RenderStr() loop is commented out (VMAP.cpp:924) — so without this
+    // call getColor32() (viewport, cache.tga) would read uninitialised
+    // lighting. See docs/context.md.
+    vMap.WorldRender();
+
     currentWorldIndex_ = static_cast<int32_t>(worldIndex);
     loadedWorldFolderName_ = wantedName;
     modified_ = false;
@@ -381,32 +390,31 @@ bool writeTga24(const fs::path& path, unsigned width, unsigned height,
     return out.good();
 }
 
-/// Render the loaded map with vrtMap::getColor32 into a V_SIZE x H_SIZE BGR
-/// buffer. Shared by the cache.tga and map.tga generators so both always show
-/// exactly the same image (the minimap is only a scaled copy).
+/// Render the loaded map into a V_SIZE x H_SIZE BGR buffer. Shared by the
+/// cache.tga and map.tga generators so both always show exactly the same
+/// image (the minimap is only a scaled copy).
+///
+/// Rasterisation goes through ViewportRenderer (fresh instance — its
+/// defaults are the Composite filter and no overlays, i.e. plain
+/// vMap.getColor32()), so the generated files and the on-screen viewport can
+/// never drift apart pixel-wise.
 bool renderMapToBgr(std::vector<unsigned char>& bgr, unsigned& width,
                     unsigned& height)
 {
-    if (!vMap.VxGBuf || !vMap.AtrBuf || !vMap.SurBuf || !vMap.RnrBuf) {
+    ViewportRenderer renderer;
+    if (!renderer.bindWorld()) {
         return false;
     }
-    width = static_cast<unsigned>(vMap.H_SIZE);
-    height = static_cast<unsigned>(vMap.V_SIZE);
-    if (width == 0 || height == 0) {
-        return false;
-    }
+    width = static_cast<unsigned>(renderer.width());
+    height = static_cast<unsigned>(renderer.height());
     bgr.assign(static_cast<std::size_t>(width) * height * 3, 0);
-    for (unsigned y = 0; y < height; ++y) {
-        for (unsigned x = 0; x < width; ++x) {
-            const int off =
-                vMap.offsetBuf(static_cast<int>(x), static_cast<int>(y));
-            const unsigned col32 = vMap.getColor32(off);
-            const std::size_t idx =
-                (static_cast<std::size_t>(y) * width + x) * 3;
-            bgr[idx + 0] = static_cast<unsigned char>(col32 & 0xFF);        // B
-            bgr[idx + 1] = static_cast<unsigned char>((col32 >> 8) & 0xFF); // G
-            bgr[idx + 2] = static_cast<unsigned char>((col32 >> 16) & 0xFF); // R
-        }
+    const std::uint32_t* pixels = renderer.pixels();
+    const std::size_t count = static_cast<std::size_t>(width) * height;
+    for (std::size_t i = 0; i < count; ++i) {
+        const std::uint32_t col32 = pixels[i];
+        bgr[i * 3 + 0] = static_cast<unsigned char>(col32 & 0xFF);         // B
+        bgr[i * 3 + 1] = static_cast<unsigned char>((col32 >> 8) & 0xFF);  // G
+        bgr[i * 3 + 2] = static_cast<unsigned char>((col32 >> 16) & 0xFF); // R
     }
     return true;
 }
