@@ -226,7 +226,9 @@ bool EditorSession::loadWorld(size_t worldIndex)
     }
 
     currentWorldIndex_ = static_cast<int32_t>(worldIndex);
+    loadedWorldFolderName_ = wantedName;
     modified_ = false;
+    vMap.worldChanged = false;
     state_ = SessionState::WorldLoaded;
 
     printf("EditorSession: loaded world '%s' (%u x %u)\n",
@@ -257,7 +259,12 @@ void EditorSession::unloadWorld()
         vMap.worldFree();
     }
     currentWorldIndex_ = -1;
+    loadedWorldFolderName_.clear();
     modified_ = false;
+    if (isWorldLoaded() && vMap.VxGBuf) {
+        // Just in case, clear flag if still set
+        vMap.worldChanged = false;
+    }
     if (hasGameDir() && !worldList_.empty()) {
         state_ = SessionState::GameReady;
     } else {
@@ -509,6 +516,156 @@ bool EditorSession::saveWorld()
     printf("EditorSession: saved world '%s' to '%s'\n",
            currentWorldName().c_str(), worldDir.u8string().c_str());
     return true;
+}
+
+bool EditorSession::saveWorldAs(const std::string& newWorldName)
+{
+    if (!isWorldLoaded() || newWorldName.empty()) {
+        fprintf(stderr, "EditorSession::saveWorldAs: invalid state or empty name.\n");
+        return false;
+    }
+    if (!hasGameDir()) {
+        fprintf(stderr, "EditorSession::saveWorldAs: no game directory set.\n");
+        return false;
+    }
+
+    const fs::path worldsRoot = fs::u8path(gameDir_) / "RESOURCE" / "Worlds";
+    if (!fs::exists(worldsRoot) || !fs::is_directory(worldsRoot)) {
+        fprintf(stderr, "EditorSession::saveWorldAs: RESOURCE/Worlds not found.\n");
+        return false;
+    }
+
+    // Prevent overwriting existing world.
+    const fs::path destDir = worldsRoot / fs::u8path(newWorldName);
+    if (fs::exists(destDir)) {
+        fprintf(stderr, "EditorSession::saveWorldAs: target world already exists: %s\n",
+                destDir.u8string().c_str());
+        return false;
+    }
+
+    // Copy source world folder.
+    const std::optional<WorldFiles> srcFiles = currentWorldFiles();
+    if (!srcFiles) {
+        fprintf(stderr, "EditorSession::saveWorldAs: cannot resolve source world folder.\n");
+        return false;
+    }
+    const fs::path srcDir = srcFiles->worldDir();
+    std::error_code ec;
+    fs::create_directories(destDir, ec);
+    if (ec) {
+        fprintf(stderr, "EditorSession::saveWorldAs: cannot create directory '%s': %s\n",
+                destDir.u8string().c_str(), ec.message().c_str());
+        return false;
+    }
+
+    // Copy all entries (files and subdirectories) except maybe nothing - keep same structure.
+    for (const auto& entry : fs::directory_iterator(srcDir, fs::directory_options::skip_permission_denied, ec)) {
+        if (ec) break;
+        const auto& p = entry.path();
+        const auto rel = p.filename();
+        const fs::path target = destDir / rel;
+        if (entry.is_directory(ec)) {
+            if (ec) continue;
+            fs::copy(entry.path(), target,
+                     fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
+        } else if (entry.is_regular_file(ec)) {
+            if (ec) continue;
+            fs::copy_file(entry.path(), target, fs::copy_options::overwrite_existing, ec);
+        }
+        // Skip symlinks/others if any.
+    }
+
+    // Update world.ini in the copy to reflect the new folder name if needed? 
+    // Terra uses folder name as world name; world.ini has [Storage] File Name but
+    // the actual loaded name is from folder/wTable. Copy is fine; we'll reload.
+    {
+        WorldFiles destFiles(destDir);
+        // Ensure Storage/File Name matches folder name if present
+        if (auto ini = destFiles.readIni()) {
+            // writeIniString/writeIniInt do read-modify-write; use generic write via helper style
+            destFiles.writeIniString(WorldIni::Storage, WorldIni::FileName, newWorldName);
+            // Also ensure map power/zero layer copied values are consistent if desired (copied already)
+        }
+    }
+
+    // Switch session to the new world: reload world list and load by name.
+    // Unload current first.
+    unloadWorld();
+    if (!scanWorlds()) {
+        fprintf(stderr, "EditorSession::saveWorldAs: failed to rescan worlds after copy.\n");
+        return false;
+    }
+    if (!loadWorldByName(newWorldName)) {
+        fprintf(stderr, "EditorSession::saveWorldAs: failed to load copied world '%s'.\n",
+                newWorldName.c_str());
+        return false;
+    }
+
+    // Save to regenerate cache.tga/map.tga and normalize via Terra pipeline.
+    if (!saveWorld()) {
+        fprintf(stderr, "EditorSession::saveWorldAs: save failed after copy.\n");
+        return false;
+    }
+
+    printf("EditorSession: saved world as '%s'\n", newWorldName.c_str());
+    return true;
+}
+
+void EditorSession::undo()
+{
+    if (!isWorldLoaded()) {
+        return;
+    }
+    vMap.UndoDispatcher_Undo();
+}
+
+void EditorSession::redo()
+{
+    if (!isWorldLoaded()) {
+        return;
+    }
+    vMap.UndoDispatcher_Redo();
+}
+
+void EditorSession::clearUndoHistory()
+{
+    if (!isWorldLoaded()) {
+        return;
+    }
+    vMap.UndoDispatcher_KillAllUndo();
+}
+
+bool EditorSession::canUndo() const
+{
+    if (!isWorldLoaded()) {
+        return false;
+    }
+    return vMap.UndoDispatcher_IsUndoExist();
+}
+
+bool EditorSession::canRedo() const
+{
+    if (!isWorldLoaded()) {
+        return false;
+    }
+    return vMap.UndoDispatcher_IsRedoExist();
+}
+
+bool EditorSession::hasUnsavedChanges() const
+{
+    return isModified();
+}
+
+std::string EditorSession::getUnsavedChangesWarning() const
+{
+    if (!isWorldLoaded()) {
+        return std::string();
+    }
+    const std::string name = currentWorldName();
+    if (name.empty()) {
+        return "The current world has unsaved changes. Do you want to save them?";
+    }
+    return "World \"" + name + "\" has unsaved changes. Do you want to save them?";
 }
 
 } // namespace MapEditor

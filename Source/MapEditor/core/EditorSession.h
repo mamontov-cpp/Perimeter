@@ -135,12 +135,39 @@ public:
     std::optional<WorldFiles> currentWorldFiles() const;
 
     // -----------------------------------------------------------------------
-    // World saving (T1.3)
+    // World saving (T1.3) / Save As (T1.4)
     // -----------------------------------------------------------------------
 
     /// Save the currently loaded world using Terra's save pipeline plus
     /// editor-side updates (images, ini normalization). Returns true on success.
     bool saveWorld();
+
+    /// Save the currently loaded world as a copy to a new world folder.
+    /// Creates the target folder under RESOURCE/Worlds/<newWorldName> in the
+    /// current game directory, copies all existing files from the source world,
+    /// switches the session to operate on the new world and saves it. Returns
+    /// true on success.
+    bool saveWorldAs(const std::string& newWorldName);
+
+    /// Check if there are unsaved changes that require warning before discarding.
+    bool hasUnsavedChanges() const;
+    /// Get a warning message for discarding unsaved changes.
+    std::string getUnsavedChangesWarning() const;
+
+    // -----------------------------------------------------------------------
+    // Undo / Redo (T1.4)
+    // -----------------------------------------------------------------------
+
+    /// Undo the last terrain edit operation.
+    void undo();
+    /// Redo the last undone operation.
+    void redo();
+    /// Discard all undo/redo history.
+    void clearUndoHistory();
+    /// Return true if there is at least one operation to undo.
+    bool canUndo() const;
+    /// Return true if there is at least one operation to redo.
+    bool canRedo() const;
 
 private:
     /// Populate vMap.wTable for RESOURCE/Worlds. Terra's prepare() may only be
@@ -154,6 +181,7 @@ private:
     int32_t currentWorldIndex_ = -1;
     bool modified_ = false;
     SessionState state_ = SessionState::NoGame;
+    std::string loadedWorldFolderName_;
 };
 
 } // namespace MapEditor
