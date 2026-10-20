@@ -36,6 +36,22 @@ struct WorldInfo
     std::string dirKey; // key used by Terra's wTable (full content-path)
 };
 
+/// Snapshot of the four voxel buffers (VxG, VxD, Atr, Sur) over one rectangle.
+/// Made *before* the rectangle is edited; undo() swaps it back (mirrors Terra's
+/// sPreChangedArea, See docs/context.md — Terra's own recording is
+/// `_SURMAP_`-only and therefore unusable inside the editor).
+struct UndoAreaSnapshot
+{
+    int x = 0;
+    int y = 0;
+    int sx = 0; // clamped width  in cells (0..H_SIZE)
+    int sy = 0; // clamped height in cells (0..V_SIZE)
+    std::vector<unsigned char> geo;
+    std::vector<unsigned char> dam;
+    std::vector<unsigned char> atr;
+    std::vector<unsigned char> sur;
+};
+
 /// Session manager for the map editor.  All public methods are safe to call
 /// from the UI thread; Terra is NOT thread-safe and must only be accessed
 /// on the UI thread.
@@ -156,12 +172,26 @@ public:
 
     // -----------------------------------------------------------------------
     // Undo / Redo (T1.4)
+    //
+    // The history lives in the session (not in Terra): Terra records
+    // pre-changed areas only under _SURMAP_, which the editor cannot define.
+    // Tools that edit the world (T3 brushes and later image import) must call
+    // recordUndoArea() with the rectangle they are about to touch; undo()/redo()
+    // then swap the whole pre-change snapshot back, exactly like Terra's own
+    // dispatcher swaps sPreChangedArea contents.
     // -----------------------------------------------------------------------
 
-    /// Undo the last terrain edit operation.
-    void undo();
-    /// Redo the last undone operation.
-    void redo();
+    /// Snapshot the current voxel buffers over the given rectangle (clipped to
+    /// the map). Call this BEFORE modifying VxGBuf/VxDBuf/AtrBuf/SurBuf.
+    /// Any snapshot previously undone is discarded (it becomes unreachable).
+    void recordUndoArea(int x, int y, int width, int height);
+
+    /// Undo the last terrain edit operation (restore the last not-yet-undone
+    /// snapshot and mark the area for re-render). Returns true if an operation
+    /// was undone.
+    bool undo();
+    /// Redo the last undone operation. Returns true if it was redone.
+    bool redo();
     /// Discard all undo/redo history.
     void clearUndoHistory();
     /// Return true if there is at least one operation to undo.
@@ -170,6 +200,10 @@ public:
     bool canRedo() const;
 
 private:
+    /// Re-derive modified_ from the undo position vs. the position recorded at
+    /// the last successful save. Called after every undo/redo.
+    void markModifiedAgainstSavedState();
+
     /// Populate vMap.wTable for RESOURCE/Worlds. Terra's prepare() may only be
     /// called once per process (its landPrepare() accumulates global radius
     /// tables), so the editor calls it once and rebuilds wTable itself
@@ -182,6 +216,17 @@ private:
     bool modified_ = false;
     SessionState state_ = SessionState::NoGame;
     std::string loadedWorldFolderName_;
+
+    // Editor-side undo stack (T1.4). undoPos_ is the number of snapshots that
+    // are currently "applied" (not undone); entries at/after undoPos_ hold
+    // their original (pre-change) bytes when undone and post-change bytes when
+    // redone — the same swap semantics as vrtMap's preCAs list.
+    std::vector<UndoAreaSnapshot> undoStack_;
+    size_t undoPos_ = 0;
+    /// Undo-stack position (undoPos_) recorded at the last successful save.
+    /// Valid only while hasSavedUndoPos_ is true.
+    size_t savedUndoPos_ = 0;
+    bool hasSavedUndoPos_ = false;
 };
 
 } // namespace MapEditor

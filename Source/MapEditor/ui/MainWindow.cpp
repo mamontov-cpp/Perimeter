@@ -5,8 +5,10 @@
 #include <ViewportWidget.h>
 
 #include <QApplication>
+#include <QCloseEvent>
 #include <QFileDialog>
 #include <QHBoxLayout>
+#include <QInputDialog>
 #include <QListWidget>
 #include <QMainWindow>
 #include <QMenu>
@@ -113,11 +115,49 @@ void MainWindow::buildMenuBar()
 
     fileMenu->addSeparator();
 
+    actSave_ = fileMenu->addAction(tr("&Save"));
+    actSave_->setShortcut(QKeySequence(QKeySequence::Save));
+    actSave_->setToolTip(tr("Save the loaded world (Ctrl+S)"));
+    actSave_->setEnabled(false);
+    connect(actSave_, &QAction::triggered, this, &MainWindow::onActionSave);
+
+    actSaveAs_ = fileMenu->addAction(tr("Save &As..."));
+    actSaveAs_->setShortcut(QKeySequence(QKeySequence::SaveAs));
+    actSaveAs_->setToolTip(tr("Save a copy of the loaded world as a new world folder (Ctrl+Shift+S)"));
+    actSaveAs_->setEnabled(false);
+    connect(actSaveAs_, &QAction::triggered, this, &MainWindow::onActionSaveAs);
+
+    fileMenu->addSeparator();
+
     QAction *actQuit = fileMenu->addAction(tr("E&xit"));
     actQuit->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Q));
     connect(actQuit, &QAction::triggered, this, &QApplication::quit);
 
+    buildEditMenu(menuBar());
     buildViewMenu(menuBar());
+}
+
+void MainWindow::buildEditMenu(QMenuBar *menuBar)
+{
+    QMenu *editMenu = menuBar->addMenu(tr("&Edit"));
+
+    actUndo_ = editMenu->addAction(tr("&Undo"));
+    actUndo_->setToolTip(tr("Undo the last terrain edit (Ctrl+Z)"));
+    actUndo_->setEnabled(false);
+    connect(actUndo_, &QAction::triggered, this, &MainWindow::onActionUndo);
+
+    actRedo_ = editMenu->addAction(tr("&Redo"));
+    actRedo_->setToolTip(tr("Redo the last undone terrain edit (Ctrl+Y)"));
+    actRedo_->setEnabled(false);
+    connect(actRedo_, &QAction::triggered, this, &MainWindow::onActionRedo);
+
+    editMenu->addSeparator();
+
+    actClearUndoHistory_ = editMenu->addAction(tr("C&lear Undo History"));
+    actClearUndoHistory_->setToolTip(tr("Discard the whole undo/redo history"));
+    actClearUndoHistory_->setEnabled(false);
+    connect(actClearUndoHistory_, &QAction::triggered,
+            this, &MainWindow::onActionClearUndoHistory);
 }
 
 void MainWindow::buildViewMenu(QMenuBar *menuBar)
@@ -150,6 +190,10 @@ void MainWindow::buildStatusBar()
 
 void MainWindow::onActionSelectGameDir()
 {
+    // Switching the game directory unloads the current world — offer to save.
+    if (!confirmDiscardUnsavedChanges()) {
+        return;
+    }
     const QString autoDetected = gameDirMgr_->autoDetect();
 
     const QString dir = QFileDialog::getExistingDirectory(
@@ -263,6 +307,10 @@ void MainWindow::showWorldListDialog()
 
 void MainWindow::onActionLoadWorld()
 {
+    // Loading another world discards the current one — offer to save first.
+    if (!confirmDiscardUnsavedChanges()) {
+        return;
+    }
     showWorldListDialog();
     if (session_->isWorldLoaded()) {
         onWorldLoaded();
@@ -271,8 +319,180 @@ void MainWindow::onActionLoadWorld()
 
 void MainWindow::onActionUnloadWorld()
 {
+    // Unloading discards every change made since the last save — offer to
+    // save first.
+    if (!confirmDiscardUnsavedChanges()) {
+        return;
+    }
     session_->unloadWorld();
     onWorldUnload();
+}
+
+void MainWindow::onActionSave()
+{
+    if (!session_->isWorldLoaded()) {
+        return;
+    }
+    if (!session_->saveWorld()) {
+        QMessageBox::critical(this, tr("Save Failed"),
+            tr("Failed to save world '%1'. See the log for details.")
+                .arg(QString::fromStdString(session_->currentWorldName())));
+        return;
+    }
+    updateStatusBar();
+}
+
+void MainWindow::onActionSaveAs()
+{
+    if (!session_->isWorldLoaded()) {
+        return;
+    }
+    const QString name = askSaveAsName();
+    if (name.isEmpty()) {
+        return; // cancelled by the user
+    }
+    if (!session_->saveWorldAs(name.toStdString())) {
+        QMessageBox::critical(this, tr("Save As Failed"),
+            tr("Failed to save world '%1' as '%2'.\n"
+               "A world with that name may already exist in RESOURCE/Worlds/.")
+                .arg(QString::fromStdString(session_->currentWorldName()), name));
+        return;
+    }
+    // saveWorldAs() reloaded the session onto the new world — rebind the
+    // viewport and refresh the world list-driven UI state.
+    onWorldLoaded();
+}
+
+void MainWindow::onActionUndo()
+{
+    if (session_->undo()) {
+        // regRender() marked the affected area; a repaint drains the dirty
+        // rectangles and refreshes the raster.
+        if (viewport_) {
+            viewport_->update();
+        }
+        updateStatusBar();
+    }
+}
+
+void MainWindow::onActionRedo()
+{
+    if (session_->redo()) {
+        if (viewport_) {
+            viewport_->update();
+        }
+        updateStatusBar();
+    }
+}
+
+void MainWindow::onActionClearUndoHistory()
+{
+    if (!session_->isWorldLoaded()) {
+        return;
+    }
+    session_->clearUndoHistory();
+    updateStatusBar();
+}
+
+// ---------------------------------------------------------------------------
+// Unsaved changes / Save As helpers (T1.4)
+// ---------------------------------------------------------------------------
+
+bool MainWindow::confirmDiscardUnsavedChanges()
+{
+    if (session_ == nullptr || !session_->hasUnsavedChanges()) {
+        return true;
+    }
+
+    const QString message = QString::fromStdString(
+        session_->getUnsavedChangesWarning());
+    const QMessageBox::StandardButton chosen = QMessageBox::question(
+        this, tr("Unsaved Changes"), message,
+        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
+        QMessageBox::Save);
+
+    if (chosen == QMessageBox::Cancel) {
+        return false;
+    }
+    if (chosen == QMessageBox::Save) {
+        if (!session_->saveWorld()) {
+            QMessageBox::critical(this, tr("Save Failed"),
+                tr("Failed to save world '%1'. See the log for details.")
+                    .arg(QString::fromStdString(session_->currentWorldName())));
+            return false;
+        }
+    }
+    return true;
+}
+
+QString MainWindow::askSaveAsName()
+{
+    QInputDialog dialog(this);
+    dialog.setWindowTitle(tr("Save World As"));
+    dialog.setLabelText(
+        tr("Name of the new world folder inside RESOURCE/Worlds/:"));
+    QString defaultName = QString::fromStdString(session_->currentWorldName());
+    defaultName += QStringLiteral("_copy");
+    dialog.setTextValue(defaultName);
+
+    for (;;) {
+        if (dialog.exec() != QDialog::Accepted) {
+            return QString();
+        }
+        const QString name = dialog.textValue().trimmed();
+
+        if (name.isEmpty()) {
+            QMessageBox::warning(this, tr("Invalid Name"),
+                tr("The world name must not be empty."));
+            continue;
+        }
+        if (name.contains('/') || name.contains('\\') ||
+            name == QStringLiteral(".") || name == QStringLiteral("..")) {
+            QMessageBox::warning(this, tr("Invalid Name"),
+                tr("The world name must not be a path — only the folder name "
+                   "of the new world."));
+            continue;
+        }
+        if (dialog.textValue() != name) {
+            // Whitespace was trimmed; show the cleaned value so the user sees
+            // what will actually be created before it is written.
+            dialog.setTextValue(name);
+        }
+        return name;
+    }
+}
+
+void MainWindow::closeEvent(QCloseEvent *event)
+{
+    if (!confirmDiscardUnsavedChanges()) {
+        event->ignore();
+        return;
+    }
+    QMainWindow::closeEvent(event);
+}
+
+// ---------------------------------------------------------------------------
+// Actions state
+// ---------------------------------------------------------------------------
+
+void MainWindow::updateActionStates()
+{
+    const bool worldLoaded = session_ != nullptr && session_->isWorldLoaded();
+    if (actSave_) {
+        actSave_->setEnabled(worldLoaded);
+    }
+    if (actSaveAs_) {
+        actSaveAs_->setEnabled(worldLoaded);
+    }
+    if (actUndo_) {
+        actUndo_->setEnabled(worldLoaded && session_->canUndo());
+    }
+    if (actRedo_) {
+        actRedo_->setEnabled(worldLoaded && session_->canRedo());
+    }
+    if (actClearUndoHistory_) {
+        actClearUndoHistory_->setEnabled(worldLoaded);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -299,4 +519,7 @@ void MainWindow::updateStatusBar()
     }
 
     statusBar()->showMessage(text);
+
+    // Keep the Edit/File actions in sync with the session state.
+    updateActionStates();
 }

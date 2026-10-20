@@ -14,6 +14,7 @@ ADD_EXECUTABLE(map_editor_tests
         WorldFilesIniTests.cpp
         WorldFilesDataTests.cpp
         SaveWorldTests.cpp
+        UndoHistoryTests.cpp
         ViewportRendererTests.cpp
 )
 

@@ -88,7 +88,29 @@ vMap.worldFree();          // сеточные карты
    - `map.tga` — миникарта: та же картинка, масштабированная не более чем до
      256×256 (ближайший сосед).
 
-После успеха сбрасываются `modified_` и `vMap.worldChanged`.
+После успеха сбрасываются `modified_` и `vMap.worldChanged`; в стеке undo
+запоминается позиция «последнего сохранения» — после undo/redo флаг modified
+пересчитывается относительно неё (правка → сейв → undo снова «чист»).
+
+## 4.1 Undo/Redo (T1.4)
+
+Terra записывает undo только под `_SURMAP_` (`UndoDispatcher_PutPreChangedArea`
+— заглушка в сборке игры/редактора), поэтому история хранится в сессии:
+`EditorSession::recordUndoArea(x,y,w,h)` снимает «до»-состояние
+`VxGBuf/VxDBuf/AtrBuf/SurBuf` над прямоугольником (клип к карте, лимит памяти
+как в Terra — 4096² клеток), `undo()/redo()` обменивают снимок с буферами и
+отмечают область через `regRender` (вьюпорт обновляется по обычной
+dirty-конвейерке). Обязательный контракт для инструментов (T3): вызывать
+`recordUndoArea()` ДО первой правки буферов. Подробности — в
+`docs/context.md`.
+
+**GUI (MainWindow).** File: Save (Ctrl+S) / Save As (Ctrl+Shift+S, имя —
+диалог, папка `RESOURCE/Worlds/<имя>`, перезапись запрещена, после —
+перебиндинг вьюпорта); Edit: Undo (Ctrl+Z) / Redo (Ctrl+Y) / Clear Undo
+History. Доступность кнопок/действий пересчитывается во всех изменениях
+состояния сессии. Диалог «несохранённые изменения» (Save/Discard/Cancel)
+показывается перед загрузкой/выгрузкой мира и закрытием окна
+(`closeEvent`).
 
 Общий рендер-хелпер `renderMapToBgr()` используется обоими генераторами и
 растеризует через `ViewportRenderer` (свежий экземпляр с дефолтными
@@ -195,6 +217,7 @@ Headless-тесты `map_editor_tests` (`tests/`), по файлу на моду
 | 30 | `WorldFilesIniTests` | чтение/запись `world.ini` |
 | 40 | `WorldFilesDataTests` | палитры/`hardness.bin`/XML/текстура |
 | 50 | `SaveWorldTests` | конвейер `saveWorld()` + перезагрузка |
+| 53 | `UndoHistoryTests` | snapshot→edit→undo→redo байт-в-байт, отбрасывание redo-хвоста, клип прямоугольника, сброс истории, изоляция истории при переключении миров (T1.4) |
 | 55 | `ViewportRendererTests` | растр == `getColor32`, грязные прямоугольники, фильтры Geo/Dam, оверлеи `GABuf` (T2.1) |
 
 Тесты пишут только во временный content-root (`%TEMP%/map_editor_roundtrip`),

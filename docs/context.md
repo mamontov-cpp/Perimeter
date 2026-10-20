@@ -56,6 +56,26 @@
 (`inGeo.act`/`inDam.act`) и `f3d.saveVariable()` (`[3DF Parameters]` в
 `world.ini`). Редактору достаточно `save3Buf()` — отдельные вызовы не нужны.
 
+### Запись Undo в Terra доступна только под `_SURMAP_`
+
+`vrtMap::UndoDispatcher_PutPreChangedArea()` (`Source/Terra/undoDispatcher.cpp:6`)
+целиком спрятан под `#ifdef _SURMAP_` — в сборке игры (`_PERIMETER_`) и
+редактора это заглушка: в `vrtMap::preCAs` никогда ничего не попадает, а
+`UndoDispatcher_Undo/Redo/IsUndoExist/IsRedoExist` всегда «пусты». Валяемый в
+плане (§3.6) вариант «Undo/Redo через UndoDispatcher Terra» напрямую работать
+не может, а править Terra (включать его под `_PERIMETER_`) нельзя — тело
+зависит от toroidal-семантики и тонет в памяти/поведении игры.
+
+Решение: `EditorSession` хранит собственную историю снимков
+(`UndoAreaSnapshot`, swap-семантика 1:1 как в Terra: снимок хранит состояние
+буферов ДО правки; undo/redo обменивают его с буферами и отмечают область
+через `regRender`, т.е. во вьюпорт изменения попадают через обычную
+dirty-rect-конвейерку). Инструменты (T3 и позже) обязаны вызывать
+`EditorSession::recordUndoArea(x,y,w,h)` ПЕРЕД правкой
+`VxGBuf/VxDBuf/AtrBuf/SurBuf`. Позиция последнего сохранения запоминается
+в стеке — по ней `undo/redo` пересчитывают флаг modified (правка-отмена
+после сохранения снова делает мир «чистым»).
+
 ### `cache.tga` обязателен при `fullLoad()`
 
 `fullLoad()` `xassert`-ит на `cache.tga` (`Source/Terra/VMAP.cpp:935-941`).

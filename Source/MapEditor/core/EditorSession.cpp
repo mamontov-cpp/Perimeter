@@ -234,6 +234,7 @@ bool EditorSession::loadWorld(size_t worldIndex)
     // lighting. See docs/context.md.
     vMap.WorldRender();
 
+    clearUndoHistory();
     currentWorldIndex_ = static_cast<int32_t>(worldIndex);
     loadedWorldFolderName_ = wantedName;
     modified_ = false;
@@ -267,6 +268,7 @@ void EditorSession::unloadWorld()
         vMap.releaseMem4Buf();
         vMap.worldFree();
     }
+    clearUndoHistory();
     currentWorldIndex_ = -1;
     loadedWorldFolderName_.clear();
     modified_ = false;
@@ -519,6 +521,8 @@ bool EditorSession::saveWorld()
         return false;
     }
 
+    hasSavedUndoPos_ = true;
+    savedUndoPos_ = undoPos_;
     modified_ = false;
     vMap.worldChanged = false;
     printf("EditorSession: saved world '%s' to '%s'\n",
@@ -619,44 +623,178 @@ bool EditorSession::saveWorldAs(const std::string& newWorldName)
     return true;
 }
 
-void EditorSession::undo()
+// ---------------------------------------------------------------------------
+// Undo / Redo (T1.4)
+//
+// Terra's UndoDispatcher_PutPreChangedArea() only records under _SURMAP_, so
+// in the editor build nothing ever enters vrtMap::preCAs and the dispatcher
+// would be permanently empty. The session therefore keeps its own history with
+// the same swap semantics: every snapshot stores the buffer bytes from *before*
+// an edit; undo()/redo() swap snapshot <-> buffers, then regRender() marks the
+// area so the viewport repaints it from dirty rectangles.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// Total buffer cells kept across all snapshots (same budget as Terra's
+/// UNDO_REDO_BUFFER_SIZE accounting: 4096*4096 cells x 4 buffers).
+constexpr std::size_t kMaxUndoCells = 4096u * 4096u;
+
+/// Swap the snapshot bytes with the live buffers over the snapshot rectangle.
+/// After a call the snapshot holds whatever was in the buffers before — the
+/// caller decides whether that means "restore" (undo) or "re-apply" (redo).
+void swapSnapshotWithBuffers(UndoAreaSnapshot& snap)
 {
-    if (!isWorldLoaded()) {
+    const std::size_t cells = static_cast<std::size_t>(snap.sx) * snap.sy;
+    if (snap.geo.size() != cells || snap.dam.size() != cells ||
+        snap.atr.size() != cells || snap.sur.size() != cells) {
         return;
     }
-    vMap.UndoDispatcher_Undo();
+    const int H = vMap.H_SIZE;
+    std::size_t cnt = 0;
+    for (int j = 0; j < snap.sy; ++j) {
+        const int row = (snap.y + j) * H + snap.x;
+        for (int i = 0; i < snap.sx; ++i, ++cnt) {
+            const int off = row + i;
+            unsigned char t;
+            t = vMap.VxGBuf[off]; vMap.VxGBuf[off] = snap.geo[cnt]; snap.geo[cnt] = t;
+            t = vMap.VxDBuf[off]; vMap.VxDBuf[off] = snap.dam[cnt]; snap.dam[cnt] = t;
+            t = vMap.AtrBuf[off]; vMap.AtrBuf[off] = snap.atr[cnt]; snap.atr[cnt] = t;
+            t = vMap.SurBuf[off]; vMap.SurBuf[off] = snap.sur[cnt]; snap.sur[cnt] = t;
+        }
+    }
+    vMap.regRender(snap.x, snap.y, snap.x + snap.sx, snap.y + snap.sy);
 }
 
-void EditorSession::redo()
+} // namespace
+
+void EditorSession::recordUndoArea(int x, int y, int width, int height)
 {
-    if (!isWorldLoaded()) {
+    if (!isWorldLoaded() || width <= 0 || height <= 0) {
         return;
     }
-    vMap.UndoDispatcher_Redo();
+
+    // Clip the rectangle to the map (the editor view is bounded; Torus wrap
+    // behaviour is intentionally not used here).
+    const int xBeg = std::max(0, x);
+    const int yBeg = std::max(0, y);
+    const int xEnd = std::min(static_cast<int>(vMap.H_SIZE), x + width);
+    const int yEnd = std::min(static_cast<int>(vMap.V_SIZE), y + height);
+    if (xBeg >= xEnd || yBeg >= yEnd) {
+        return;
+    }
+    const int sx = xEnd - xBeg;
+    const int sy = yEnd - yBeg;
+
+    UndoAreaSnapshot snapshot;
+    snapshot.x = xBeg;
+    snapshot.y = yBeg;
+    snapshot.sx = sx;
+    snapshot.sy = sy;
+    const std::size_t cells = static_cast<std::size_t>(sx) * sy;
+    snapshot.geo.resize(cells);
+    snapshot.dam.resize(cells);
+    snapshot.atr.resize(cells);
+    snapshot.sur.resize(cells);
+
+    std::size_t cnt = 0;
+    for (int j = 0; j < sy; ++j) {
+        const int row = (yBeg + j) * static_cast<int>(vMap.H_SIZE) + xBeg;
+        for (int i = 0; i < sx; ++i, ++cnt) {
+            const int off = row + i;
+            snapshot.geo[cnt] = vMap.VxGBuf[off];
+            snapshot.dam[cnt] = vMap.VxDBuf[off];
+            snapshot.atr[cnt] = vMap.AtrBuf[off];
+            snapshot.sur[cnt] = vMap.SurBuf[off];
+        }
+    }
+
+    // A new edit discards every undone snapshot after the current position
+    // (they no longer correspond to any reachable world state).
+    undoStack_.resize(undoPos_);
+    undoStack_.push_back(std::move(snapshot));
+    ++undoPos_;
+
+    // Bound the memory usage by dropping the oldest snapshots; the same
+    // trade-off Terra's dispatcher makes inside UndoDispatcher_PutPreChangedArea.
+    std::size_t totalCells = 0;
+    for (const UndoAreaSnapshot& snap : undoStack_) {
+        totalCells += static_cast<std::size_t>(snap.sx) * snap.sy;
+    }
+    while (totalCells > kMaxUndoCells && !undoStack_.empty()) {
+        totalCells -= static_cast<std::size_t>(undoStack_.front().sx) *
+                      undoStack_.front().sy;
+        undoStack_.erase(undoStack_.begin());
+        if (savedUndoPos_ > 0) {
+            --savedUndoPos_;
+        } else {
+            // The "saved" position was at/before the stack front and is gone —
+            // fall back to always reporting modified after undo/redo.
+            hasSavedUndoPos_ = false;
+        }
+        if (undoPos_ > 0) {
+            --undoPos_;
+        }
+    }
+
+    // A recorded area happens right before an edit, so the world counts as
+    // modified from this point on. undo()/redo() re-derive the flag
+    // exactly against the last saved position afterwards.
+    setModified(true);
+}
+
+bool EditorSession::undo()
+{
+    if (!isWorldLoaded() || undoPos_ == 0) {
+        return false;
+    }
+    swapSnapshotWithBuffers(undoStack_[undoPos_ - 1]);
+    --undoPos_;
+    markModifiedAgainstSavedState();
+    printf("EditorSession: undo (stack position %zu/%zu)\n",
+           undoPos_, undoStack_.size());
+    return true;
+}
+
+bool EditorSession::redo()
+{
+    if (!isWorldLoaded() || undoPos_ >= undoStack_.size()) {
+        return false;
+    }
+    swapSnapshotWithBuffers(undoStack_[undoPos_]);
+    ++undoPos_;
+    markModifiedAgainstSavedState();
+    printf("EditorSession: redo (stack position %zu/%zu)\n",
+           undoPos_, undoStack_.size());
+    return true;
 }
 
 void EditorSession::clearUndoHistory()
 {
-    if (!isWorldLoaded()) {
-        return;
-    }
-    vMap.UndoDispatcher_KillAllUndo();
+    undoStack_.clear();
+    undoPos_ = 0;
+    savedUndoPos_ = 0;
+    hasSavedUndoPos_ = false;
 }
 
 bool EditorSession::canUndo() const
 {
-    if (!isWorldLoaded()) {
-        return false;
-    }
-    return vMap.UndoDispatcher_IsUndoExist();
+    return isWorldLoaded() && undoPos_ > 0;
 }
 
 bool EditorSession::canRedo() const
 {
-    if (!isWorldLoaded()) {
-        return false;
+    return isWorldLoaded() && undoPos_ < undoStack_.size();
+}
+
+void EditorSession::markModifiedAgainstSavedState()
+{
+    // The world matches the last checkpoint exactly when the undo position
+    // equals the position it had at save time.
+    modified_ = !hasSavedUndoPos_ || undoPos_ != savedUndoPos_;
+    if (isWorldLoaded()) {
+        vMap.worldChanged = modified_;
     }
-    return vMap.UndoDispatcher_IsRedoExist();
 }
 
 bool EditorSession::hasUnsavedChanges() const
