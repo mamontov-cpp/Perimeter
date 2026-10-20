@@ -16,6 +16,7 @@ namespace MapEditor {
 
 class EditorSession;
 class ViewportRenderer;
+class BrushTool;
 
 // ============================================================================
 // MapEditor UI — ViewportWidget (T2.2, T2.3).
@@ -43,6 +44,11 @@ class ViewportRenderer;
 //
 //   * Cursor → map cell conversion (screenToMap) and a coordinate/zoom readout
 //     (TopDown mode).
+//
+//   * Brush editing (T3.1) — with a BrushTool attached and brush editing
+//     enabled, left-button press/drag in TopDown mode stamps the brush
+//     (undo/redo and dirty-rect pipeline run inside the tool); the preview
+//     outline follows the cursor.
 //
 // Both base rasters are painted from zero-copy QImages: the ARGB32 cache of
 // ViewportRenderer and the RGB16 (565) frame of View3DRenderer.
@@ -102,6 +108,22 @@ public:
     /// The renderer the view draws through (nullptr when no world is shown).
     /// Used by later tasks (layer filters, overlays, eyedropper).
     ViewportRenderer *renderer() const { return renderer_; }
+
+    // -----------------------------------------------------------------------
+    // Brush editing (T3.1)
+    // -----------------------------------------------------------------------
+
+    /// Attach the brush tool that left-button drag applies in TopDown mode.
+    /// Pass nullptr (or disable below) to return the viewport to a plain
+    /// navigate-only widget.
+    void setBrushTool(BrushTool *brush);
+    BrushTool *brushTool() const { return brushTool_; }
+    /// Brush painting on/off (checked state of the UI toggle).
+    void setBrushEditingEnabled(bool enabled);
+    bool isBrushEditingEnabled() const
+    {
+        return brushEditingEnabled_ && brushTool_ != nullptr;
+    }
 
     // -----------------------------------------------------------------------
     // View state
@@ -218,6 +240,9 @@ signals:
     /// orbit, mode switch, resize, world load/unload) — main consumers are
     /// the minimap panel (T2.4) and tool panel readouts.
     void viewRectChanged(const QRect &rect);
+    /// Emitted right after a brush stamp changed the world (T3.1) so the
+    /// MainWindow can refresh the modified state in the status bar.
+    void worldEdited();
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -258,6 +283,12 @@ private:
 
     EditorSession *session_ = nullptr;
     ViewportRenderer *renderer_ = nullptr;
+
+    // T3.1 — brush painting: left-drag applies stamps (TopDown mode).
+    BrushTool *brushTool_ = nullptr;
+    bool brushEditingEnabled_ = true;
+    bool brushPainting_ = false;
+    QPoint lastPaintCell_{-1, -1};
 
     ViewMode viewMode_ = ViewMode::TopDown;
     View3DRenderer *view3d_ = nullptr;

@@ -15,6 +15,7 @@ namespace MapEditor {
 class EditorSession;
 class ViewportWidget;
 class MinimapWidget;
+class BrushTool;
 struct View3DCamera;
 }
 
@@ -107,6 +108,10 @@ private:
     GameDirManager *gameDirMgr_ = nullptr;
     MapEditor::ViewportWidget *viewport_ = nullptr;
 
+    // T3.1 — the brush tool driving left-drag editing in the viewport;
+    // T3.2+ tool panels will change its parameters.
+    MapEditor::BrushTool *brushTool_ = nullptr;
+
     // Toggled to reflect session state; owned by the menus.
     QAction *actSave_ = nullptr;
     QAction *actSaveAs_ = nullptr;
@@ -127,6 +132,10 @@ private:
     QAction *actZoomIn_ = nullptr;
     QAction *actZoomOut_ = nullptr;
     QAction *actResetView_ = nullptr;
+
+    // T3.1 — Edit-menu toggle for brush painting (also mirrored in the
+    // toolbar icon set).
+    QAction *actBrushEdit_ = nullptr;
 
     // Toolbar readout of the current 3D camera.
     QLabel *viewReadout_ = nullptr;

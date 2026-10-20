@@ -39,6 +39,7 @@ ADD_LIBRARY(MapEditorCore STATIC
         core/WorldFiles.cpp
         core/WorldImages.cpp
         core/EditorSession.cpp
+        core/BrushTool.cpp
         core/ViewportRenderer.cpp
         core/View3DRenderer.cpp
 )

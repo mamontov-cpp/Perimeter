@@ -15,6 +15,8 @@ ADD_EXECUTABLE(map_editor_tests
         WorldFilesDataTests.cpp
         SaveWorldTests.cpp
         UndoHistoryTests.cpp
+        BrushMaskTests.cpp
+        BrushToolTests.cpp
         WorldImagesTests.cpp
         ViewportRendererTests.cpp
         View3DRendererTests.cpp

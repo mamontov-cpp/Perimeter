@@ -290,6 +290,63 @@ QTransform вызывал падение CRT (см. `docs/context.md`). Живо
 и рисует жёлтую рамку. Клик по миникарте → `ViewportWidget::centerOnCell()`
 (центрирует 2D-вид либо переносит 3D-`obliqueCenter_`).
 
+## 5.10. Кисти — каркас (T3.1)
+
+`core/BrushTool.{h,cpp}` (без Qt) — каркас для всех T3.x-инструментов:
+`BrushParams{shape, radius, strength, mode(Geo/Dam), colorIndex, effect,
+direction}` + генераторы масок `BrushMasks` + одна точка применения
+`BrushTool::apply()`.
+
+**Формы масок** (`BrushMask` — bbox-офсет относительно центра штампа +
+`uint8 influence[0..255]` на клетку; частичные влияния появятся в T3.5):
+
+| Форма | Геометрия |
+|---|---|
+| `FilledCircle` | все клетки с `ring(dx,dy) ≤ r` — то же множество, что штампует `influenceDZ` |
+| `CircleOutline` | кольцо `ring == r` — ровно смещения собственных радиусных таблиц Terra `maxRad[xRad[r]/yRad[r]]` |
+| `FilledSquare`/`SquareOutline` | `|dx|,|dy| ≤ r` / `max(|dx|,|dy|) == r` |
+| `Line` | Брезенхэм от (x0,y0) до (x1,y1) со штампом-кругом радиуса `r`; каждая клетка входит в маску ровно один раз (перекрытия штампов не суммируются) |
+
+`ring(dx,dy) = (int)sqrt(dx²+dy²)` — отбрасывающий `sqrt`, ровно тот же
+округляющий расчёт, которым `vrtMap::landPrepare()` строит радиусные таблицы
+(`LAND.cpp:77`), поэтому аналитические маски совпадают с таблицами Terra
+клетка-в-клетку (проверено тестом 56). `sqrt` в игре — fdlibm-эквивалент
+(`gamemath.h`/`std.cpp`), т.е. правильно-округлённый, как и `std::sqrt`.
+
+**Применение** (`applyStamp`/`applyLine`/`applyMask`, один вызов = одна
+undo-запись):
+
+1. клип bbox по карте (торус не используется — как `recordUndoArea`);
+2. `session.recordUndoArea(bbox)` ДО правок (план называет
+   `UndoDispatcher_PutPreChangedArea`, но он пуст под `_SURMAP_` — контракт
+   undo редактора описан в §4.1);
+3. маршрутизация эффекта: пока реализован только
+   `ChangeHeight` (поднять/опустить) — каждая клетка маски проходит через
+   Terra-тулзу `individualToolzer<T2TE_CHANGING_TERRAIN_HEIGHT>::tVoxSet()`:
+   hardness-затухание, биты `At_*`, согласованность `VxGBuf/VxDBuf/SurBuf`
+   и разделение слоёв Geo/Dam — всё это поведение самой Terra, не
+   переизобретается. Дельта клетки = `direction × strength` (в 1/32 м,
+   `<<VX_FRACTION`) × влияние маски (255 → полный дельта), округление по
+   модулю. Остальные эффекты (`Align4ZP`, `SetColor`, `PlotZeroplast`, …)
+   объявлены в `BrushEffect`, `apply()` их отвергает до соответствующих
+   задач T3.2–T3.5;
+4. `vMap.recalcArea2Grid(bbox±1)` + `vMap.regRender(bbox±1)` — сетка и
+   вьюпорт обновляются по обычной dirty-конвейерке (запас в 1 клетку, как
+   у тулз игры, `tools.h:252-254`).
+
+Значение `mode(Geo/Dam)` передаётся в параметры и станет значимым в T3.2
+(сегодня высотная тулза Terra сама выбирает активный слой). `strength`
+климпуется в `[1,100]`, `radius` — в `[0, MAX_RADIUS_CIRCLEARR]`.
+
+**GUI-интеграция.** `MainWindow` владеет одним `BrushTool` (параметры —
+пока дефолт: круг r=8, поднять, strength 30%); `ViewportWidget` при
+`setBrushTool()`+`setBrushEditingEnabled()` красит по левому драгу в
+TopDown-режиме (штамп на каждую новую клетку курсора), курсор — крест,
+`viewRectChanged`/превью работают как раньше. Переключатель — действие
+`actBrushEdit_` («Brush Editing», T) в меню Edit и в тулбаре; сигнал
+`worldEdited()` обновляет статус-бар/undo-actions. Панель параметров
+(`ToolPanel`) появится в T3.2 и переиспользует `setParams()`.
+
 ## 6. Тесты
 
 Headless-тесты `map_editor_tests` (`tests/`), по файлу на модуль, порядок
@@ -305,7 +362,9 @@ Headless-тесты `map_editor_tests` (`tests/`), по файлу на моду
 | 53 | `UndoHistoryTests` | snapshot→edit→undo→redo байт-в-байт, отбрасывание redo-хвоста, клип прямоугольника, сброс истории, изоляция истории при переключении миров (T1.4) |
 | 45 | `WorldImagesTests` | round-trip 24-битного TGA (запись→чтение), флап строк при bottom-left origin, отказ на сжатом/палитровом/обрезанном/отсутствующем файле, пиксели `downscaleNearest` (T2.4) |
 | 55 | `ViewportRendererTests` | растр == `getColor32`, грязные прямоугольники, фильтры Geo/Dam, оверлеи `GABuf` (T2.1) |
+| 56 | `BrushMaskTests` | маски совпадают с радиусными таблицами Terra, квадраты/кольца/Брезенхэм-линия, degenerate-штамп, routing `byShape` (T3.1) |
 | 57 | `View3DRendererTests` | кадр 3D заполнен разумно (покрытие, число цветов), поворот на 90° меняет кадр, клип окна ≤ `MAX_XSIZE_VX_WINDOW`, инвариант `stableLeanDeg` (T2.3) |
+| 58 | `BrushToolTests` | штамп меняет ровно клетки маски на `strength<<VX_FRACTION`, undo/redo байт-в-байт, линии по одной undo-записи, отказ неподдержанных эффектов, клипы radius/strength (T3.1) |
 
 Тесты пишут только во временный content-root (`%TEMP%/map_editor_roundtrip`),
 исходный мир не изменяется. `SaveWorldTests` строит изолированный content-root

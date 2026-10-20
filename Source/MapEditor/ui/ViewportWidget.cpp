@@ -4,6 +4,7 @@
 
 #include "ViewportWidget.h"
 
+#include "BrushTool.h"
 #include "EditorSession.h"
 #include "ViewportRenderer.h"
 
@@ -75,6 +76,46 @@ void ViewportWidget::reloadWorld()
             update();
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Brush editing (T3.1)
+// ---------------------------------------------------------------------------
+
+void ViewportWidget::setBrushTool(BrushTool *brush)
+{
+    brushTool_ = brush;
+}
+
+void ViewportWidget::setBrushEditingEnabled(bool enabled)
+{
+    brushEditingEnabled_ = enabled;
+    if (!brushEditingEnabled_) {
+        brushPainting_ = false;
+    }
+}
+
+/// Apply one brush stamp at the cell under the cursor; returns true when the
+/// world changed. Same guard set used by press and move.
+static bool applyBrushStampHere(ViewportWidget &viewport, const QPoint &cell)
+{
+    MapEditor::BrushTool *brush = viewport.brushTool();
+    if (!brush || !viewport.isBrushEditingEnabled()
+            || !viewport.session() || !viewport.session()->isWorldLoaded()) {
+        return false;
+    }
+    const MapEditor::ViewportRenderer *renderer = viewport.renderer();
+    if (!renderer || !renderer->isBound()
+            || cell.x() < 0 || cell.y() < 0
+            || cell.x() >= renderer->width() || cell.y() >= renderer->height()) {
+        return false;
+    }
+    const bool changed = brush->applyStamp(cell.x(), cell.y());
+    if (changed) {
+        emit viewport.worldEdited();
+        viewport.update();
+    }
+    return changed;
 }
 
 // ---------------------------------------------------------------------------
@@ -739,6 +780,25 @@ void ViewportWidget::mousePressEvent(QMouseEvent *event)
         event->accept();
         return;
     }
+    if (viewMode_ == ViewMode::TopDown && event->button() == Qt::LeftButton) {
+        // Brush painting (T3.1): press applies one stamp at the cursor cell,
+        // a following drag stamps along the path (mouseMoveEvent).
+        const QPoint pos = event->position().toPoint();
+        const QPoint cell = screenToMap(pos.x(), pos.y());
+        if (isBrushEditingEnabled()
+                && cell.x() >= 0 && cell.y() >= 0
+                && renderer_ && renderer_->isBound()
+                && cell.x() < renderer_->width() && cell.y() < renderer_->height()) {
+            brushPainting_ = true;
+            lastPaintCell_ = cell;
+            setCursor(Qt::CrossCursor);
+            if (applyBrushStampHere(*this, cell)) {
+                update();
+            }
+            event->accept();
+            return;
+        }
+    }
     QWidget::mousePressEvent(event);
 }
 
@@ -783,8 +843,17 @@ void ViewportWidget::mouseMoveEvent(QMouseEvent *event)
     if (cell != cursorCell_) {
         cursorCell_ = cell;
         emit cursorMapPosition(cell.x(), cell.y());
-        // Update brush preview position.
-        if (brushPreviewVisible_) update();
+        // Continue painting or update the brush preview position.
+        if (brushPainting_ && cell != lastPaintCell_) {
+            lastPaintCell_ = cell;
+            applyBrushStampHere(*this, cell);
+        } else if (brushPreviewVisible_) {
+            update();
+        }
+    } else if (brushPainting_ && cell != lastPaintCell_) {
+        // Re-entered the previous drag cell after panning the view beneath.
+        lastPaintCell_ = cell;
+        applyBrushStampHere(*this, cell);
     }
 }
 
@@ -792,7 +861,13 @@ void ViewportWidget::mouseReleaseEvent(QMouseEvent *event)
 {
     if (panning_) {
         panning_ = false;
-        setCursor(Qt::ArrowCursor);
+        setCursor(brushPainting_ ? Qt::CrossCursor : Qt::ArrowCursor);
+        event->accept();
+        return;
+    }
+    if (brushPainting_) {
+        brushPainting_ = false;
+        setCursor(isBrushEditingEnabled() ? Qt::CrossCursor : Qt::ArrowCursor);
         event->accept();
         return;
     }

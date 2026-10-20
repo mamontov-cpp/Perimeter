@@ -1,0 +1,206 @@
+#pragma once
+
+#include "EditorSession.h"
+
+#include <cstdint>
+#include <vector>
+
+// ============================================================================
+// MapEditorCore — BrushTool (T3.1, "каркас кистей").
+//
+// The brush framework all concrete T3.x brushes build upon:
+//
+//   * BrushParams — the full brush configuration from the plan
+//     (shape, radius, strength, Geo/Dam mode, palette colour, effect).
+//   * BrushMask / BrushMasks — the stamp geometry: filled/outline
+//     circle/square generated with the same ring rounding Terra's own radius
+//     tables use (FloorGreedySqrt, docs/architecture.md §7), a line =
+//     Bresenham walk with the stamp unioned into one mask.
+//   * BrushTool — applies the effect over a mask:
+//       1. record the pre-edit snapshot into the session undo stack
+//          (EditorSession::recordUndoArea — Terra's UndoDispatcher_
+//          PutPreChangedArea is a _SURMAP_-only stub, so the session runs
+//          its own history with identical swap semantics);
+//       2. route each mask cell through Terra's individualToolzer
+//          (tVoxSet — hardness scaling, zeroplast attributes, geo/dam layer
+//          handling are all Terra's own behaviour, not reimplemented);
+//       3. vMap.recalcArea2Grid() + vMap.regRender() over the stamp bbox so
+//          the grid and the viewport dirty rectangles update like in the game.
+//
+// Everything works on map cells (vMap buffer space) and is Qt-free, so the
+// headless tests drive it directly.
+// ============================================================================
+
+namespace MapEditor {
+
+/// Stamp silhouette drawn under the cursor / used for the mask.
+enum class BrushShape
+{
+    FilledCircle,   ///< whole disc, rings 0..radius (game `influenceDZ` shape).
+    FilledSquare,   ///< solid square, |dx|<=radius and |dy|<=radius.
+    CircleOutline,  ///< one-cell ring at radius (Terra's own `maxRad[r]` ring).
+    SquareOutline,  ///< one-cell square border.
+    Line,           ///< Bresenham line, circle stamp; endpoints via applyLine().
+};
+
+/// Which terrain layer the brush addresses. Geo = the layer under a dam,
+/// Dam = the deployed dam layer (higher priority than Geo in the game).
+enum class BrushMode
+{
+    Geo,
+    Dam,
+};
+
+/// What the brush does to the world. T3.1 ships the framework and the first
+/// route (raise/lower); the remaining values are the T3.2–T3.5 tools —
+/// apply() refuses them until their tasks implement the routing.
+enum class BrushEffect
+{
+    None = 0,   ///< No world edit (preview import/only-mask use cases).
+    ChangeHeight,   ///< Raise/lower through T2TE_CHANGING_TERRAIN_HEIGHT (T3.2 —
+                    ///< first effect implemented with the framework).
+
+    // --- routing entry points for later tasks (not applied) ---------------
+    Align4ZP,       ///< T3.2: T2TE_ALIGNMENT_TERRAIN_4ZP ("height-to-zeroplast").
+    AlignVariableH, ///< T3.2: T2TE_ALIGNMENT_TERRAIN_VARIABLE_H (arbitrary level).
+    SetColor,       ///< T3.3: SurBuf := params.colorIndex, height untouched.
+    PlotZeroplast,  ///< T3.4: height=zeroPlast + At_ZEROPLAST.
+    EraseZeroplast, ///< T3.4: T2TE_ERASE_ZEROPLAST.
+    PlotSoot,       ///< T3.4: T2TE_PLOTTING_SOOT.
+    VeryLightDam,   ///< T3.4: T2TE_PLOTTING_VERY_LIGHT_DAM.
+};
+
+/// Full brush configuration (plan §5 T3.1: shape/radius/strength/mode/
+/// colorIndex/effect) + the raise/lower direction the height effect needs.
+struct BrushParams
+{
+    BrushShape shape = BrushShape::FilledCircle;
+    int radius = 8;      ///< stamp half-size in map cells (clamped to the Terra radius tables).
+    int strength = 30;   ///< 1..100: per-stamp delta in 1/32 m units *at full influence*.
+    BrushMode mode = BrushMode::Geo;   ///< Geo/Dam target layer (rules per effect).
+    int colorIndex = 0;                ///< palette index for SetColor (0..255), geosurface<128, dam>=128.
+    BrushEffect effect = BrushEffect::ChangeHeight;
+
+    /// Height effect direction: +1 raise, -1 lower, 0 — no height change.
+    int direction = 1;
+
+    bool operator==(const BrushParams& other) const
+    {
+        return shape == other.shape && radius == other.radius &&
+               strength == other.strength && mode == other.mode &&
+               colorIndex == other.colorIndex && effect == other.effect &&
+               direction == other.direction;
+    }
+};
+
+/// Brush stamp geometry: bbox offset (mask coordinates relative to the stamp
+/// centre; (x,y) = (-(sx/2), -(sy/2)) for the symmetric shapes), size and the
+/// per-cell influence in 0..255 (255 = full power; partial influences arrive
+/// with the brush-image tool, T3.5).
+struct BrushMask
+{
+    int x = 0;
+    int y = 0;
+    int sx = 0;
+    int sy = 0;
+    std::vector<unsigned char> influence;   ///< sx*sy cells, row-major.
+
+    bool empty() const
+    {
+        return sx <= 0 || sy <= 0 || influence.size() != static_cast<std::size_t>(sx) * sy;
+    }
+    unsigned char at(int dx, int dy) const
+    {
+        return influence[static_cast<std::size_t>(dy) * sx + dx];
+    }
+    /// Convert the mask cell offset into cell coordinates around the stamp centre.
+    void translate(int centreX, int centreY)
+    {
+        x += centreX;
+        y += centreY;
+    }
+};
+
+/// Mask land shape generators (T3.1). All coordinates are map cells; masks are
+/// centred at the map cell (x/y offsets are relative to the stamp centre).
+class BrushMasks
+{
+public:
+    /// Whole disc ring 0..radius — the shape Terra's influenceDZ affects.
+    static BrushMask filledCircle(int radius);
+    /// One-cell ring exactly at radius — Terra's own maxRad[r] offsets.
+    static BrushMask circleOutline(int radius);
+    /// Solid square |dx|<=radius, |dy|<=radius.
+    static BrushMask filledSquare(int radius);
+    /// Square border max(|dx|,|dy|)==radius.
+    static BrushMask squareOutline(int radius);
+    /// Mask builder for a BrushShape (Line has no stamps without endpoints —
+    /// use stampLine(); returns an empty mask there).
+    static BrushMask byShape(BrushShape shape, int radius);
+
+    /// The Line shape: Bresenham from (x0,y0) to (x1,y1), union of
+    /// filled-circle stamps of the given radius. Each map cell is counted
+    /// exactly once (stamp overlaps do not accumulate the effect within one
+    /// line); the influence over a cell is thus one stamp's delta, not a sum.
+    static BrushMask lineStamp(int x0, int y0, int x1, int y1, int stampRadius);
+
+    /// Circle ring number of (dx,dy) — truncating sqrt, exactly the rounding
+    /// vrtMap::landPrepare() (LAND.cpp:77) uses for its radius tables.
+    static int circularRing(int dx, int dy);
+};
+
+// ---------------------------------------------------------------------------
+// BrushTool
+// ---------------------------------------------------------------------------
+
+class BrushTool
+{
+public:
+    explicit BrushTool(EditorSession& session);
+
+    /// Max possible stamp radius — Terra's radius tables length.
+    static int maxRadius();
+    /// Radius clamped into [0, maxRadius()].
+    static int clampRadius(int radius);
+    /// Strength clamped into [1,100] (percent of the full per-stamp delta).
+    static int clampStrength(int strength);
+    /// Whether apply() implements this effect (the T3.2+ tools are not routed yet).
+    static bool effectSupported(BrushEffect effect);
+
+    void setParams(const BrushParams& params);
+    const BrushParams& params() const { return params_; }
+
+    /// One stamp centred at map cell (cx, cy) with the current parameters.
+    /// One call = one undo stack entry. Returns true when the world changed.
+    bool applyStamp(int cx, int cy);
+    bool applyStamp(int cx, int cy, const BrushParams& params);
+
+    /// The Line shape: apply the stamped mask along a Bresenham path —
+    /// one call, one undo entry, cells counted once (see BrushMasks::lineStamp).
+    /// Returns true when the world changed.
+    bool applyLine(int x0, int y0, int x1, int y1);
+    bool applyLine(int x0, int y0, int x1, int y1, const BrushParams& params);
+
+    /// Apply an absolute (already positioned) mask. Entry point for later
+    /// tools with their own geometry (brush-image T3.5); the public
+    /// applyStamp/applyLine funnels across here too.
+    bool applyMask(const BrushMask& absoluteMask, const BrushParams& params);
+
+    /// The per-cell delta the ChangeHeight effect uses: the direction times
+    /// the strength in 1/32 m voxel units scaled by the mask influence
+    /// (0..255); rounded half away from zero. Exposed for the tests.
+    static int changeHeightDelta(const BrushParams& params, unsigned char influence);
+
+private:
+    /// Route the effect to Terra and mark the bbox dirty. Shared tail of
+    /// applyStamp/applyLine/applyMask: every path reaches here.
+    bool applyEffectOverMask(const BrushMask& absoluteMask, const BrushParams& params);
+
+    /// Per-cell effect application (ChangeHeight now, the T3.2+ switch cases later).
+    void applyEffectToCell(const BrushParams& params, int x, int y, unsigned char influence);
+
+    EditorSession& session_;
+    BrushParams params_;
+};
+
+} // namespace MapEditor

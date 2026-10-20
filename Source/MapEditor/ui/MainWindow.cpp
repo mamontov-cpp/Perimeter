@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 
 #include <View3DRenderer.h>
+#include <BrushTool.h>
 #include <EditorSession.h>
 #include <GameDirManager.h>
 #include <MinimapWidget.h>
@@ -200,7 +201,36 @@ QIcon makeModeIcon(bool oblique)
     return QIcon(pm);
 }
 
+/// T3.1 — brush edit toggle: a paintbrush glyph (handle + ferrule + tip).
+QIcon makeBrushIcon()
+{
+    QPixmap pm(22, 22);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setPen(QPen(kInk, 2.0, Qt::SolidLine, Qt::RoundCap));
+    p.drawLine(QPointF(4.5, 4.0), QPointF(12.0, 11.5));    // handle
+    QPen ferrule(kAccent, 3.0, Qt::SolidLine, Qt::RoundCap);
+    p.setPen(ferrule);
+    p.drawLine(QPointF(13.0, 12.5), QPointF(15.0, 14.5));  // ferrule
+    p.setBrush(kInk);
+    p.setPen(Qt::NoPen);
+    QPolygonF drop;
+    drop << QPointF(14.0, 17.5)
+         << QPointF(11.5, 18.5)
+         << QPointF(10.5, 16.5)
+         << QPointF(14.0, 15.5);
+    p.drawPolygon(drop);                                   // bristle tip
+    return QIcon(pm);
+}
+
 } // namespace
+
+// ---------------------------------------------------------------------------
+// Construction / destruction
+// ---------------------------------------------------------------------------
+
+
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -212,6 +242,11 @@ MainWindow::MainWindow(QWidget *parent)
     session_ = new MapEditor::EditorSession();
     gameDirMgr_ = new GameDirManager();
 
+    // T3.1 — the single brush tool of the session; its default parameters
+    // (filled circle, raise) let the viewport paint right away. The tool
+    // panel of T3.2+ will edit these parameters.
+    brushTool_ = new MapEditor::BrushTool(*session_);
+
     buildMenuBar();
     buildViewToolbar();
     buildStatusBar();
@@ -222,6 +257,7 @@ MainWindow::MainWindow(QWidget *parent)
 
 MainWindow::~MainWindow()
 {
+    delete brushTool_;
     delete session_;
     delete gameDirMgr_;
     // viewport_ is a child widget; deleted by the parent.
@@ -235,9 +271,26 @@ void MainWindow::buildViewport()
 {
     viewport_ = new MapEditor::ViewportWidget(this);
 
+    // T3.1 — plug the brush tool in and mirror its shape/radius in the
+    // cursor preview (the viewport draws the outline over the raster).
+    viewport_->setBrushTool(brushTool_);
+    const MapEditor::BrushParams &brush = brushTool_->params();
+    const MapEditor::BrushPreviewShape previewShape =
+        (brush.shape == MapEditor::BrushShape::FilledSquare ||
+         brush.shape == MapEditor::BrushShape::SquareOutline)
+            ? MapEditor::BrushPreviewShape::Square
+            : MapEditor::BrushPreviewShape::Circle;
+    viewport_->setBrushPreview(previewShape, brush.radius);
+    viewport_->setBrushPreviewVisible(true);
+
     // Connect cursor position signal to status bar.
     connect(viewport_, &MapEditor::ViewportWidget::cursorMapPosition,
             this, &MainWindow::updateCursorInfo);
+
+    // Brush edits change the modified state — keep the status bar/undo
+    // actions live.
+    connect(viewport_, &MapEditor::ViewportWidget::worldEdited,
+            this, &MainWindow::updateStatusBar);
 
     // Keep the toolbar in sync with whatever the viewport does (mouse
     // orbit/pan/zoom change the camera too, not only the actions).
@@ -460,6 +513,22 @@ void MainWindow::buildEditMenu(QMenuBar *menuBar)
     actClearUndoHistory_->setEnabled(false);
     connect(actClearUndoHistory_, &QAction::triggered,
             this, &MainWindow::onActionClearUndoHistory);
+
+    editMenu->addSeparator();
+
+    // T3.1 — brush painting toggle: when checked, a left-button drag in the
+    // 2D view applies the brush stamps (default raise, filled circle).
+    actBrushEdit_ = editMenu->addAction(tr("&Brush Editing"));
+    actBrushEdit_->setIcon(makeBrushIcon());
+    actBrushEdit_->setToolTip(
+        tr("Apply the brush with a left drag in the 2D view (T).\n"
+           "Default: raise terrain, filled circle, radius 8, strength 30%."));
+    actBrushEdit_->setCheckable(true);
+    actBrushEdit_->setChecked(true);
+    actBrushEdit_->setShortcut(QKeySequence(Qt::Key_T));
+    connect(actBrushEdit_, &QAction::toggled, viewport_, [this](bool checked) {
+        viewport_->setBrushEditingEnabled(checked);
+    });
 }
 
 void MainWindow::buildViewMenu(QMenuBar *menuBar)
@@ -621,6 +690,11 @@ void MainWindow::buildViewToolbar()
     bar->addAction(actZoomIn_);
     bar->addAction(actZoomOut_);
     bar->addAction(actResetView_);
+
+    // T3.1 — brush editing toggle lives in the same visible strip so the
+    // user can switch painting on with one click.
+    bar->addSeparator();
+    bar->addAction(actBrushEdit_);
 
     // A compact live readout of the active camera.
     viewReadout_ = new QLabel(bar);
@@ -973,6 +1047,10 @@ void MainWindow::updateActionStates()
         if (action) {
             action->setEnabled(worldLoaded);
         }
+    }
+    // T3.1 — painting without a world cannot change anything.
+    if (actBrushEdit_) {
+        actBrushEdit_->setEnabled(worldLoaded);
     }
 }
 
