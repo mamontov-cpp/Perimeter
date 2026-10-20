@@ -363,6 +363,9 @@ void MainWindow::onWorldLoaded()
         minimap_->setViewRect(viewport_ ? viewport_->currentViewRect()
                                         : QRect());
     }
+    // The title carries the world name (also after "Save As", which
+    // rebinds the session onto the renamed world and lands here).
+    updateWindowTitle();
     updateStatusBar();
 }
 
@@ -375,6 +378,7 @@ void MainWindow::onWorldUnload()
         minimap_->setSession(session_);
         minimap_->setViewRect(QRect());
     }
+    updateWindowTitle();
     updateStatusBar();
 }
 
@@ -711,6 +715,20 @@ void MainWindow::buildViewToolbar()
 void MainWindow::buildStatusBar()
 {
     statusBar()->showMessage(tr("Map editor"));
+}
+
+// ---------------------------------------------------------------------------
+// Window title
+// ---------------------------------------------------------------------------
+
+void MainWindow::updateWindowTitle()
+{
+    if (session_ && session_->isWorldLoaded()) {
+        setWindowTitle(tr("Perimeter Map Editor - %1")
+                           .arg(QString::fromStdString(session_->currentWorldName())));
+    } else {
+        setWindowTitle(tr("Perimeter Map Editor"));
+    }
 }
 
 // ---------------------------------------------------------------------------

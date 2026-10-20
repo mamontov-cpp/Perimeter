@@ -82,6 +82,12 @@ private:
     void buildViewport();
     void buildMinimapDock();
 
+    /// Put the current world name into the window title:
+    /// "Perimeter Map Editor - <world>" while a world is loaded, otherwise
+    /// plain "Perimeter Map Editor". Called on load/unload and after
+    /// "Save As" rebinds the session onto the new (renamed) world.
+    void updateWindowTitle();
+
     /// Update the toolbar label that mirrors the oblique camera state.
     void updateViewReadout();
 
