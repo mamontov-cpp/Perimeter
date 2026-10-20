@@ -320,23 +320,23 @@ undo-запись):
 2. `session.recordUndoArea(bbox)` ДО правок (план называет
    `UndoDispatcher_PutPreChangedArea`, но он пуст под `_SURMAP_` — контракт
    undo редактора описан в §4.1);
-3. маршрутизация эффекта: пока реализован только
-   `ChangeHeight` (поднять/опустить) — каждая клетка маски проходит через
-   Terra-тулзу `individualToolzer<T2TE_CHANGING_TERRAIN_HEIGHT>::tVoxSet()`:
+3. маршрутизация эффекта: высотные инструменты T3.2 (`ChangeHeight`,
+   `Align4ZP`, `AlignVariableH`, §5.11) — каждая клетка маски проходит
+   через Terra-тулзу (`individualToolzer<T2TE_*>::tVoxSet()`):
    hardness-затухание, биты `At_*`, согласованность `VxGBuf/VxDBuf/SurBuf`
    и разделение слоёв Geo/Dam — всё это поведение самой Terra, не
-   переизобретается. Дельта клетки = `direction × strength` (в 1/32 м,
-   `<<VX_FRACTION`) × влияние маски (255 → полный дельта), округление по
-   модулю. Остальные эффекты (`Align4ZP`, `SetColor`, `PlotZeroplast`, …)
-   объявлены в `BrushEffect`, `apply()` их отвергает до соответствующих
-   задач T3.2–T3.5;
+   переизобретается. Дельта клетки ChangeHeight = `direction × strength` (в
+   1/32 м, `<<VX_FRACTION`) × влияние маски (255 → полный дельта),
+   округление по модулю; для выравнивающих инструментов знак дельты берётся
+   по геометрии (к цели). Остальные эффекты (`SetColor`, `PlotZeroplast`,
+   …) объявлены в `BrushEffect`, `apply()` их отвергает до
+   соответствующих задач T3.3–T3.5;
 4. `vMap.recalcArea2Grid(bbox±1)` + `vMap.regRender(bbox±1)` — сетка и
    вьюпорт обновляются по обычной dirty-конвейерке (запас в 1 клетку, как
    у тулз игры, `tools.h:252-254`).
 
-Значение `mode(Geo/Dam)` передаётся в параметры и станет значимым в T3.2
-(сегодня высотная тулза Terra сама выбирает активный слой). `strength`
-климпуется в `[1,100]`, `radius` — в `[0, MAX_RADIUS_CIRCLEARR]`.
+`strength` климпуется в `[1,100]`, `radius` — в `[0, MAX_RADIUS_CIRCLEARR]`,
+`heightLevel` (цель `AlignVariableH`) — в `[0, MAX_VX_HEIGHT_WHOLE]`.
 
 **GUI-интеграция.** `MainWindow` владеет одним `BrushTool` (параметры —
 пока дефолт: круг r=8, поднять, strength 30%); `ViewportWidget` при
@@ -344,8 +344,60 @@ undo-запись):
 TopDown-режиме (штамп на каждую новую клетку курсора), курсор — крест,
 `viewRectChanged`/превью работают как раньше. Переключатель — действие
 `actBrushEdit_` («Brush Editing», T) в меню Edit и в тулбаре; сигнал
-`worldEdited()` обновляет статус-бар/undo-actions. Панель параметров
-(`ToolPanel`) появится в T3.2 и переиспользует `setParams()`.
+`worldEdited()` обновляет статус-бар/undo-actions. Выбор типа кисти и
+режима Geo/Dam — тулбар «Brush» и подменю «Brush Type / Mode» (T3.2,
+§5.11); полноценная панель параметров (`ToolPanel`) — задача T3.5+.
+
+## 5.11. Кисти высоты — сглаживание/выравнивание, режимы Geo/Dam (T3.2)
+
+Высотные эффекты перечислены в `BrushEffect`; все маршрутизируются через
+Terra-тулзы без правок Terra:
+
+| Эффект | Terra-тулза | Цель |
+|---|---|---|
+| `ChangeHeight` | `T2TE_CHANGING_TERRAIN_HEIGHT` | raise/lower на `direction × strength` |
+| `Align4ZP` | `T2TE_ALIGNMENT_TERRAIN_4ZP` | уровень к `vMap.hZeroPlast` («выровнять относительно зеропласта») |
+| `AlignVariableH` | `T2TE_ALIGNMENT_TERRAIN_VARIABLE_H` | уровень к произвольной высоте `BrushParams::heightLevel` («сгладить/выровнять») |
+
+**Выравнивание.** Цель (`hAppr`) синхронизируется перед КАЖДОЙ клеткой
+(`setHAppoximation(целое)`): статическая тулза иначе удерживала бы
+`hZeroPlast` предыдущего мира. Знак дельты на клетку — по геометрии
+(`SGetAlt < цель → поднять, иначе опустить`), модуль — тот же
+`strength-×-влияние`, что у ChangeHeight (`heightDeltaMagnitude`);
+`direction` кисти игнорируется: тулза сама каппит результат на `hAppr`
+с обеих сторон и помечает дошедшие клетки `At_LEVELED` (клетки с
+`At_ZEROPLAST` скипаются — поведение игры).
+
+**Режимы Geo/Dam.** Terra-тулза ChangeHeight всегда правит активный (верхний)
+слой; выборка слоя редактором сделана ВОКРУГ тулзы, в `BrushTool.cpp`:
+
+- **Geo** — правится только `VxGBuf` (порядок записи повторяет geo-ветку
+  `tVoxSetAll`: `SurBuf = GetGeoType(off, v)`, `AtrBuf = доля`),
+  `VxDBuf` никогда не пишется и не создаётся; подъём каппится на высоту
+  дамба → инвариант «дамб ≥ гео» сохраняется (сама высота 0-высоты гео
+  может нести дамбу лишь с 1-го вокселя);
+- **Dam** — при подъёме клетки без дамба слой сеется копией текущей
+  поверхности (`VxDBuf = VxGBuf`, `SurBuf = vMap.veryLightDam`) — в точности
+  запись `T2TE_PLOTTING_VERY_LIGHT_DAM`; у 0-высотного гео слой сеется на
+  1 воксель выше с компенсацией дельты, потому что `VxDBuf == 0` означает
+  «дамба отсутствует», и сеять нулевой дамб не имеет смысла; дальше
+  изменения ведёт стандартная тулза `T2TE_CHANGING_TERRAIN_HEIGHT`,
+  включая снятие дамба при опускании до гео-уровня (и зачистку в него же).
+  Опущение клетки без дамба в режиме Dam игнорируется (гео не трогается).
+
+Для выравнивающих инструментов режим трактуется так же: в Geo клетки с
+`VxDBuf != 0` скипаются (правим только гео), в Dam работает стандартный
+переход слоёв самой тулзы.
+
+`BrushTool::heightDeltaMagnitude(params, influence)` — модуль дельты,
+вынесен для обоих эффектов и переиспользуется тестами.
+
+**GUI (T3.2).** Тулбар «Brush»: переключатель покраски (`actBrushEdit_`,
+переехал из тулбара View), 4 типа кисти (Raise/Lower/Level-4ZP/Level-H,
+взаимоисключающие), спинбокс цели высоты `Level to Height` (0..255 вокселей,
+активен только для `AlignVariableH`), пара режима Geo/Dam. Те же действия
+дублируются в подменю Edit → «Brush Type / Mode». Все кнопки активны только
+при загруженном мире, синхронизация — `syncBrushControls()`.
 
 ## 6. Тесты
 
@@ -365,6 +417,8 @@ Headless-тесты `map_editor_tests` (`tests/`), по файлу на моду
 | 56 | `BrushMaskTests` | маски совпадают с радиусными таблицами Terra, квадраты/кольца/Брезенхэм-линия, degenerate-штамп, routing `byShape` (T3.1) |
 | 57 | `View3DRendererTests` | кадр 3D заполнен разумно (покрытие, число цветов), поворот на 90° меняет кадр, клип окна ≤ `MAX_XSIZE_VX_WINDOW`, инвариант `stableLeanDeg` (T2.3) |
 | 58 | `BrushToolTests` | штамп меняет ровно клетки маски на `strength<<VX_FRACTION`, undo/redo байт-в-байт, линии по одной undo-записи, отказ неподдержанных эффектов, клипы radius/strength (T3.1) |
+| 59 | `BrushHeightToolsTests` | выравнивание клетки-в-клетку по Terra-математике (кап на цель снизу/сверху, attenuation hardness-формулой), метка `At_LEVELED` дошедшим, скип `At_ZEROPLAST` байт-в-байт, клип `heightLevel`, undo байт-в-байт (T3.2) |
+| 60 | `BrushHeightToolsTests` | режим Geo (только `VxGBuf`, кап на дамба, `SurBuf == GetGeoType`), режим Dam (посев `VxDBuf = гео + veryLightDam`, снятие дамба при опускании до гео), LIFO undo пригонов (T3.2) |
 
 Тесты пишут только во временный content-root (`%TEMP%/map_editor_roundtrip`),
 исходный мир не изменяется. `SaveWorldTests` строит изолированный content-root

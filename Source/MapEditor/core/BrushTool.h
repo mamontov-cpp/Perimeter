@@ -6,7 +6,7 @@
 #include <vector>
 
 // ============================================================================
-// MapEditorCore — BrushTool (T3.1, "каркас кистей").
+// MapEditorCore — BrushTool (T3.1 framework, T3.2 height tools).
 //
 // The brush framework all concrete T3.x brushes build upon:
 //
@@ -23,7 +23,12 @@
 //          its own history with identical swap semantics);
 //       2. route each mask cell through Terra's individualToolzer
 //          (tVoxSet — hardness scaling, zeroplast attributes, geo/dam layer
-//          handling are all Terra's own behaviour, not reimplemented);
+//          handling are all Terra's own behaviour, not reimplemented):
+//          * ChangeHeight (T3.2) — T2TE_CHANGING_TERRAIN_HEIGHT; the
+//            BrushMode Geo/Dam difference is applied around the toolzer
+//            (Geo: only VxGBuf, dam-capped; Dam: seeds/removes VxDBuf);
+//          * Align4ZP / AlignVariableH (T3.2) — T2TE_ALIGNMENT_* with the
+//            target height (hZeroPlast / heightLevel) synced per cell;
 //       3. vMap.recalcArea2Grid() + vMap.regRender() over the stamp bbox so
 //          the grid and the viewport dirty rectangles update like in the game.
 //
@@ -51,18 +56,23 @@ enum class BrushMode
     Dam,
 };
 
-/// What the brush does to the world. T3.1 ships the framework and the first
-/// route (raise/lower); the remaining values are the T3.2–T3.5 tools —
-/// apply() refuses them until their tasks implement the routing.
+/// What the brush does to the world. T3.1 ships the framework, T3.2 routes
+/// the height tools (raise/lower + the two alignment levellers); the
+/// remaining values are the T3.3–T3.5 tools — apply() refuses them until
+/// their tasks implement the routing.
 enum class BrushEffect
 {
     None = 0,   ///< No world edit (preview import/only-mask use cases).
-    ChangeHeight,   ///< Raise/lower through T2TE_CHANGING_TERRAIN_HEIGHT (T3.2 —
-                    ///< first effect implemented with the framework).
+    ChangeHeight,   ///< Raise/lower through T2TE_CHANGING_TERRAIN_HEIGHT (T3.2);
+                    ///< the per-layer Geo/Dam handling of the T3.2 modes happens
+                    ///< around Terra's own toolzer (see BrushMode).
+    Align4ZP,       ///< T3.2: level to the world zeroplast height — Terra's
+                    ///< T2TE_ALIGNMENT_TERRAIN_4ZP (target = vMap.hZeroPlast).
+    AlignVariableH, ///< T3.2: smooth/level to an arbitrary height — Terra's
+                    ///< T2TE_ALIGNMENT_TERRAIN_VARIABLE_H (target =
+                    ///< params.heightLevel).
 
     // --- routing entry points for later tasks (not applied) ---------------
-    Align4ZP,       ///< T3.2: T2TE_ALIGNMENT_TERRAIN_4ZP ("height-to-zeroplast").
-    AlignVariableH, ///< T3.2: T2TE_ALIGNMENT_TERRAIN_VARIABLE_H (arbitrary level).
     SetColor,       ///< T3.3: SurBuf := params.colorIndex, height untouched.
     PlotZeroplast,  ///< T3.4: height=zeroPlast + At_ZEROPLAST.
     EraseZeroplast, ///< T3.4: T2TE_ERASE_ZEROPLAST.
@@ -71,25 +81,31 @@ enum class BrushEffect
 };
 
 /// Full brush configuration (plan §5 T3.1: shape/radius/strength/mode/
-/// colorIndex/effect) + the raise/lower direction the height effect needs.
+/// colorIndex/effect) + the parameters of the height tools (T3.2).
 struct BrushParams
 {
     BrushShape shape = BrushShape::FilledCircle;
     int radius = 8;      ///< stamp half-size in map cells (clamped to the Terra radius tables).
     int strength = 30;   ///< 1..100: per-stamp delta in 1/32 m units *at full influence*.
-    BrushMode mode = BrushMode::Geo;   ///< Geo/Dam target layer (rules per effect).
+    BrushMode mode = BrushMode::Geo;   ///< Geo/Dam target layer (rules per effect, T3.2).
     int colorIndex = 0;                ///< palette index for SetColor (0..255), geosurface<128, dam>=128.
     BrushEffect effect = BrushEffect::ChangeHeight;
 
     /// Height effect direction: +1 raise, -1 lower, 0 — no height change.
+    /// Only the ChangeHeight effect uses it; the alignment effects take the
+    /// direction per cell (towards the target level).
     int direction = 1;
+
+    /// AlignVariableH target height in whole voxels (0..255, clamped; 1 voxel
+    /// = 1/32 m). Level-to-zeroplast (Align4ZP) reads vMap.hZeroPlast instead.
+    int heightLevel = 32;
 
     bool operator==(const BrushParams& other) const
     {
         return shape == other.shape && radius == other.radius &&
                strength == other.strength && mode == other.mode &&
                colorIndex == other.colorIndex && effect == other.effect &&
-               direction == other.direction;
+               direction == other.direction && heightLevel == other.heightLevel;
     }
 };
 
@@ -164,7 +180,11 @@ public:
     static int clampRadius(int radius);
     /// Strength clamped into [1,100] (percent of the full per-stamp delta).
     static int clampStrength(int strength);
-    /// Whether apply() implements this effect (the T3.2+ tools are not routed yet).
+    /// Alignment target height clamped into [0, MAX_VX_HEIGHT_WHOLE] whole
+    /// voxels — the AlignVariableH target domain (the UI spinbox uses it too).
+    static int clampHeightLevel(int level);
+    /// Whether apply() implements this effect (the T3.3–T3.5 tools are not
+    /// routed yet; the T3.2 height tools are).
     static bool effectSupported(BrushEffect effect);
 
     void setParams(const BrushParams& params);
@@ -191,12 +211,19 @@ public:
     /// (0..255); rounded half away from zero. Exposed for the tests.
     static int changeHeightDelta(const BrushParams& params, unsigned char influence);
 
+    /// The ChangeHeight magnitude the direction is applied to: strength in
+    /// 1/32 m voxel units scaled by the mask influence, rounded half away
+    /// from zero. The alignment effects reuse it for their per-cell deltas
+    /// (the direction there comes from the height geometry).
+    static int heightDeltaMagnitude(const BrushParams& params, unsigned char influence);
+
 private:
     /// Route the effect to Terra and mark the bbox dirty. Shared tail of
     /// applyStamp/applyLine/applyMask: every path reaches here.
     bool applyEffectOverMask(const BrushMask& absoluteMask, const BrushParams& params);
 
-    /// Per-cell effect application (ChangeHeight now, the T3.2+ switch cases later).
+    /// Per-cell effect application (the T3.2 height tools; the T3.3+ switch
+    /// cases are refused earlier, in applyMask()).
     void applyEffectToCell(const BrushParams& params, int x, int y, unsigned char influence);
 
     EditorSession& session_;

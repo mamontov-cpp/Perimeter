@@ -8,6 +8,7 @@
 #include <ViewportWidget.h>
 
 #include <QAction>
+#include <QActionGroup>
 #include <QApplication>
 #include <QCloseEvent>
 #include <QDockWidget>
@@ -24,6 +25,7 @@
 #include <QPixmap>
 #include <QPushButton>
 #include <QPolygonF>
+#include <QSpinBox>
 #include <QStatusBar>
 #include <QToolBar>
 #include <QTransform>
@@ -224,6 +226,54 @@ QIcon makeBrushIcon()
     return QIcon(pm);
 }
 
+/// T3.2 — height tool glyphs: a small mound on a ground line moved/levelled
+/// by an arrow (up = raise, down = dig).
+QIcon makeHeightArrowIcon(bool up)
+{
+    QPixmap pm(22, 22);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setPen(QPen(kInk, 2.0));
+    drawGroundLine(p, 17.0);
+    // The mound the tool works on.
+    p.setBrush(kInk);
+    p.setPen(Qt::NoPen);
+    QPolygonF mound;
+    mound << QPointF(6.0, 16.0)
+          << QPointF(9.0, up ? 12.0 : 13.5)
+          << QPointF(12.0, 16.0);
+    p.drawPolygon(mound);
+    // Movement arrow above / above the mound.
+    p.setPen(QPen(kAccent, 2.0));
+    p.setBrush(Qt::NoBrush);
+    const QPointF tailStart(9.0, up ? 10.0 : 6.5);
+    const QPointF tailEnd(9.0, up ? 3.5 : 9.5);
+    p.drawLine(tailStart, tailEnd);
+    drawArrowHead(p, tailEnd, up ? -90.0 : 90.0);
+    return QIcon(pm);
+}
+
+/// T3.2 — letter glyphs on a ground line: "Z" — level to the world
+/// zeroplast height, "H" — level to the chosen height, "G"/"D" — Geo/Dam
+/// brush mode.
+QIcon makeGroundLetterIcon(const QString &letter, const QColor &color)
+{
+    QPixmap pm(22, 22);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setPen(QPen(kInk, 2.0));
+    drawGroundLine(p, 17.0);
+    QFont font = p.font();
+    font.setPointSizeF(9.0);
+    font.setBold(true);
+    p.setFont(font);
+    p.setPen(color);
+    p.drawText(QRectF(2.0, 2.0, 18.0, 14.0), Qt::AlignCenter, letter);
+    return QIcon(pm);
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -243,12 +293,15 @@ MainWindow::MainWindow(QWidget *parent)
     gameDirMgr_ = new GameDirManager();
 
     // T3.1 — the single brush tool of the session; its default parameters
-    // (filled circle, raise) let the viewport paint right away. The tool
-    // panel of T3.2+ will edit these parameters.
+    // (filled circle, raise) let the viewport paint right away.
     brushTool_ = new MapEditor::BrushTool(*session_);
+
+    // T3.2 — the type/mode buttons of the Brush toolbar drive the tool.
+    createBrushActions();
 
     buildMenuBar();
     buildViewToolbar();
+    buildBrushToolbar();
     buildStatusBar();
     buildViewport();
 
@@ -526,13 +579,25 @@ void MainWindow::buildEditMenu(QMenuBar *menuBar)
     actBrushEdit_->setIcon(makeBrushIcon());
     actBrushEdit_->setToolTip(
         tr("Apply the brush with a left drag in the 2D view (T).\n"
-           "Default: raise terrain, filled circle, radius 8, strength 30%."));
+           "The brush type (raise/lower/levellers) and layer mode "
+           "(Geo/Dam) are picked on the Brush toolbar."));
     actBrushEdit_->setCheckable(true);
     actBrushEdit_->setChecked(true);
     actBrushEdit_->setShortcut(QKeySequence(Qt::Key_T));
     connect(actBrushEdit_, &QAction::toggled, viewport_, [this](bool checked) {
         viewport_->setBrushEditingEnabled(checked);
     });
+
+    // T3.2 — the same brush type/mode actions as the Brush toolbar,
+    // packed into an Edit-menu submenu for discoverability.
+    QMenu *brushMenu = editMenu->addMenu(tr("Br&ush Type / Mode"));
+    brushMenu->addAction(actBrushRaise_);
+    brushMenu->addAction(actBrushLower_);
+    brushMenu->addAction(actBrushLevelZP_);
+    brushMenu->addAction(actBrushLevelHeight_);
+    brushMenu->addSeparator();
+    brushMenu->addAction(actBrushGeo_);
+    brushMenu->addAction(actBrushDam_);
 }
 
 void MainWindow::buildViewMenu(QMenuBar *menuBar)
@@ -695,10 +760,8 @@ void MainWindow::buildViewToolbar()
     bar->addAction(actZoomOut_);
     bar->addAction(actResetView_);
 
-    // T3.1 — brush editing toggle lives in the same visible strip so the
-    // user can switch painting on with one click.
-    bar->addSeparator();
-    bar->addAction(actBrushEdit_);
+    // The T3.1 brush editing toggle moved to the dedicated Brush toolbar
+    // (T3.2), where the brush type/mode buttons live next to it.
 
     // A compact live readout of the active camera.
     viewReadout_ = new QLabel(bar);
@@ -710,6 +773,152 @@ void MainWindow::buildViewToolbar()
     font.setPointSizeF(8.5);
     viewReadout_->setFont(font);
     bar->addWidget(viewReadout_);
+}
+
+void MainWindow::createBrushActions()
+{
+    const MapEditor::BrushParams &brush = brushTool_->params();
+
+    // --- Type: what the brush does -----------------------------------
+    QActionGroup *typeGroup = new QActionGroup(this);
+    const auto addType = [this, typeGroup](QIcon icon, const QString &text,
+                                           const QString &toolTip,
+                                           MapEditor::BrushEffect effect,
+                                           int direction) {
+        QAction *action = new QAction(icon, text, this);
+        action->setToolTip(toolTip);
+        action->setCheckable(true);
+
+        const MapEditor::BrushParams &current = brushTool_->params();
+        action->setChecked(current.effect == effect &&
+                           (effect != MapEditor::BrushEffect::ChangeHeight ||
+                            current.direction == direction));
+
+        connect(action, &QAction::triggered, this, [this, effect, direction] {
+            MapEditor::BrushParams params = brushTool_->params();
+            params.effect = effect;
+            params.direction = direction;
+            brushTool_->setParams(params);
+            syncBrushControls();
+        });
+        typeGroup->addAction(action);
+        return action;
+    };
+
+    actBrushRaise_ = addType(
+        makeHeightArrowIcon(true), tr("Raise Terrain"),
+        tr("The brush raises the terrain under it (left drag in the 2D view)."),
+        MapEditor::BrushEffect::ChangeHeight, 1);
+    actBrushLower_ = addType(
+        makeHeightArrowIcon(false), tr("Lower Terrain"),
+        tr("The brush digs the terrain under it. Hard terrain slows the dig "
+           "down just like in the game."),
+        MapEditor::BrushEffect::ChangeHeight, -1);
+    actBrushLevelZP_ = addType(
+        makeGroundLetterIcon(QStringLiteral("Z"), kInk),
+        tr("Level to Zeroplast"),
+        tr("The brush levels the terrain to the world zeroplast height. "
+           "Zeroplast-marked cells are not touched; cells reaching the "
+           "level are marked as leveled."),
+        MapEditor::BrushEffect::Align4ZP, 1);
+    actBrushLevelHeight_ = addType(
+        makeGroundLetterIcon(QStringLiteral("H"), kInk),
+        tr("Level to Height"),
+        tr("The brush levels the terrain to the height chosen next to it "
+           "(whole voxels, 1 voxel = 1/32 m)."),
+        MapEditor::BrushEffect::AlignVariableH, 1);
+
+    // --- Mode: which terrain layer the height tools drive -------------
+    QActionGroup *modeGroup = new QActionGroup(this);
+    const auto addMode = [this, modeGroup](QIcon icon, const QString &text,
+                                           const QString &toolTip,
+                                           MapEditor::BrushMode mode) {
+        QAction *action = new QAction(icon, text, this);
+        action->setToolTip(toolTip);
+        action->setCheckable(true);
+        action->setChecked(brushTool_->params().mode == mode);
+        connect(action, &QAction::triggered, this, [this, mode] {
+            MapEditor::BrushParams params = brushTool_->params();
+            params.mode = mode;
+            brushTool_->setParams(params);
+            syncBrushControls();
+        });
+        modeGroup->addAction(action);
+        return action;
+    };
+
+    actBrushGeo_ = addMode(
+        makeGroundLetterIcon(QStringLiteral("G"), kInk), tr("Geo Layer"),
+        tr("The height tools drive the geo layer (VxGBuf) only — a dam above "
+           "the surface is never created or removed."),
+        MapEditor::BrushMode::Geo);
+    actBrushDam_ = addMode(
+        makeGroundLetterIcon(QStringLiteral("D"), kAccent), tr("Dam Layer"),
+        tr("The height tools drive the dam layer: raising seeds the dam, "
+           "digging it down to the geo height removes it. The dam is always "
+           "at or above the geo."),
+        MapEditor::BrushMode::Dam);
+}
+
+void MainWindow::buildBrushToolbar()
+{
+    QToolBar *bar = addToolBar(tr("Brush"));
+    bar->setObjectName(QStringLiteral("BrushToolbar"));
+    bar->setMovable(false);
+    bar->setFloatable(false);
+    bar->setIconSize(QSize(22, 22));
+    bar->setStyleSheet(
+        QStringLiteral("QToolButton:enabled:hover, QToolButton:enabled:checked "
+                       "{ background: rgba(0, 96, 170, 35); border-radius: 4px; }"));
+
+    // T3.1 painting toggle (moved from the View toolbar).
+    bar->addAction(actBrushEdit_);
+    bar->addSeparator();
+
+    // T3.2 type buttons: raise / lower / the two levellers.
+    bar->addAction(actBrushRaise_);
+    bar->addAction(actBrushLower_);
+    bar->addAction(actBrushLevelZP_);
+    bar->addAction(actBrushLevelHeight_);
+
+    // Target height of "Level to Height" — whole voxels (0..255, the domain
+    // BrushTool::clampHeightLevel enforces too).
+    brushLevelSpin_ = new QSpinBox(bar);
+    brushLevelSpin_->setRange(0, 255);
+    brushLevelSpin_->setSuffix(tr(" vox"));
+    brushLevelSpin_->setToolTip(
+        tr("Target height of the \"Level to Height\" brush (whole voxels; "
+           "1 voxel = 1/32 m)."));
+    connect(brushLevelSpin_, &QSpinBox::valueChanged, this, [this](int value) {
+        MapEditor::BrushParams params = brushTool_->params();
+        params.heightLevel = value;
+        brushTool_->setParams(params);
+    });
+    bar->addWidget(brushLevelSpin_);
+
+    bar->addSeparator();
+
+    // T3.2 mode buttons: Geo / Dam.
+    bar->addAction(actBrushGeo_);
+    bar->addAction(actBrushDam_);
+
+    syncBrushControls();
+}
+
+void MainWindow::syncBrushControls()
+{
+    const MapEditor::BrushParams params = brushTool_->params();
+
+    if (brushLevelSpin_) {
+        // "Level to Height" is the only consumer of the spinbox value.
+        brushLevelSpin_->setEnabled(
+            params.effect == MapEditor::BrushEffect::AlignVariableH);
+        if (brushLevelSpin_->value() != params.heightLevel) {
+            brushLevelSpin_->blockSignals(true);
+            brushLevelSpin_->setValue(params.heightLevel);
+            brushLevelSpin_->blockSignals(false);
+        }
+    }
 }
 
 void MainWindow::buildStatusBar()
@@ -1069,6 +1278,21 @@ void MainWindow::updateActionStates()
     // T3.1 — painting without a world cannot change anything.
     if (actBrushEdit_) {
         actBrushEdit_->setEnabled(worldLoaded);
+    }
+    // T3.2 — the brush type/mode buttons follow the same rule.
+    for (QAction *action : {actBrushRaise_, actBrushLower_, actBrushLevelZP_,
+                            actBrushLevelHeight_, actBrushGeo_,
+                            actBrushDam_}) {
+        if (action) {
+            action->setEnabled(worldLoaded);
+        }
+    }
+    if (brushLevelSpin_) {
+        brushLevelSpin_->setEnabled(
+            worldLoaded &&
+            brushTool_ &&
+            brushTool_->params().effect ==
+                MapEditor::BrushEffect::AlignVariableH);
     }
 }
 

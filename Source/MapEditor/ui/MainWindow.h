@@ -5,10 +5,12 @@
 class GameDirManager;
 class QCloseEvent;
 class QAction;
+class QActionGroup;
 class QDockWidget;
 class QDialog;
 class QLabel;
 class QMenu;
+class QSpinBox;
 class QToolBar;
 
 namespace MapEditor {
@@ -82,6 +84,15 @@ private:
     void buildViewport();
     void buildMinimapDock();
 
+    // T3.2 — create the brush type (effect) and brush mode (Geo/Dam)
+    // actions. Called before the menus/toolbars so both can embed them.
+    void createBrushActions();
+    // T3.2 — the Brush toolbar: the T3.1 painting toggle, the type buttons
+    // and the target-height spinbox of the level tool, the mode buttons.
+    void buildBrushToolbar();
+    // T3.2 — re-read the tool parameters into the buttons/spinbox state.
+    void syncBrushControls();
+
     /// Put the current world name into the window title:
     /// "Perimeter Map Editor - <world>" while a world is loaded, otherwise
     /// plain "Perimeter Map Editor". Called on load/unload and after
@@ -139,9 +150,21 @@ private:
     QAction *actZoomOut_ = nullptr;
     QAction *actResetView_ = nullptr;
 
-    // T3.1 — Edit-menu toggle for brush painting (also mirrored in the
+    // T3.1 — Edit-menu toggle for brush painting (mirrored in the Brush
     // toolbar icon set).
     QAction *actBrushEdit_ = nullptr;
+
+    // T3.2 — brush type (effect) actions: raise / lower / level to
+    // zeroplast / level to an arbitrary height.
+    QAction *actBrushRaise_ = nullptr;
+    QAction *actBrushLower_ = nullptr;
+    QAction *actBrushLevelZP_ = nullptr;
+    QAction *actBrushLevelHeight_ = nullptr;
+    // T3.2 — brush mode actions: which layer the height tools drive.
+    QAction *actBrushGeo_ = nullptr;
+    QAction *actBrushDam_ = nullptr;
+    // T3.2 — AlignVariableH target height (whole voxels 0..255).
+    QSpinBox *brushLevelSpin_ = nullptr;
 
     // Toolbar readout of the current 3D camera.
     QLabel *viewReadout_ = nullptr;

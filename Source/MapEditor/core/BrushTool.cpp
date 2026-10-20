@@ -180,6 +180,7 @@ BrushParams clampedParams(const BrushParams& params)
     BrushParams clamped = params;
     clamped.radius = BrushTool::clampRadius(clamped.radius);
     clamped.strength = BrushTool::clampStrength(clamped.strength);
+    clamped.heightLevel = BrushTool::clampHeightLevel(clamped.heightLevel);
     if (clamped.direction != 0) {
         clamped.direction = clamped.direction > 0 ? 1 : -1;
     }
@@ -209,13 +210,20 @@ int BrushTool::clampStrength(int strength)
     return std::clamp(strength, 1, 100);
 }
 
+int BrushTool::clampHeightLevel(int level)
+{
+    return std::clamp(level, 0, MAX_VX_HEIGHT_WHOLE);
+}
+
 bool BrushTool::effectSupported(BrushEffect effect)
 {
     switch (effect) {
     case BrushEffect::None:
-    case BrushEffect::ChangeHeight:
+    case BrushEffect::ChangeHeight: // T3.2 raise/lower
+    case BrushEffect::Align4ZP:     // T3.2 level to zeroplast
+    case BrushEffect::AlignVariableH: // T3.2 smooth/level to height
         return true;
-    // The remaining effects are routed by T3.2–T3.5.
+    // The remaining effects are routed by T3.3–T3.5.
     default:
         return false;
     }
@@ -226,17 +234,25 @@ void BrushTool::setParams(const BrushParams& params)
     params_ = clampedParams(params);
 }
 
-int BrushTool::changeHeightDelta(const BrushParams& params, unsigned char influence)
+int BrushTool::heightDeltaMagnitude(const BrushParams& params, unsigned char influence)
 {
-    if (params.direction == 0 || influence == 0 || !effectSupported(params.effect)) {
+    if (influence == 0) {
         return 0;
     }
     // Full delta = strength in 1/32 m units (VX_FRACTION), scaled by the mask
     // influence; round half away from zero.
     const long long full = static_cast<long long>(clampStrength(params.strength)) << VX_FRACTION;
     const long long magnitude = (full * influence + 127) / 255;
-    return params.direction < 0 ? -static_cast<int>(magnitude)
-                                : static_cast<int>(magnitude);
+    return static_cast<int>(magnitude);
+}
+
+int BrushTool::changeHeightDelta(const BrushParams& params, unsigned char influence)
+{
+    if (params.direction == 0 || influence == 0 || !effectSupported(params.effect)) {
+        return 0;
+    }
+    return params.direction < 0 ? -heightDeltaMagnitude(params, influence)
+                                : heightDeltaMagnitude(params, influence);
 }
 
 bool BrushTool::applyStamp(int cx, int cy)
@@ -286,7 +302,7 @@ bool BrushTool::applyMask(const BrushMask& absoluteMask, const BrushParams& para
         return false;
     }
     if (!effectSupported(params.effect)) {
-        return false; // routing comes with T3.2–T3.5
+        return false; // routing comes with T3.3–T3.5
     }
 
     // --- 1. Clip the bbox against the map (the editor view is bounded; ---
@@ -332,19 +348,136 @@ bool BrushTool::applyMask(const BrushMask& absoluteMask, const BrushParams& para
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// T3.2 — BrushMode layer helpers for the height tools.
+//
+// Terra's change-height toolzer always edits the active (top) layer: the dam
+// when VxDBuf != 0, the geo otherwise. The editor's Geo/Dam modes cut across
+// that, so the layer selection happens around the Terra toolzer:
+//   * Geo — only VxGBuf is driven (dam height caps the raise, the dam buffer
+//     itself is never written), keeping the game invariant "dam ≥ geo";
+//   * Dam — the dam layer is seeded (exactly like Terra's
+//     T2TE_PLOTTING_VERY_LIGHT_DAM) when the tool raises a dam-free cell, and
+//     every further change goes through Terra's own toolzer which removes the
+//     dam when the surface falls to the geo height.
+// The write orderings replicate Terra's tVoxSetAll (tools.h:496-674) cell
+// behaviour: SurBuf re-derivation via GetGeoType, whole voxel + fraction bit
+// storage, AtrBuf carrying the fraction bits.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// Terra's tVoxSet hardness attenuation for dV < 0 (tools.h:488-495):
+/// `dV = dV * (hardness << hardness) / 24`, INTEGER ops in this order.
+/// Replicated verbatim so the editor digs exactly like the game.
+int applyHardness(int off, int dV)
+{
+    if (dV >= 0) {
+        return dV;
+    }
+    const int hardness = vMap.GABuf[vMap.offsetBuf2offsetGBuf(off)] &
+                         GRIDAT_MASK_HARDNESS;
+    return (dV * (hardness << hardness)) / 24;
+}
+
+/// ChangeHeight in Geo mode: VxGBuf only, dam-capped raise.
+void geoHeightChange(int off, int dV)
+{
+    dV = applyHardness(off, dV);
+    const unsigned char fraction = vMap.AtrBuf[off] & VX_FRACTION_MASK;
+    const int v = (static_cast<int>(vMap.VxGBuf[off]) << VX_FRACTION) +
+                  fraction + dV;
+    const int ceiling = vMap.VxDBuf[off] != 0
+        ? (static_cast<int>(vMap.VxDBuf[off]) << VX_FRACTION) + fraction
+        : MAX_VX_HEIGHT;
+    const int clamped = std::clamp(v, MIN_VX_HEIGHT, ceiling);
+    vMap.SurBuf[off] = vMap.GetGeoType(off, clamped);
+    vMap.VxGBuf[off] = static_cast<unsigned char>(clamped >> VX_FRACTION);
+    vMap.AtrBuf[off] = static_cast<unsigned char>(clamped & VX_FRACTION_MASK);
+}
+
+/// ChangeHeight in Dam mode: seed the dam layer when needed, then let Terra's
+/// toolzer edit the active dam layer.
+void damHeightChange(int off, int dV)
+{
+    if (vMap.VxDBuf[off] == 0) {
+        if (dV <= 0) {
+            // Nothing to lower, and lowering the geo does not belong to the
+            // Dam mode (the Geo mode owns VxGBuf).
+            return;
+        }
+        // Seed the dam exactly like T2TE_PLOTTING_VERY_LIGHT_DAM:
+        // dam height = geo height, surface = very light dam index.
+        // A zero-height geo cannot carry a dam (VxDBuf == 0 means "no dam"),
+        // so the layer starts one voxel up and the delta shrinks by the
+        // same bump — the net surface change stays exactly `dV`.
+        const int seed = vMap.VxGBuf[off] ? vMap.VxGBuf[off] : 1;
+        if (seed != vMap.VxGBuf[off]) {
+            if (dV < (1 << VX_FRACTION)) {
+                // A sub-voxel raise cannot create a whole-voxel dam layer.
+                return;
+            }
+            dV -= 1 << VX_FRACTION; // compensate the seed bump exactly
+        }
+        vMap.VxDBuf[off] = static_cast<unsigned char>(seed);
+        vMap.SurBuf[off] = vMap.veryLightDam;
+    }
+    static individualToolzer<T2TE_CHANGING_TERRAIN_HEIGHT> heightToolzer;
+    heightToolzer.tVoxSet(off, dV);
+}
+
+} // namespace
+
 void BrushTool::applyEffectToCell(const BrushParams& params, int x, int y, unsigned char influence)
 {
+    const int off = y * static_cast<int>(vMap.H_SIZE) + x;
     switch (params.effect) {
     case BrushEffect::ChangeHeight: {
-        // Terra's own change-height toolzer: hardness scaling, At_* attributes
-        // and the geo/dam layer split (VxGBuf/VxDBuf/SurBuf consistency)
-        // happen inside tVoxSet (tools.h:488-674).
-        static individualToolzer<T2TE_CHANGING_TERRAIN_HEIGHT> heightToolzer;
-        heightToolzer.tVoxSet(y * static_cast<int>(vMap.H_SIZE) + x,
-                              changeHeightDelta(params, influence));
+        // Terra's own change-height toolzer: hardness scaling, At_*
+        // attributes and the geo/dam layer split (VxGBuf/VxDBuf/SurBuf
+        // consistency) happen inside tVoxSet (tools.h:488-674); the
+        // BrushMode layer selection is applied around it (see the helpers).
+        const int dV = changeHeightDelta(params, influence);
+        if (params.mode == BrushMode::Geo) {
+            geoHeightChange(off, dV);
+        } else {
+            damHeightChange(off, dV);
+        }
         break;
     }
-    // T3.2–T3.5 route further toolzers here; applyMask() refuses them until
+    case BrushEffect::Align4ZP:
+    case BrushEffect::AlignVariableH: {
+        // Terra's alignment toolzers level the surface towards hAppr, cap it
+        // at the target, mark At_LEVELED when the target is reached and skip
+        // At_ZEROPLAST cells — the game behaviour (tools.h:545-631). The dam
+        // layer is driven by the toolzer as well: raising with a dam present
+        // edits VxDBuf, dropping below the geo height removes the dam.
+        // The target height is synced before every cell — a static toolzer
+        // would otherwise carry the hZeroPlast of a previously loaded world.
+        if (params.mode == BrushMode::Geo && vMap.VxDBuf[off]) {
+            break; // Geo mode drives VxGBuf only — dam cells stay untouched
+        }
+        const int whole = params.effect == BrushEffect::Align4ZP
+            ? static_cast<int>(vMap.hZeroPlast)
+            : clampHeightLevel(params.heightLevel);
+        const int target = whole << VX_FRACTION;
+        // Direction per cell: towards the target. The magnitude is the same
+        // strength-scaled per-stamp delta ChangeHeight uses; the toolzer caps
+        // the result at the target on both sides.
+        const int magnitude = heightDeltaMagnitude(params, influence);
+        const int dV = vMap.SGetAlt(off) < target ? magnitude : -magnitude;
+        if (params.effect == BrushEffect::Align4ZP) {
+            static individualToolzer<T2TE_ALIGNMENT_TERRAIN_4ZP> alignZPToolzer;
+            alignZPToolzer.setHAppoximation(whole);
+            alignZPToolzer.tVoxSet(off, dV);
+        } else {
+            static individualToolzer<T2TE_ALIGNMENT_TERRAIN_VARIABLE_H> alignHToolzer;
+            alignHToolzer.setHAppoximation(whole);
+            alignHToolzer.tVoxSet(off, dV);
+        }
+        break;
+    }
+    // T3.3–T3.5 route further toolzers here; applyMask() refuses them until
     // then (effectSupported), so these cases cannot be reached yet.
     default:
         break;
