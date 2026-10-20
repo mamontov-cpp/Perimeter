@@ -13,6 +13,7 @@ ADD_EXECUTABLE(map_editor_tests
         WorldRoundTripTests.cpp
         WorldFilesIniTests.cpp
         WorldFilesDataTests.cpp
+        SaveWorldTests.cpp
 )
 
 SET_TARGET_PROPERTIES(map_editor_tests PROPERTIES

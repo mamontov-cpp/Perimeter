@@ -134,7 +134,21 @@ public:
     /// WorldFiles for the world that is currently loaded/selected.
     std::optional<WorldFiles> currentWorldFiles() const;
 
+    // -----------------------------------------------------------------------
+    // World saving (T1.3)
+    // -----------------------------------------------------------------------
+
+    /// Save the currently loaded world using Terra's save pipeline plus
+    /// editor-side updates (images, ini normalization). Returns true on success.
+    bool saveWorld();
+
 private:
+    /// Populate vMap.wTable for RESOURCE/Worlds. Terra's prepare() may only be
+    /// called once per process (its landPrepare() accumulates global radius
+    /// tables), so the editor calls it once and rebuilds wTable itself
+    /// afterwards — including when the game directory changes.
+    void refreshWorldTable();
+
     std::string gameDir_;
     std::vector<WorldInfo> worldList_;
     int32_t currentWorldIndex_ = -1;

@@ -15,6 +15,7 @@
 //   20  WorldRoundTripTests     Terra load/save, output.vmp and world.ini
 //   30  WorldFilesIniTests      world.ini read/edit/write
 //   40  WorldFilesDataTests     palettes, hardness, XML, leveled texture
+//   50  SaveWorldTests          EditorSession::saveWorld() pipeline
 //
 // Exit codes:
 //  0 — all checks passed

@@ -57,6 +57,7 @@ void reportFailure(const char* file, int line, const char* format, ...)
     va_end(args);
 
     std::fputc('\n', stderr);
+    std::fflush(stderr);
 }
 
 int runAll(const std::string& gameDir)
@@ -79,11 +80,14 @@ int runAll(const std::string& gameDir)
     int index = 0;
     for (const TestCase& test : tests) {
         std::printf("\n[TEST %d] %s...\n", ++index, test.name.c_str());
+        std::fflush(stdout);
         if (!test.function()) {
             std::printf("\n[FAILED] %s\n", test.name.c_str());
+            std::fflush(stdout);
             cleanUp(ctx);
             return 1;
         }
+        std::fflush(stdout);
     }
 
     cleanUp(ctx);
