@@ -676,6 +676,16 @@ void MainWindow::onActionSelectGameDir()
     // The session unloaded the world when the directory switched — drop the
     // viewport raster binding and the minimap image with it.
     onWorldUnload();
+
+    // Scan the worlds right away so the status bar reflects the selected
+    // directory immediately instead of only after a world is loaded
+    // (File → Scan Worlds stays available as an explicit re-scan, e.g.
+    // after new worlds appear in the folder).
+    if (!session_->scanWorlds()) {
+        QMessageBox::warning(this, tr("Scan Failed"),
+            tr("The game directory was selected, but no worlds were found "
+               "in RESOURCE/Worlds/."));
+    }
     updateStatusBar();
 }
 
@@ -976,7 +986,12 @@ void MainWindow::updateStatusBar()
 
     switch (session_->state()) {
     case MapEditor::SessionState::NoGame:
-        text = tr("No game directory selected.");
+        // The session stays in NoGame both before any directory is picked
+        // and when the picked directory has no worlds — phrase accordingly.
+        text = session_->hasGameDir()
+            ? tr("Game directory selected, but no worlds found "
+                 "(File \u2192 Scan Worlds).")
+            : tr("No game directory selected.");
         break;
     case MapEditor::SessionState::GameReady:
         text = tr("Game ready \u2014 %1 world(s) found.").arg(
