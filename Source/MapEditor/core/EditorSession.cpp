@@ -4,12 +4,12 @@
 
 #include "EditorSession.h"
 #include "ViewportRenderer.h"
+#include "WorldImages.h"
 
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
 #include <vector>
 
 // Terra / XTool headers — needed for vMap and content-path API.
@@ -361,109 +361,6 @@ std::optional<WorldFiles> EditorSession::currentWorldFiles() const
     return worldFilesFor(static_cast<size_t>(currentWorldIndex_));
 }
 
-namespace {
-
-/// Write a 24-bit uncompressed TGA (top-left origin) from a BGR byte buffer,
-/// which is the layout the game's own TGA reader (Terra/tgai.h) expects.
-bool writeTga24(const fs::path& path, unsigned width, unsigned height,
-                const std::vector<unsigned char>& bgr)
-{
-    if (width == 0 || height == 0 ||
-        bgr.size() < static_cast<std::size_t>(width) * height * 3) {
-        return false;
-    }
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    if (!out) {
-        fprintf(stderr, "EditorSession: cannot write '%s'.\n",
-                path.u8string().c_str());
-        return false;
-    }
-    unsigned char header[18] = {};
-    header[2] = 2; // uncompressed true-color
-    header[12] = static_cast<unsigned char>(width & 0xFF);
-    header[13] = static_cast<unsigned char>((width >> 8) & 0xFF);
-    header[14] = static_cast<unsigned char>(height & 0xFF);
-    header[15] = static_cast<unsigned char>((height >> 8) & 0xFF);
-    header[16] = 24;
-    header[17] = 0x20; // top-left origin
-    out.write(reinterpret_cast<const char*>(header), 18);
-    out.write(reinterpret_cast<const char*>(bgr.data()),
-              static_cast<std::streamsize>(width) * height * 3);
-    return out.good();
-}
-
-/// Render the loaded map into a V_SIZE x H_SIZE BGR buffer. Shared by the
-/// cache.tga and map.tga generators so both always show exactly the same
-/// image (the minimap is only a scaled copy).
-///
-/// Rasterisation goes through ViewportRenderer (fresh instance — its
-/// defaults are the Composite filter and no overlays, i.e. plain
-/// vMap.getColor32()), so the generated files and the on-screen viewport can
-/// never drift apart pixel-wise.
-bool renderMapToBgr(std::vector<unsigned char>& bgr, unsigned& width,
-                    unsigned& height)
-{
-    ViewportRenderer renderer;
-    if (!renderer.bindWorld()) {
-        return false;
-    }
-    width = static_cast<unsigned>(renderer.width());
-    height = static_cast<unsigned>(renderer.height());
-    bgr.assign(static_cast<std::size_t>(width) * height * 3, 0);
-    const std::uint32_t* pixels = renderer.pixels();
-    const std::size_t count = static_cast<std::size_t>(width) * height;
-    for (std::size_t i = 0; i < count; ++i) {
-        const std::uint32_t col32 = pixels[i];
-        bgr[i * 3 + 0] = static_cast<unsigned char>(col32 & 0xFF);         // B
-        bgr[i * 3 + 1] = static_cast<unsigned char>((col32 >> 8) & 0xFF);  // G
-        bgr[i * 3 + 2] = static_cast<unsigned char>((col32 >> 16) & 0xFF); // R
-    }
-    return true;
-}
-
-/// cache.tga — 24-bit H_SIZE x V_SIZE snapshot of the whole surface. Terra's
-/// fullLoad() xasserts on this file, so it must be regenerated on every save.
-bool generateCacheTga(const fs::path& worldDir)
-{
-    std::vector<unsigned char> bgr;
-    unsigned width = 0;
-    unsigned height = 0;
-    if (!renderMapToBgr(bgr, width, height)) {
-        return false;
-    }
-    return writeTga24(worldDir / "cache.tga", width, height, bgr);
-}
-
-/// map.tga — the radar/minimap texture (PerimeterShellUI reads it with an
-/// arbitrary size). Scale cache-sized pixels down into at most 256x256.
-bool generateMapTga(const fs::path& worldDir)
-{
-    std::vector<unsigned char> source;
-    unsigned sw = 0;
-    unsigned sh = 0;
-    if (!renderMapToBgr(source, sw, sh)) {
-        return false;
-    }
-
-    const unsigned tw = std::min<unsigned>(sw, 256);
-    const unsigned th = std::min<unsigned>(sh, 256);
-    std::vector<unsigned char> minimap(static_cast<std::size_t>(tw) * th * 3, 0);
-    for (unsigned y = 0; y < th; ++y) {
-        const unsigned sy = std::min(y * sh / th, sh - 1);
-        for (unsigned x = 0; x < tw; ++x) {
-            const unsigned sx = std::min(x * sw / tw, sw - 1);
-            const std::size_t src = (static_cast<std::size_t>(sy) * sw + sx) * 3;
-            const std::size_t dst = (static_cast<std::size_t>(y) * tw + x) * 3;
-            minimap[dst + 0] = source[src + 0];
-            minimap[dst + 1] = source[src + 1];
-            minimap[dst + 2] = source[src + 2];
-        }
-    }
-    return writeTga24(worldDir / "map.tga", tw, th, minimap);
-}
-
-} // namespace
-
 bool EditorSession::saveWorld()
 {
     if (!isWorldLoaded()) {
@@ -512,11 +409,11 @@ bool EditorSession::saveWorld()
     // ------------------------------------------------------------------
     // 3. Images the game and its shell read.
     // ------------------------------------------------------------------
-    if (!generateCacheTga(worldDir)) {
+    if (!WorldImages::generateCacheTga(worldDir)) {
         fprintf(stderr, "EditorSession::saveWorld: cache.tga generation failed.\n");
         return false;
     }
-    if (!generateMapTga(worldDir)) {
+    if (!WorldImages::generateMapTga(worldDir)) {
         fprintf(stderr, "EditorSession::saveWorld: map.tga generation failed.\n");
         return false;
     }

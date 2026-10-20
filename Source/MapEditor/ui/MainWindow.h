@@ -5,13 +5,16 @@
 class GameDirManager;
 class QCloseEvent;
 class QAction;
+class QDockWidget;
 class QDialog;
 class QLabel;
+class QMenu;
 class QToolBar;
 
 namespace MapEditor {
 class EditorSession;
 class ViewportWidget;
+class MinimapWidget;
 struct View3DCamera;
 }
 
@@ -24,6 +27,8 @@ struct View3DCamera;
 // T2.3 — View menu + view toolbar for the oblique 3D camera: 2D/3D switch,
 //        rotate, tilt, camera lift, zoom, reset; buttons carry live values in
 //        their tooltips and get in sync with the viewport via signals.
+// T2.4 — MinimapWidget in a dockable panel (View menu toggle action), fed by
+//        the viewport's viewRectChanged signal; minimap clicks navigate.
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
@@ -64,6 +69,9 @@ private slots:
     /// Refresh the view readout toolbar after the 3D camera moved.
     void onObliqueCameraChanged(const MapEditor::View3DCamera &camera);
 
+    /// Centre the viewport on the map cell clicked in the minimap (T2.4).
+    void onMinimapCellClicked(int mapX, int mapY);
+
 private:
     void buildMenuBar();
     void buildEditMenu(QMenuBar *menuBar);
@@ -71,6 +79,7 @@ private:
     void buildViewToolbar();
     void buildStatusBar();
     void buildViewport();
+    void buildMinimapDock();
 
     /// Update the toolbar label that mirrors the oblique camera state.
     void updateViewReadout();
@@ -121,4 +130,10 @@ private:
 
     // Toolbar readout of the current 3D camera.
     QLabel *viewReadout_ = nullptr;
+
+    // T2.4 — minimap panel: dockable, shown by default, toggled from the
+    // View menu.
+    QMenu *viewMenu_ = nullptr;
+    QDockWidget *minimapDock_ = nullptr;
+    MapEditor::MinimapWidget *minimap_ = nullptr;
 };

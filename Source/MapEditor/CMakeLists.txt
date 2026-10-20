@@ -37,6 +37,7 @@ ADD_LIBRARY(MapEditorCore STATIC
         core/preflight.cpp
         core/IniDocument.cpp
         core/WorldFiles.cpp
+        core/WorldImages.cpp
         core/EditorSession.cpp
         core/ViewportRenderer.cpp
         core/View3DRenderer.cpp
@@ -93,6 +94,8 @@ SET(MAP_EDITOR_APP_SRCS
         ui/GameDirManager.h
         ui/ViewportWidget.cpp
         ui/ViewportWidget.h
+        ui/MinimapWidget.cpp
+        ui/MinimapWidget.h
 )
 
 ADD_EXECUTABLE(map_editor ${MAP_EDITOR_APP_SRCS})

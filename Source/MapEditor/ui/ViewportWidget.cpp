@@ -325,6 +325,118 @@ QRect ViewportWidget::visibleCellRange() const
 }
 
 // ---------------------------------------------------------------------------
+// Current view rectangle (T2.4)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// Depth ("forward") scaling of the viewV2D projection: rendered rows map to
+/// ground distances with the slope kv
+///     kv = (focusC + cameraDZ) * sqrt(1 + tan²lean) / (|tan lean| * focusC)
+/// clamped like panObliqueBy() (a knee-soft heuristic — the real projection
+/// is non-linear along rows; it makes the north-south ground extent feel
+/// comparable to the east-west one). Shared with currentViewRect().
+double obliqueForwardScale(const MapEditor::View3DCamera &camera,
+                           double stableLeanDeg)
+{
+    const double tanLean = std::tan(qDegreesToRadians(stableLeanDeg));
+    if (std::fabs(tanLean) <= 1e-3) {
+        return 1.0;
+    }
+    const double kv =
+        (camera.focusC + camera.cameraDZ) * std::sqrt(1.0 + tanLean * tanLean) /
+        (std::fabs(tanLean) * camera.focusC);
+    return std::clamp(kv, 1.0, 12.0);
+}
+
+} // namespace
+
+QSize ViewportWidget::obliqueBufferSize() const
+{
+    // Buffer width — widget width clamped by Terra's window limit;
+    // height keeps the widget aspect.
+    const int bufferWidth = std::min(width(), View3DRenderer::kMaxWindowSize);
+    const double aspect =
+        height() / static_cast<double>(qMax(1, width()));
+    const int bufferHeight =
+        std::min(View3DRenderer::kMaxWindowSize,
+                 qMax(View3DRenderer::kMinWindowSize,
+                      qRound(bufferWidth * aspect)));
+    return {bufferWidth, bufferHeight};
+}
+
+QRect ViewportWidget::currentViewRect() const
+{
+    if (!renderer_) {
+        return {};
+    }
+    if (viewMode_ == ViewMode::TopDown) {
+        return visibleCellRange();
+    }
+
+    // Oblique: the 3D window is not a linear map projection — approximate the
+    // ground footprint by the viewV2D axes at the look-at centre
+    // (basis from VMAP.cpp:2096-2099): each rendered column spans
+    // (focusC + cameraDZ) / focusC ground cells, each row the same distance
+    // scaled by the kv slope of the projection. Good enough for the minimap
+    // outline; the rectangle is clipped to the map (single-map wrap area —
+    // the real 3D window can span the seam, the minimap shows the centre
+    // region).
+    const QSize buffer = obliqueBufferSize();
+    const double leanDeg = View3DRenderer::stableLeanDeg(
+        obliqueCamera_.leanDeg, obliqueCamera_.focusC, buffer.height() / 2);
+    const double kv = obliqueForwardScale(obliqueCamera_, leanDeg);
+    const double cellsPerPx =
+        (obliqueCamera_.focusC + obliqueCamera_.cameraDZ) /
+        static_cast<double>(obliqueCamera_.focusC);
+
+    const double groundWidth = buffer.width() * cellsPerPx;
+    const double groundHeight = buffer.height() * kv * cellsPerPx;
+    const int x0 = qRound(obliqueCenter_.x() - groundWidth / 2.0);
+    const int y0 = qRound(obliqueCenter_.y() - groundHeight / 2.0);
+    return QRect(x0, y0, qRound(groundWidth), qRound(groundHeight))
+        .intersected(QRect(0, 0, renderer_->width(), renderer_->height()));
+}
+
+void ViewportWidget::centerOnCell(const QPoint &cell)
+{
+    if (!session_ || !session_->isWorldLoaded() || !renderer_) {
+        return;
+    }
+    // Wrap the requested cell like the map axes do.
+    const int mapW = renderer_->width();
+    const int mapH = renderer_->height();
+    const int px = ((cell.x() % mapW) + mapW) % mapW;
+    const int py = ((cell.y() % mapH) + mapH) % mapH;
+
+    if (viewMode_ == ViewMode::Oblique) {
+        obliqueCenter_ = QPointF(px, py);
+    } else {
+        panOffset_ = QPointF(width() / 2.0 - px * zoom_,
+                             height() / 2.0 - py * zoom_);
+        cursorCell_ = {px, py};
+    }
+    update();
+}
+
+void ViewportWidget::emitViewRectIfChanged()
+{
+    if (!session_ || !session_->isWorldLoaded() || !renderer_) {
+        // World dropped — make sure the minimap hides the rectangle once.
+        if (!lastEmittedViewRect_.isEmpty()) {
+            lastEmittedViewRect_ = {};
+            emit viewRectChanged(lastEmittedViewRect_);
+        }
+        return;
+    }
+    const QRect viewRect = currentViewRect();
+    if (viewRect != lastEmittedViewRect_) {
+        lastEmittedViewRect_ = viewRect;
+        emit viewRectChanged(lastEmittedViewRect_);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Paint
 // ---------------------------------------------------------------------------
 
@@ -353,6 +465,7 @@ void ViewportWidget::paintEvent(QPaintEvent * /*event*/)
     if (viewMode_ == ViewMode::Oblique) {
         draw3DRaster(painter);
         drawHud(painter);
+        emitViewRectIfChanged();
         return;
     }
 
@@ -373,6 +486,9 @@ void ViewportWidget::paintEvent(QPaintEvent * /*event*/)
 
     // --- 6. HUD (cursor info, zoom) ---
     drawHud(painter);
+
+    // --- 7. Announce the view rectangle for the minimap (T2.4) ---
+    emitViewRectIfChanged();
 }
 
 // ---------------------------------------------------------------------------
@@ -410,20 +526,14 @@ void ViewportWidget::drawBaseRaster(QPainter &painter)
 void ViewportWidget::draw3DRaster(QPainter &painter)
 {
     // Resize the brain-free window: full widget size, clamped by Terra's own
-    // MAX_XSIZE_VX_WINDOW (the widget then scales the frame back up).
-    const int bufferWidth =
-        std::min(width(), View3DRenderer::kMaxWindowSize);
-    const double aspect =
-        height() / static_cast<double>(qMax(1, width()));
-    const int bufferHeight =
-        std::min(View3DRenderer::kMaxWindowSize,
-                 qMax(View3DRenderer::kMinWindowSize,
-                      qRound(bufferWidth * aspect)));
-
+    // MAX_XSIZE_VX_WINDOW (the widget then scales the frame back up). The
+    // same buffer size drives currentViewRect(), so the minimap footprint
+    // matches the frame about to be drawn.
     if (!view3d_) {
         view3d_ = new View3DRenderer();
     }
-    view3d_->resizeWindow(bufferWidth, bufferHeight);
+    const QSize buffer = obliqueBufferSize();
+    view3d_->resizeWindow(buffer.width(), buffer.height());
 
     // Camera + look-at (map cell coordinates wrapped to the map size).
     view3d_->setCamera(obliqueCamera_);
@@ -782,18 +892,10 @@ void ViewportWidget::panObliqueBy(double dxCursorPx, double dyCursorPx)
     const double cellsPerPxX =
         (focus + lift) / focus * view3d_->windowWidth() / width();
 
-    const double leanRad = qDegreesToRadians(
-        View3DRenderer::stableLeanDeg(obliqueCamera_.leanDeg,
-                                      obliqueCamera_.focusC,
-                                      view3d_->windowHeight() / 2));
-    const double tanLean = std::tan(leanRad);
-    double forwardScale = 1.0;
-    if (std::fabs(tanLean) > 1e-3) {
-        const double kv = (focus + lift) * std::sqrt(1.0 + tanLean * tanLean) /
-                          (std::fabs(tanLean) * focus);
-        forwardScale = std::clamp(kv, 1.0, 12.0);
-    }
-
+    const double leanDeg = View3DRenderer::stableLeanDeg(
+        obliqueCamera_.leanDeg, obliqueCamera_.focusC,
+        view3d_->windowHeight() / 2);
+    const double forwardScale = obliqueForwardScale(obliqueCamera_, leanDeg);
     const double theta = qDegreesToRadians(obliqueCamera_.turnAngleDeg);
     const double cosT = std::cos(theta);
     const double sinT = std::sin(theta);

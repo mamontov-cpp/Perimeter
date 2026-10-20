@@ -3,6 +3,8 @@
 #include <QColor>
 #include <QPoint>
 #include <QPointF>
+#include <QRect>
+#include <QSize>
 #include <QString>
 #include <QWidget>
 #include <cstdint>
@@ -155,6 +157,26 @@ public:
     void resetObliqueView();
 
     // -----------------------------------------------------------------------
+    // Current view rectangle (T2.4)
+    // -----------------------------------------------------------------------
+
+    /// The map region the viewport is looking at, in map cells:
+    ///   - TopDown: the actual visible cell range;
+    ///   - Oblique: the approximate ground footprint of the 3D window around
+    ///     the look-at centre (the oblique projection is not a linear map
+    ///     mapping, so the footprint is derived from the viewV2D basis).
+    /// Both are clipped to the map; empty when nothing is loaded/visible.
+    /// MinimapWidget (T2.4) draws this rectangle; a change is announced
+    /// through the viewRectChanged signal after every repaint that moved it
+    /// (pan, zoom, orbit, mode switch, resize, world load/unload).
+    QRect currentViewRect() const;
+
+    /// Centre the viewport on the given map cell (wrapped like XCYCL/YCYCL).
+    /// In Oblique mode it moves the look-at centre — the minimap click
+    /// navigation (T2.4).
+    void centerOnCell(const QPoint &cell);
+
+    // -----------------------------------------------------------------------
     // Overlays
     // -----------------------------------------------------------------------
 
@@ -188,9 +210,14 @@ signals:
     /// Emitted when the cursor moves over a different map cell.
     void cursorMapPosition(int mapX, int mapY);
     /// Emitted after setViewMode().
-    void viewModeChanged(MapEditor::ViewportWidget::ViewMode mode);;    /// Emitted after every successful 3D camera change (toolbar, wheel,
+    void viewModeChanged(MapEditor::ViewportWidget::ViewMode mode);
+    /// Emitted after every successful 3D camera change (toolbar, wheel,
     /// orbit, pan) so MainWindow can refresh its readout/labels.
     void obliqueCameraChanged(const MapEditor::View3DCamera &camera);
+    /// Emitted after a repaint in which currentViewRect() changed (pan, zoom,
+    /// orbit, mode switch, resize, world load/unload) — main consumers are
+    /// the minimap panel (T2.4) and tool panel readouts.
+    void viewRectChanged(const QRect &rect);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -214,6 +241,16 @@ private:
     void drawSpawnPoints(QPainter &painter);
     void drawHud(QPainter &painter);
     QRect visibleCellRange() const;
+
+    /// Rendered 3D buffer size draw3DRaster() uses (widget size clamped to
+    /// Terra's window limits) — shared with currentViewRect() so the minimap
+    /// footprint matches what the next 3D paint will show.
+    QSize obliqueBufferSize() const;
+
+    /// Compare currentViewRect() with the last emitted one and emit
+    /// viewRectChanged() when it moved (called from paintEvent, so every
+    /// pan/zoom/orbit/mode/resize change is caught, whatever triggered it).
+    void emitViewRectIfChanged();
 
     /// Pan of the 3D camera over the ground plane after a screen-drag of the
     /// given pixel deltas — inverse view-basis mapping, see the .cpp.
@@ -245,6 +282,10 @@ private:
     QPointF panStart_;
     /// Orbit drag (left button, Oblique mode).
     bool orbiting_ = false;
+
+    /// View rectangle emitted through viewRectChanged the last time
+    /// (guard against repeated identical emissions).
+    QRect lastEmittedViewRect_;
 
     std::vector<MapMarker> markers_;
     std::vector<SpawnPoint> spawns_;

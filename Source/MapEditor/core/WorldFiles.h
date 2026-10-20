@@ -146,6 +146,8 @@ public:
     static constexpr const char* GeoPalXmlFile       = "geoPal.xml";
     static constexpr const char* GeoTxXmlFile        = "geoTx.xml";
     static constexpr const char* LeveledTextureFile  = "leveledSurfaceTexture.tga";
+    static constexpr const char* MapTgaFile          = "map.tga"; // radar/minimap image (WorldImages, T2.4)
+    static constexpr const char* CacheTgaFile        = "cache.tga"; // full-surface snapshot the editor regenerates on save
 
     WorldFiles() = default;
     explicit WorldFiles(std::filesystem::path worldDir);

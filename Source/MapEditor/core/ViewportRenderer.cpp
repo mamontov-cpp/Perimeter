@@ -17,7 +17,7 @@ namespace {
 
 /// All buffers the raster needs. VxG/VxD/Sur/Atr/Rnr/GA are allocated
 /// together by mem4BufAlloc(), LvdTex comes from loadLeveledTexture(); the
-/// explicit checks mirror the guards renderMapToBgr() used to have.
+/// explicit checks mirror the guards WorldImages::renderToBgr() relies on.
 bool worldBuffersPresent()
 {
     return vMap.VxGBuf != nullptr && vMap.VxDBuf != nullptr &&
