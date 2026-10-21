@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 static_assert(MAX_XSIZE_VX_WINDOW == MapEditor::View3DRenderer::kMaxWindowSize,
               "kMaxWindowSize must track Terra's MAX_XSIZE_VX_WINDOW "
@@ -135,35 +136,6 @@ void View3DRenderer::render(int cx, int cy)
 // Smooth (mip-filtered) oblique voxels — post-T3.3
 // ---------------------------------------------------------------------------
 
-namespace {
-
-/// 0x00RRGGBB (the getColor32 channel order stored in the pyramid) to the
-/// RGB565 layout Sur2Col uses (QImage::Format_RGB16): rrrrrggg gggbbbbb.
-/// Truncation matches convertPal2TableSurCol (VMAP.cpp:1367-1369), where
-/// (cr<<8)&0xF800 keeps exactly the (r>>3)<<10 bits.
-inline unsigned short packRGB565(std::uint32_t color)
-{
-    const unsigned b = color & 0xFFu;
-    const unsigned g = (color >> 8) & 0xFFu;
-    const unsigned r = (color >> 16) & 0xFFu;
-    return static_cast<unsigned short>(
-        (r << 8) & 0xF800u | (g << 3) & 0x07E0u | (b >> 3) & 0x001Fu);
-}
-
-/// Smallest pyramid level whose kernel width (2^level cells) covers a ground
-/// footprint of `footprint` cells — the mip choice per frustum row, capped at
-/// `maxLevel` (the coarsiest pyramid level).
-inline int mipLevelForFootprint(int footprint, int maxLevel)
-{
-    int level = 0;
-    while (level < maxLevel && (1 << level) < footprint) {
-        ++level;
-    }
-    return level;
-}
-
-} // namespace
-
 void View3DRenderer::renderSmooth(int cx, int cy)
 {
     // Without a bound pyramid source the smooth style degrades to the exact
@@ -216,6 +188,15 @@ void View3DRenderer::renderSmooth(int cx, int cy)
                     (d + tga * vMap.focusC), 2)) * 65536);
     };
 
+    // Previous frustum-row's ground sample position per column: strips paint
+    // the interval between this row's anchor (P(d) at its bottom) and the
+    // previous row's anchor (P(d-1) at its top), so adjacent strips tile the
+    // depth axis without the one-sample-per-row steps that read as stacked
+    // "layers" on distant mountains.
+    std::vector<int> prevXXArr(GB_MAXX, 0);
+    std::vector<int> prevYYArr(GB_MAXX, 0);
+    bool havePrev = false;
+
     for (int d = -yside - 200; d < yside; ++d) {
         int DY = rowDY(d);
         if (d < 0) {
@@ -243,11 +224,15 @@ void View3DRenderer::renderSmooth(int cx, int cy)
         const int sx = (xx1r - xxOr) / GB_MAXX;
         const int sy = (yy1r - yyOr) / GB_MAXX;
 
-        // Mip level from this row's ground footprint per pixel: columns
-        // advance |sx|>>16 cells along the scan, rows |DY(d+1)-DY|>>16 cells
-        // forward. Both explode toward the horizon — without the pyramid the
-        // corners there alias into the blocky speckle fixed after T3.3.
-        int footX = (sx < 0 ? -sx : sx) >> 16;
+        // Fractional mip level from this row's ground footprint per pixel
+        // (GPU-style): columns advance |sx|>>16 cells along the scan, rows
+        // |DY(d+1)-DY|>>16 cells forward — both explode toward the horizon,
+        // and without the pyramid the corners there alias into the blocky
+        // speckle fixed after T3.3. The floor(log2(foot)) level blends into
+        // the next coarser one by the remainder (fW/256): adjacent rows then
+        // change kernels continuously, instead of painting level-jump rings
+        // around distant mountains.
+        int foot = (sx < 0 ? -sx : sx) >> 16;
         // The next row's ground distance must carry the same sign flip the
         // main loop applies (d < 0 rows negate DY); otherwise |DYnext − DY|
         // degenerates to ≈ 2·|DY| and the whole near half of the frame
@@ -260,20 +245,77 @@ void View3DRenderer::renderSmooth(int cx, int cy)
         if (footY < 0) {
             footY = -footY;
         }
-        if (footX < footY) {
-            footX = footY;
+        if (foot < footY) {
+            foot = footY;
         }
-        const int level = mipLevelForFootprint(footX, maxLevel);
+        int k0 = 0;
+        int k1 = 0;
+        int fW = 0;  // 0..256 blend weight of the coarser level k1
+        if (foot > 1) {
+            const float lFoot =
+                xm::log(static_cast<float>(foot)) * 1.4426950408889634f;
+            k0 = std::min(std::max(static_cast<int>(lFoot), 0), maxLevel);
+            if (k0 < maxLevel) {
+                k1 = k0 + 1;
+                fW = static_cast<int>((lFoot - static_cast<float>(k0)) * 255.0f);
+            }
+        }
+        // Depth advance below one cell: neighboring rows sample nearly the
+        // same ground point, so the previous-row samples would be redundant.
+        const bool subCellStep = footY == 0;
 
         int xx0 = xxOr;
         int yy0 = yyOr;
         for (int i = 0; i < GB_MAXX; ++i) {
-            // Bilinear mip sample: effective height (kernel-averaged at
-            // coarse levels, which smooths distant silhouettes) and the
-            // filtered cell color for the constant-per-column strip.
-            const int h = mips.sampleHeight(level, xx0, yy0);
-            const unsigned short col =
-                packRGB565(mips.sampleColor(level, xx0, yy0));
+            const bool usePrev = havePrev && !subCellStep;
+            const int xa = usePrev ? prevXXArr[i] : xx0;
+            const int ya = usePrev ? prevYYArr[i] : yy0;
+
+            // Trilinear sampling helpers: kernel-averaged levels smooth
+            // distant silhouettes and terrain detail, the fractional blend
+            // toward the next coarser level keeps the kernel growth
+            // continuous with depth (discrete levels per row would paint
+            // level-jump rings around distant mountains).
+            const auto heightAt = [&mips, k0, k1, fW](int x, int yy) -> int {
+                const int v = mips.sampleHeight(k0, x, yy);
+                return fW ? (v * (256 - fW) +
+                             mips.sampleHeight(k1, x, yy) * fW + 128) >> 8
+                          : v;
+            };
+            const auto colorAt =
+                [&mips, k0, k1, fW](int x, int yy) -> unsigned int {
+                const unsigned int v = mips.sampleColor(k0, x, yy);
+                if (!fW) {
+                    return v;
+                }
+                const unsigned int w = mips.sampleColor(k1, x, yy);
+                return (((v >> 16 & 0xFFu) * unsigned(256 - fW) +
+                         (w >> 16 & 0xFFu) * unsigned(fW) + 128u) >> 8 << 16) |
+                       (((v >> 8 & 0xFFu) * unsigned(256 - fW) +
+                         (w >> 8 & 0xFFu) * unsigned(fW) + 128u) >> 8 << 8) |
+                       (((v & 0xFFu) * unsigned(256 - fW) +
+                         (w & 0xFFu) * unsigned(fW) + 128u) >> 8);
+            };
+
+            // Heights are averaged between the two row anchors so the
+            // silhouette edges follow the same depth filter as the colors.
+            const int hCur = heightAt(xx0, yy0);
+            const int hPrev = usePrev ? heightAt(xa, ya) : hCur;
+            const int h = (hCur + hPrev + 1) >> 1;
+
+            // Strip colors: cFar anchors this row's ground position (the
+            // strip's bottom), cNear the previous row's (its top). Instead of
+            // painting one slab of cFar, the strip's rows slide linearly
+            // between the anchors — the linear un-projection of each screen
+            // row back onto the ground between the two anchors — so the
+            // depth profile is continuous across adjacent strips and the
+            // far mountains lose their stacked "layers" look.
+            const unsigned int cFar = colorAt(xx0, yy0);
+            const unsigned int cNear = usePrev ? colorAt(xa, ya) : cFar;
+            const int rF = (cFar >> 16) & 0xFF, gF = (cFar >> 8) & 0xFF,
+                      bF = cFar & 0xFF;
+            const int rN = (cNear >> 16) & 0xFF, gN = (cNear >> 8) & 0xFF,
+                      bN = cNear & 0xFF;
 
             const int y = GB_MAXY / 2 - d - (dh * h >> 16);
 
@@ -285,17 +327,34 @@ void View3DRenderer::renderSmooth(int cx, int cy)
                     a = GB_MAXY - 1;
                 }
                 const int yClamped = y < 0 ? 0 : y;
+                // One blended color per painted screen row: the row's ground
+                // position slides linearly from the previous row's anchor
+                // (top) down to this row's (just above the bottom), so the
+                // depth profile is continuous across adjacent strips.
+                const int rows = a - yClamped;
                 while (yClamped < a) {
-                    *b = col;
+                    const int wNear = (a - yClamped) * 65536 / rows;
+                    const int rr = (rN * wNear + rF * (65536 - wNear)
+                                    + 32768) >> 16;
+                    const int gg = (gN * wNear + gF * (65536 - wNear)
+                                    + 32768) >> 16;
+                    const int bb = (bN * wNear + bF * (65536 - wNear)
+                                    + 32768) >> 16;
+                    *b = static_cast<short>(
+                        (rr << 8) & 0xF800u | (gg << 3) & 0x07E0u |
+                        (bb >> 3) & 0x001Fu);
                     b -= GB_MAXX;
                     --a;
                 }
                 lasty[i] = yClamped;
             }
 
+            prevXXArr[i] = xx0;
+            prevYYArr[i] = yy0;
             xx0 += sx;
             yy0 += sy;
         }
+        havePrev = true;
     }
 
     // Sky: everything above the last drawn pixel of each column
