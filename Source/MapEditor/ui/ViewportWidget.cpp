@@ -142,9 +142,15 @@ void ViewportWidget::updateFitScale()
 
 void ViewportWidget::clampZoom()
 {
-    // The upper bound is 1:1 (plan T2.2 "1:1…fit"); the lower bound is fit.
-    if (zoom_ > 1.0) {
-        zoom_ = 1.0;
+    // The upper bound depends on the render style: Chunky stays at the
+    // plan T2.2 range "1:1…fit" (solid cell blocks), Smooth allows
+    // magnifying bilinearly like the game camera — up to kMaxSmoothZoom,
+    // but never below the fit scale (a world smaller than the widget must
+    // still be able to fill it). The lower bound is fit.
+    const double maxZoom = renderStyle_ == RenderStyle::Smooth
+                               ? std::max(fitScale_, kMaxSmoothZoom) : 1.0;
+    if (zoom_ > maxZoom) {
+        zoom_ = maxZoom;
     }
     if (!renderer_ || fitScale_ <= 0.0) {
         return;
@@ -218,6 +224,34 @@ void ViewportWidget::zoomStep(double factor)
         }
         update();
     }
+}
+
+// ---------------------------------------------------------------------------
+// Renderer style (chunky / smooth)
+// ---------------------------------------------------------------------------
+
+void ViewportWidget::setRenderStyle(RenderStyle style)
+{
+    if (renderStyle_ == style) {
+        return;
+    }
+    renderStyle_ = style;
+    if (style == RenderStyle::Chunky && zoom_ > 1.0) {
+        // Back from a magnified Smooth view: clamping to 1:1 shrinks the map
+        // under a fixed pan offset, so keep the widget-centre cell stable.
+        const QPointF widgetCenter(width() / 2.0, height() / 2.0);
+        const QPoint cell = screenToMap(qRound(widgetCenter.x()),
+                                        qRound(widgetCenter.y()));
+        clampZoom();
+        if (cell.x() >= 0 && cell.y() >= 0) {
+            const QPointF screenAfter = mapToScreen(cell.x(), cell.y());
+            panOffset_ -= (screenAfter - widgetCenter);
+        }
+    } else {
+        clampZoom();
+    }
+    update();
+    emit renderStyleChanged(renderStyle_);
 }
 
 // ---------------------------------------------------------------------------
@@ -560,7 +594,11 @@ void ViewportWidget::drawBaseRaster(QPainter &painter)
     QRectF targetRect(panOffset_, QSizeF(mw * zoom_, mh * zoom_));
     QRectF sourceRect(0, 0, mw, mh);
 
-    painter.setRenderHint(QPainter::SmoothPixmapTransform, zoom_ < 1.0);
+    // Chunky shows solid blocks (nearest sampling, no filter at >1:1);
+    // Smooth blends neighboring cells like the in-game camera.
+    painter.setRenderHint(
+        QPainter::SmoothPixmapTransform,
+        zoom_ < 1.0 || renderStyle_ == RenderStyle::Smooth);
     painter.setClipRect(rect());
     painter.drawImage(targetRect, image, sourceRect);
 }
@@ -583,6 +621,11 @@ void ViewportWidget::draw3DRaster(QPainter &painter)
 
     // Camera + look-at (map cell coordinates wrapped to the map size).
     view3d_->setCamera(obliqueCamera_);
+    // Post-T3.3: the smooth style filters the voxel view through the mip
+    // pyramid kept by the 2D renderer; chunky keeps Terra's point-sampled
+    // viewV2D output byte-for-byte.
+    view3d_->setColorSource(renderer_);
+    view3d_->setSmooth(renderStyle_ == RenderStyle::Smooth);
     const int mapW = renderer_->width();
     const int mapH = renderer_->height();
     const int cx =
@@ -602,7 +645,12 @@ void ViewportWidget::draw3DRaster(QPainter &painter)
         view3d_->windowWidth() * 2,
         QImage::Format_RGB16);
     painter.setClipRect(rect());
-    painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    // The 3D window buffer is widget-size clamped to Terra's
+    // MAX_XSIZE_VX_WINDOW, so it is usually upscaled to the widget: Smooth
+    // style interpolates the frame (as always before, T2.3), Chunky draws
+    // the raw pixels — the voxels keep their hard edges.
+    painter.setRenderHint(QPainter::SmoothPixmapTransform,
+                          renderStyle_ == RenderStyle::Smooth);
     painter.drawImage(rect(), image, QRectF(0, 0, view3d_->windowWidth(),
                                             view3d_->windowHeight()));
 }

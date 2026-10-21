@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "ColorMipmap.h"
+
 // ============================================================================
 // MapEditorCore — ViewportRenderer (T2.1).
 //
@@ -150,12 +152,35 @@ public:
     /// Handy for tests and for the eyedropper.
     std::uint32_t colorAt(int x, int y) const;
 
+    /// --- Color/height mip pyramid (post-T3.3, smooth 3D view) -----------
+    ///
+    /// Build the pyramid lazily: ViewportWidget only pays the memory and
+    /// build cost when the Smooth render style turns on the 3D view (see
+    /// View3DRenderer::renderSmooth). No-op when already current; also
+    /// dropped/rebuilt automatically when the world is unbound or replaced.
+    /// const + mutable state on purpose — the smooth renderer reads the
+    /// pyramid through a const source pointer and populates it on demand.
+    void ensureMips() const;
+    bool hasMips() const { return mipsBuilt_; }
+    /// The pyramid itself (valid only when hasMips() is true). Level 0 holds
+    /// the pure composite base colors (vrtMap::getColor32, no overlays, no
+    /// layer filtering) and the effective voxel heights (VxD else VxG) —
+    /// exactly the inputs vrtMap::viewV2D point-samples.
+    const ColorMipmap &colorMipmap() const { return mips_; }
+
 private:
     /// True while vMap still holds the same, fully loaded world the cache
     /// was built for.
     bool worldAlive() const;
     /// Paint GABuf-derived overlays over a base pixel.
     std::uint32_t applyOverlay(std::uint32_t col, int x, int y) const;
+    /// Refresh the pyramid base cells + upper levels for a rect (used by
+    /// renderRect/update when the pyramid has been built).
+    void refreshMipRegion(int x0, int y0, int x1, int y1) const;
+    /// Composite base color + effective height of a cell — the mip source.
+    /// Kept next to colorAt(): same inputs, just without the layer filters.
+    static std::uint32_t mipBaseColor(int x, int y);
+    static unsigned char mipEffectiveHeight(int x, int y);
 
     std::vector<std::uint32_t> cache_;
     int width_ = 0;
@@ -163,6 +188,8 @@ private:
     bool fullInvalid_ = false;
     LayerFilter filter_ = LayerFilter::Composite;
     std::uint32_t overlays_ = OverlayNone;
+    mutable ColorMipmap mips_;     ///< Built on demand (ensureMips), see above.
+    mutable bool mipsBuilt_ = false;
 };
 
 } // namespace MapEditor

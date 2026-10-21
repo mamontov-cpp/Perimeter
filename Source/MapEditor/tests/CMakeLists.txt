@@ -21,8 +21,9 @@ ADD_EXECUTABLE(map_editor_tests
         BrushColorToolTests.cpp
         WorldImagesTests.cpp
         ViewportRendererTests.cpp
-        View3DRendererTests.cpp
-)
+        ColorMipmapTests.cpp
+        View3DSmoothTests.cpp
+        View3DRendererTests.cpp)
 
 SET_TARGET_PROPERTIES(map_editor_tests PROPERTIES
         WIN32_EXECUTABLE OFF

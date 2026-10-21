@@ -36,6 +36,8 @@
 
 namespace MapEditor {
 
+class ViewportRenderer;   ///< Owns the mip pyramid (fwd: set via setColorSource).
+
 /// Camera knobs of the oblique 3D view, in editor units.
 struct View3DCamera
 {
@@ -102,6 +104,23 @@ public:
     /// without a loaded world.
     void render(int cx, int cy);
 
+    /// --- Smooth style (post-T3.3) ---------------------------------------
+    ///
+    /// Terra's viewV2D point-samples one ground cell per screen column/row;
+    /// near the horizon a pixel covers dozens of cells and distant
+    /// structures alias into blocky speckle. With smooth() on, render()
+    /// instead walks the same projection but draws colors and heights from
+    /// the mip pyramid of the attached ViewportRenderer (per-row level =
+    /// ground footprint per pixel, bilinear wrap sampling) — the mip-filtered
+    /// look the in-game GPU renderer gets. Fall back to viewV2D when no
+    /// source is attached (or it is unbound), so tests and the Chunky path
+    /// keep the classic output.
+    void setSmooth(bool smooth) { smooth_ = smooth; }
+    bool smooth() const { return smooth_; }
+    /// Attach the pyramid source (not owned; typically the widget's
+    /// ViewportRenderer). Required for the smooth path to engage.
+    void setColorSource(const ViewportRenderer *source) { colorSource_ = source; }
+
     /// RGB565 pixels, row-major (QImage::Format_RGB16 layout), windowWidth()
     /// entries per row; null until the first resizeWindow().
     const unsigned short *pixels() const
@@ -110,10 +129,17 @@ public:
     }
 
 private:
+    /// The mip-filtered voxel renderer walking the same frustum math as
+    /// viewV2D (VMAP.cpp:2041) with pyramid sampling; render() dispatches
+    /// here when smooth() is on.
+    void renderSmooth(int cx, int cy);
+
     std::vector<unsigned short> buffer_;
     int width_ = 0;
     int height_ = 0;
     View3DCamera camera_{};
+    bool smooth_ = false;
+    const ViewportRenderer *colorSource_ = nullptr;
 };
 
 } // namespace MapEditor

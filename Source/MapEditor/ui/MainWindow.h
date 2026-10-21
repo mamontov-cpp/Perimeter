@@ -147,6 +147,10 @@ private:
     QAction *actGrid_ = nullptr;
     QAction *actZoomToFit_ = nullptr;
     QAction *actView3D_ = nullptr;
+    // Renderer style toggle pair: pixel-exact vs bilinear (in-game look) —
+    // checkable, exclusive; default is Smooth (set by the viewport widget).
+    QAction *actChunkyRender_ = nullptr;
+    QAction *actSmoothRender_ = nullptr;
     QAction *actRotateLeft_ = nullptr;
     QAction *actRotateRight_ = nullptr;
     QAction *actTiltUp_ = nullptr;

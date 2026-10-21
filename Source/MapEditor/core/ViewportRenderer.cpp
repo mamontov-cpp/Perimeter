@@ -82,6 +82,10 @@ void ViewportRenderer::unbindWorld()
     width_ = 0;
     height_ = 0;
     fullInvalid_ = false;
+    // World change/free — the pyramid holds raw vMap colors, so it must go
+    // too (rebuilt on demand by ensureMips()).
+    mips_.clear();
+    mipsBuilt_ = false;
 }
 
 bool ViewportRenderer::isBound() const
@@ -213,6 +217,11 @@ void ViewportRenderer::renderRect(const DirtyRect& rect)
             row[x] = applyOverlay(colorAt(x, y), x, y);
         }
     }
+
+    // Keep the mip pyramid in step with the cache (post-T3.3). Brush
+    // strokes repaint small rects, so the incremental upper-level update
+    // stays proportional to the dirty area.
+    refreshMipRegion(x0, y0, x1, y1);
 }
 
 std::vector<DirtyRect> ViewportRenderer::update()
@@ -260,6 +269,69 @@ std::vector<DirtyRect> ViewportRenderer::update()
         renderRect(r);
     }
     return out;
+}
+
+// ---------------------------------------------------------------------------
+// Color/height mip pyramid (post-T3.3, smooth 3D view)
+// ---------------------------------------------------------------------------
+
+std::uint32_t ViewportRenderer::mipBaseColor(int x, int y)
+{
+    // The 3D view always shows the composite look: identical input to the
+    // LayerFilter::Composite branch of colorAt(), deliberately not filtered —
+    // the pyramid is view data, not editor-layer data.
+    const int off = vMap.offsetBuf(x, y);
+    return kOpaque | vMap.getColor32(off);
+}
+
+unsigned char ViewportRenderer::mipEffectiveHeight(int x, int y)
+{
+    // viewV2D draws lvD where it is non-zero and falls back to lvG
+    // (VxDBuf/VxGBuf, VMAP.cpp:2118-2123) — bake that choice into the
+    // pyramid so rendering only samples one buffer.
+    const int off = vMap.offsetBuf(x, y);
+    return vMap.VxDBuf[off] != 0 ? vMap.VxDBuf[off] : vMap.VxGBuf[off];
+}
+
+void ViewportRenderer::refreshMipRegion(int x0, int y0, int x1, int y1) const
+{
+    if (!mipsBuilt_) {
+        return;
+    }
+    for (int y = y0; y < y1; ++y) {
+        for (int x = x0; x < x1; ++x) {
+            mips_.setBaseCell(x, y, mipBaseColor(x, y), mipEffectiveHeight(x, y));
+        }
+    }
+    mips_.updateRegion(x0, y0, x1, y1);
+}
+
+void ViewportRenderer::ensureMips() const
+{
+    if (!worldAlive()) {
+        if (mipsBuilt_) {
+            mips_.clear();
+            mipsBuilt_ = false;
+        }
+        return;
+    }
+    if (mipsBuilt_) {
+        return;
+    }
+    mips_.build(width_, height_);
+    if (mips_.empty()) {
+        return;
+    }
+    // Fill the whole base raster + upper levels directly;
+    // refreshMipRegion() is the incremental path guarded by mipsBuilt_.
+    for (int y = 0; y < height_; ++y) {
+        for (int x = 0; x < width_; ++x) {
+            mips_.setBaseCell(x, y, mipBaseColor(x, y),
+                              mipEffectiveHeight(x, y));
+        }
+    }
+    mips_.updateRegion(0, 0, width_, height_);
+    mipsBuilt_ = true;
 }
 
 } // namespace MapEditor

@@ -16,6 +16,7 @@
 #include <QHBoxLayout>
 #include <QInputDialog>
 #include <QLabel>
+#include <QLinearGradient>
 #include <QListWidget>
 #include <QMainWindow>
 #include <QMenu>
@@ -200,6 +201,46 @@ QIcon makeModeIcon(bool oblique)
     p.drawText(QRectF(2.0, 5.0, 18.0, 12.0), Qt::AlignCenter,
                oblique ? QStringLiteral("3D")
                        : QStringLiteral("2D"));
+    return QIcon(pm);
+}
+
+/// Post-T3.3 chunky/smooth renderer toggle glyphs. Both draw the same 2x2 block of
+/// map cells; Chunky shows the blocks as solid hard-edged pixels, Smooth
+/// shades them with blurred/gradient edges as if neighbors were blended.
+QIcon makeChunkyIcon()
+{
+    QPixmap pm(22, 22);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setPen(Qt::NoPen);
+    p.setBrush(kInk);
+    // 2x2 blocks with visible gaps — the "big pixels" of nearest-neighbor
+    // sampling.
+    p.drawRect(QRectF(4.0, 4.0, 6.0, 6.0));
+    p.drawRect(QRectF(12.0, 4.0, 6.0, 6.0));
+    p.drawRect(QRectF(4.0, 12.0, 6.0, 6.0));
+    p.drawRect(QRectF(12.0, 12.0, 6.0, 6.0));
+    return QIcon(pm);
+}
+
+QIcon makeSmoothIcon()
+{
+    QPixmap pm(22, 22);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    // The same 2x2 block, but the cells bleed into each other: soft round
+    // blobs on top of a fading base square.
+    QLinearGradient fade(0, 0, 22, 22);
+    fade.setColorAt(0.0, QColor(kInk.red(), kInk.green(), kInk.blue(), 200));
+    fade.setColorAt(1.0, QColor(kAccent.red(), kAccent.green(), kAccent.blue(), 200));
+    p.setBrush(fade);
+    p.setPen(Qt::NoPen);
+    p.drawRoundedRect(QRectF(4.0, 4.0, 14.0, 14.0), 6.0, 6.0);
+    p.setBrush(QColor(255, 255, 255, 120));
+    p.drawEllipse(QPointF(9.0, 9.0), 3.5, 3.5);
+    p.setBrush(QColor(255, 255, 255, 60));
+    p.drawEllipse(QPointF(14.0, 14.0), 3.0, 3.0);
     return QIcon(pm);
 }
 
@@ -394,12 +435,33 @@ void MainWindow::buildViewport()
             [this](MapEditor::ViewportWidget::ViewMode mode) {
                 onViewportViewModeChanged(static_cast<int>(mode));
             });
+    connect(viewport_, &MapEditor::ViewportWidget::renderStyleChanged, this,
+            [this](MapEditor::ViewportWidget::RenderStyle style) {
+                // Keep the View menu / View toolbar toggle pair in sync with
+                // whatever set the style (the menu buttons are the only other
+                // driver today).
+                if (actChunkyRender_) {
+                    actChunkyRender_->setChecked(
+                        style == MapEditor::ViewportWidget::RenderStyle::Chunky);
+                }
+                if (actSmoothRender_) {
+                    actSmoothRender_->setChecked(
+                        style == MapEditor::ViewportWidget::RenderStyle::Smooth);
+                }
+            });
     connect(viewport_, &MapEditor::ViewportWidget::obliqueCameraChanged,
             this, &MainWindow::onObliqueCameraChanged);
 
     // T3.3 — eyedropper signal: right-click in TopDown mode picks SurBuf.
     connect(viewport_, &MapEditor::ViewportWidget::eyedropperPicked,
             this, &MainWindow::onEyedropperPicked);
+
+    /// Initial style button state (the viewport defaults to Smooth; post-T3.3
+    /// chunky/smooth renderer toggle).
+    actChunkyRender_->setChecked(viewport_->renderStyle() !=
+        MapEditor::ViewportWidget::RenderStyle::Smooth);
+    actSmoothRender_->setChecked(viewport_->renderStyle() ==
+        MapEditor::ViewportWidget::RenderStyle::Smooth);
 
     setCentralWidget(viewport_);
 
@@ -715,6 +777,34 @@ void MainWindow::buildViewMenu(QMenuBar *menuBar)
     actView3D_->setShortcut(QKeySequence(Qt::Key_F9));
     connect(actView3D_, &QAction::triggered, this, &MainWindow::onActionToggle3D);
 
+    // ------------------------------------------------------------------
+    // Renderer style: chunky (pixel-exact) vs smooth (bilinear, the
+    // in-game camera look). Both actions share one exclusive group.
+    // ------------------------------------------------------------------
+    QActionGroup *styleGroup = new QActionGroup(this);
+    actChunkyRender_ = new QAction(makeChunkyIcon(), tr("&Chunky Renderer"), this);
+    actChunkyRender_->setToolTip(
+        tr("Pixel-exact rendering: one map cell = one solid block, hard cell "
+           "edges (the classic look; the 2D view stays at or below 1:1)."));
+    actChunkyRender_->setCheckable(true);
+    actSmoothRender_ = new QAction(makeSmoothIcon(), tr("&Smooth Renderer"), this);
+    actSmoothRender_->setToolTip(
+        tr("Bilinear rendering like the in-game camera: neighboring cells "
+           "blend into smooth gradients; the 2D view may zoom above 1:1."));
+    actSmoothRender_->setCheckable(true);
+    styleGroup->addAction(actChunkyRender_);
+    styleGroup->addAction(actSmoothRender_);
+    connect(actChunkyRender_, &QAction::triggered, this, [this] {
+        if (viewport_) viewport_->setRenderStyle(
+            MapEditor::ViewportWidget::RenderStyle::Chunky);
+    });
+    connect(actSmoothRender_, &QAction::triggered, this, [this] {
+        if (viewport_) viewport_->setRenderStyle(
+            MapEditor::ViewportWidget::RenderStyle::Smooth);
+    });
+
+    viewMenu->addSeparator();
+
     actRotateLeft_ = create();
     actRotateLeft_->setText(tr("Rotate &Left"));
     actRotateLeft_->setIcon(makeRotateIcon(false));
@@ -821,6 +911,8 @@ void MainWindow::buildViewToolbar()
     bar->addAction(actZoomToFit_);
     bar->addSeparator();
     bar->addAction(actView3D_);
+    bar->addAction(actChunkyRender_);
+    bar->addAction(actSmoothRender_);
     bar->addSeparator();
     bar->addAction(actRotateLeft_);
     bar->addAction(actRotateRight_);

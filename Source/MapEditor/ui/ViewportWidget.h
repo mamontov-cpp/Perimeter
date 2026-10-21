@@ -42,6 +42,18 @@ class BrushTool;
 //     obliqueCameraChanged signal). Overlays (grid/brush/markers) still come
 //     from the 2D pipeline — they are TopDown-only in T2.3.
 //
+//   * Renderer style (chunky / smooth — post-T3.3 fix): the world data is
+//     one color per map cell; how that data is sampled on the screen is a
+//     separate toggle the user drives from the View toolbar:
+//       - Chunky — the classic look: one cell = one solid pixel, cell
+//         boundaries are hard edges (TopDown zoom stays at/below 1:1, the
+//         oblique 3D frame is upscaled nearest-neighbor).
+//       - Smooth — the in-game camera look: neighboring cells are blended
+//         bilinearly (exact same data the game feeds the GPU as a filtered
+//         terrain texture, Source/Game/CopyToGraph.cpp GetTileColor).
+//         TopDown zoom may then go above 1:1 so the blending is visible, and
+//         the oblique 3D frame is upscaled bilinearly as before.
+//
 //   * Cursor → map cell conversion (screenToMap) and a coordinate/zoom readout
 //     (TopDown mode).
 //
@@ -152,6 +164,24 @@ public:
 
     // ---- TopDown state -----------------------------------------------------
 
+    /// How the per-cell raster is sampled on the screen.
+    enum class RenderStyle
+    {
+        Chunky, ///< Nearest-neighbor: solid cell blocks, zoom ≤ 1:1 (TopDown).
+        Smooth, ///< Bilinear: in-game-like filtered look; zoom up to
+                /// kMaxSmoothZoom in TopDown, bilinear 3D upscale.
+    };
+
+    /// Upper zoom bound for the TopDown view in Smooth style — a close-up
+    /// shows soft gradients like the game camera, magnification above this
+    /// adds nothing (the data is one color per cell).
+    static constexpr double kMaxSmoothZoom = 4.0;
+
+    RenderStyle renderStyle() const { return renderStyle_; }
+    /// Switch the sampling style. In TopDown Chunky mode zooms above 1:1 are
+    /// clamped back (with the view centre kept stable); Smooth keeps them.
+    void setRenderStyle(RenderStyle style);
+
     /// Zoom: 1.0 = 1 map cell per screen pixel, fitScale() = whole map visible.
     double zoom() const { return zoom_; }
     /// Lower zoom bound for the current map/widget size.
@@ -238,6 +268,8 @@ signals:
     void cursorMapPosition(int mapX, int mapY);
     /// Emitted after setViewMode().
     void viewModeChanged(MapEditor::ViewportWidget::ViewMode mode);
+    /// Emitted after setRenderStyle().
+    void renderStyleChanged(MapEditor::ViewportWidget::RenderStyle style);
     /// Emitted after every successful 3D camera change (toolbar, wheel,
     /// orbit, pan) so MainWindow can refresh its readout/labels.
     void obliqueCameraChanged(const MapEditor::View3DCamera &camera);
@@ -303,6 +335,9 @@ private:
 
     ViewMode viewMode_ = ViewMode::TopDown;
     View3DRenderer *view3d_ = nullptr;
+
+    /// How the per-cell raster is sampled on the screen (post-T3.3 fix).
+    RenderStyle renderStyle_ = RenderStyle::Smooth;
 
     double zoom_ = 1.0;
     double fitScale_ = 1.0;
