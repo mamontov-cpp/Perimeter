@@ -274,6 +274,49 @@ QIcon makeGroundLetterIcon(const QString &letter, const QColor &color)
     return QIcon(pm);
 }
 
+/// T3.3 — color palette brush: a filled circle representing the surface
+/// color index.
+QIcon makeColorBrushIcon()
+{
+    QPixmap pm(22, 22);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    // A palette swatch: concentric half-circles.
+    p.setBrush(QColor(220, 80, 60));
+    p.setPen(Qt::NoPen);
+    p.drawChord(QRectF(3, 3, 16, 16), 0 * 16, 120 * 16);
+    p.setBrush(QColor(60, 160, 60));
+    p.drawChord(QRectF(3, 3, 16, 16), 120 * 16, 120 * 16);
+    p.setBrush(QColor(60, 80, 200));
+    p.drawChord(QRectF(3, 3, 16, 16), 240 * 16, 120 * 16);
+    return QIcon(pm);
+}
+
+/// T3.3 — eyedropper glyph: a pipette with a drop.
+QIcon makeEyedropperIcon()
+{
+    QPixmap pm(22, 22);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setPen(QPen(kInk, 2.0, Qt::SolidLine, Qt::RoundCap));
+    // Pipette body (diagonal line).
+    p.drawLine(QPointF(15.0, 3.0), QPointF(6.0, 12.0));
+    // Bulb at the top.
+    p.setBrush(kAccent);
+    p.setPen(QPen(kInk, 1.5));
+    p.drawEllipse(QRectF(13.5, 1.5, 5.0, 5.0));
+    // Tip at the bottom.
+    p.setPen(QPen(kInk, 1.5, Qt::SolidLine, Qt::RoundCap));
+    p.drawLine(QPointF(6.0, 12.0), QPointF(4.0, 18.0));
+    // Drop.
+    p.setBrush(QColor(80, 160, 220));
+    p.setPen(Qt::NoPen);
+    p.drawEllipse(QRectF(2.5, 17.0, 4.0, 4.0));
+    return QIcon(pm);
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -353,6 +396,10 @@ void MainWindow::buildViewport()
             });
     connect(viewport_, &MapEditor::ViewportWidget::obliqueCameraChanged,
             this, &MainWindow::onObliqueCameraChanged);
+
+    // T3.3 — eyedropper signal: right-click in TopDown mode picks SurBuf.
+    connect(viewport_, &MapEditor::ViewportWidget::eyedropperPicked,
+            this, &MainWindow::onEyedropperPicked);
 
     setCentralWidget(viewport_);
 
@@ -481,6 +528,30 @@ void MainWindow::onMinimapCellClicked(int mapX, int mapY)
     }
 }
 
+void MainWindow::onEyedropperPicked(int mapX, int mapY, unsigned char surIndex)
+{
+    // T3.3 — set the color brush to the picked SurBuf index.
+    MapEditor::BrushParams params = brushTool_->params();
+    params.effect = MapEditor::BrushEffect::SetColor;
+    params.colorIndex = surIndex;
+    brushTool_->setParams(params);
+
+    if (brushColorIndexSpin_) {
+        brushColorIndexSpin_->blockSignals(true);
+        brushColorIndexSpin_->setValue(surIndex);
+        brushColorIndexSpin_->blockSignals(false);
+    }
+    syncColorControls();
+    syncBrushControls();
+
+    statusBar()->showMessage(
+        tr("Eyedropper: SurBuf(%1,%2) = %3")
+            .arg(mapX)
+            .arg(mapY)
+            .arg(static_cast<int>(surIndex)),
+        5000);
+}
+
 void MainWindow::updateViewReadout()
 {
     if (!viewReadout_ || !viewport_) {
@@ -598,6 +669,9 @@ void MainWindow::buildEditMenu(QMenuBar *menuBar)
     brushMenu->addSeparator();
     brushMenu->addAction(actBrushGeo_);
     brushMenu->addAction(actBrushDam_);
+    brushMenu->addSeparator();
+    brushMenu->addAction(actBrushColor_);
+    brushMenu->addAction(actEyedropper_);
 }
 
 void MainWindow::buildViewMenu(QMenuBar *menuBar)
@@ -828,6 +902,14 @@ void MainWindow::createBrushActions()
            "(whole voxels, 1 voxel = 1/32 m)."),
         MapEditor::BrushEffect::AlignVariableH, 1);
 
+    // T3.3 — color brush: paints SurBuf with the selected palette index.
+    actBrushColor_ = addType(
+        makeColorBrushIcon(), tr("Paint Color"),
+        tr("The brush paints the surface color (SurBuf) with the selected "
+           "palette index. Height is not changed.\n"
+           "Geo palette: indices 0..127; Dam palette: 128..255."),
+        MapEditor::BrushEffect::SetColor, 0);
+
     // --- Mode: which terrain layer the height tools drive -------------
     QActionGroup *modeGroup = new QActionGroup(this);
     const auto addMode = [this, modeGroup](QIcon icon, const QString &text,
@@ -858,6 +940,21 @@ void MainWindow::createBrushActions()
            "digging it down to the geo height removes it. The dam is always "
            "at or above the geo."),
         MapEditor::BrushMode::Dam);
+
+    // T3.3 — eyedropper toggle: when checked, right-click reads the SurBuf
+    // index at the cursor cell and sets it as the color brush index.
+    actEyedropper_ = new QAction(makeEyedropperIcon(), tr("Eyedropper"), this);
+    actEyedropper_->setToolTip(
+        tr("Right-click in the 2D view to pick the surface color index "
+           "under the cursor into the color brush (E)."));
+    actEyedropper_->setCheckable(true);
+    actEyedropper_->setChecked(false);
+    actEyedropper_->setShortcut(QKeySequence(Qt::Key_E));
+    connect(actEyedropper_, &QAction::toggled, this, [this](bool checked) {
+        if (viewport_) {
+            viewport_->setEyedropperEnabled(checked);
+        }
+    });
 }
 
 void MainWindow::buildBrushToolbar()
@@ -902,7 +999,36 @@ void MainWindow::buildBrushToolbar()
     bar->addAction(actBrushGeo_);
     bar->addAction(actBrushDam_);
 
+    bar->addSeparator();
+
+    // T3.3 — color palette index spinbox (0..255): 0..127 for geo, 128..255
+    // for dam surface.
+    brushColorIndexSpin_ = new QSpinBox(bar);
+    brushColorIndexSpin_->setRange(0, 255);
+    brushColorIndexSpin_->setToolTip(
+        tr("Palette index for the \"Paint Color\" brush (0..127 = geo, "
+           "128..255 = dam)."));
+    connect(brushColorIndexSpin_, &QSpinBox::valueChanged, this, [this](int value) {
+        MapEditor::BrushParams params = brushTool_->params();
+        params.colorIndex = value;
+        brushTool_->setParams(params);
+        syncColorControls();
+    });
+    bar->addWidget(brushColorIndexSpin_);
+
+    // Color swatch: a label with a colored rectangle showing the current
+    // palette index color (read from the geo/dam palette).
+    brushColorSwatch_ = new QLabel(bar);
+    brushColorSwatch_->setFixedSize(24, 24);
+    brushColorSwatch_->setStyleSheet(
+        QStringLiteral("QLabel { border: 1px solid #808080; }"));
+    brushColorSwatch_->setAlignment(Qt::AlignCenter);
+    brushColorSwatch_->setToolTip(
+        tr("Current color index preview."));
+    bar->addWidget(brushColorSwatch_);
+
     syncBrushControls();
+    syncColorControls();
 }
 
 void MainWindow::syncBrushControls()
@@ -917,6 +1043,40 @@ void MainWindow::syncBrushControls()
             brushLevelSpin_->blockSignals(true);
             brushLevelSpin_->setValue(params.heightLevel);
             brushLevelSpin_->blockSignals(false);
+        }
+    }
+
+    // T3.3 — color index spinbox is enabled only for the SetColor effect.
+    if (brushColorIndexSpin_) {
+        brushColorIndexSpin_->setEnabled(
+            params.effect == MapEditor::BrushEffect::SetColor);
+        if (brushColorIndexSpin_->value() != params.colorIndex) {
+            brushColorIndexSpin_->blockSignals(true);
+            brushColorIndexSpin_->setValue(params.colorIndex);
+            brushColorIndexSpin_->blockSignals(false);
+        }
+    }
+    syncColorControls();
+}
+
+void MainWindow::syncColorControls()
+{
+    if (!brushTool_ || !brushColorIndexSpin_) {
+        return;
+    }
+
+    // Build the color swatch from the palette via the session helper.
+    if (session_ && session_->isWorldLoaded()) {
+        const int idx = brushColorIndexSpin_->value();
+        const unsigned int rgb = session_->paletteRgb(idx);
+        QColor color(static_cast<int>((rgb >> 16) & 0xFF),
+                     static_cast<int>((rgb >> 8) & 0xFF),
+                     static_cast<int>(rgb & 0xFF));
+        if (rgb != 0 || idx == 0) {
+            brushColorSwatch_->setStyleSheet(
+                QStringLiteral("QLabel { border: 1px solid #808080; "
+                               "background-color: %1; }")
+                    .arg(color.name()));
         }
     }
 }
@@ -1281,11 +1441,22 @@ void MainWindow::updateActionStates()
     }
     // T3.2 — the brush type/mode buttons follow the same rule.
     for (QAction *action : {actBrushRaise_, actBrushLower_, actBrushLevelZP_,
-                            actBrushLevelHeight_, actBrushGeo_,
-                            actBrushDam_}) {
+                            actBrushLevelHeight_, actBrushColor_,
+                            actBrushGeo_, actBrushDam_}) {
         if (action) {
             action->setEnabled(worldLoaded);
         }
+    }
+    // T3.3 — eyedropper and color spinbox.
+    if (actEyedropper_) {
+        actEyedropper_->setEnabled(worldLoaded);
+    }
+    if (brushColorIndexSpin_) {
+        brushColorIndexSpin_->setEnabled(
+            worldLoaded &&
+            brushTool_ &&
+            brushTool_->params().effect ==
+                MapEditor::BrushEffect::SetColor);
     }
     if (brushLevelSpin_) {
         brushLevelSpin_->setEnabled(

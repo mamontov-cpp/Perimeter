@@ -337,21 +337,21 @@ bool runBrushToolTests()
     params.direction = 1;
 
     // ------------------------------------------------------------------
-    // 2.4: unsupported effects (T3.2+ entry points) and None are refused
+    // 2.4: unsupported effects (T3.4+ entry points) and None are refused
     // without touching the undo stack.
     // ------------------------------------------------------------------
-    TEST_REQUIRE(!MapEditor::BrushTool::effectSupported(BrushEffect::SetColor),
-                 "SetColor must stay unsupported in T3.1.");
+    TEST_REQUIRE(MapEditor::BrushTool::effectSupported(BrushEffect::SetColor),
+                  "SetColor must be supported in T3.3.");
     const bool undoableBeforeRefusal = session.canUndo();
     BrushParams refused = params;
-    refused.effect = BrushEffect::SetColor;
+    refused.effect = BrushEffect::PlotZeroplast;
     TEST_REQUIRE(!brush.applyStamp(cx, cy, refused),
-                 "an unsupported effect must be refused.");
+                  "an unsupported effect must be refused.");
     refused.effect = BrushEffect::None;
     TEST_REQUIRE(!brush.applyStamp(cx, cy, refused),
-                 "the None effect must be refused.");
+                  "the None effect must be refused.");
     TEST_REQUIRE(session.canUndo() == undoableBeforeRefusal,
-                 "refused stamps must not push undo entries.");
+                  "refused stamps must not push undo entries.");
     std::printf("[PASS] unsupported/None effects are refused cleanly.\n");
 
     // ------------------------------------------------------------------

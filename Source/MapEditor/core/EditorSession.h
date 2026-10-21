@@ -199,6 +199,20 @@ public:
     /// Return true if there is at least one operation to redo.
     bool canRedo() const;
 
+    // -----------------------------------------------------------------------
+    // T3.3 — SurBuf / palette read helpers for the Qt UI (eyedropper,
+    // color swatch). These avoid pulling terra.h into Qt translation units.
+    // -----------------------------------------------------------------------
+
+    /// Read the SurBuf palette index at a map cell (0..255).
+    /// Returns 0 when the world is not loaded or the cell is out of range.
+    unsigned char surBufAt(int x, int y) const;
+
+    /// Read the RGB color of the given palette index.
+    /// Indices 0..127 use the geo palette, 128..255 use the dam palette.
+    /// Returns RGB as 0x00RRGGBB; 0 when the world is not loaded.
+    unsigned int paletteRgb(int colorIndex) const;
+
 private:
     /// Re-derive modified_ from the undo position vs. the position recorded at
     /// the last successful save. Called after every undo/redo.

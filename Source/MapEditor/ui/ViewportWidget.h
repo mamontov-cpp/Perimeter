@@ -125,6 +125,11 @@ public:
         return brushEditingEnabled_ && brushTool_ != nullptr;
     }
 
+    /// T3.3 — eyedropper mode: when enabled, a right-click in TopDown mode
+    /// reads the SurBuf index under the cursor and emits eyedropperPicked().
+    void setEyedropperEnabled(bool enabled);
+    bool isEyedropperEnabled() const { return eyedropperEnabled_; }
+
     // -----------------------------------------------------------------------
     // View state
     // -----------------------------------------------------------------------
@@ -243,6 +248,9 @@ signals:
     /// Emitted right after a brush stamp changed the world (T3.1) so the
     /// MainWindow can refresh the modified state in the status bar.
     void worldEdited();
+    /// Emitted when the eyedropper is triggered (T3.3) — provides the
+    /// map cell coordinates and the current SurBuf palette index at that cell.
+    void eyedropperPicked(int mapX, int mapY, unsigned char surIndex);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -289,6 +297,9 @@ private:
     bool brushEditingEnabled_ = true;
     bool brushPainting_ = false;
     QPoint lastPaintCell_{-1, -1};
+
+    // T3.3 — eyedropper: right-click reads SurBuf at cursor.
+    bool eyedropperEnabled_ = false;
 
     ViewMode viewMode_ = ViewMode::TopDown;
     View3DRenderer *view3d_ = nullptr;

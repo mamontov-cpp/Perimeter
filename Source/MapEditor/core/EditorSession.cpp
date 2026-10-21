@@ -711,4 +711,50 @@ std::string EditorSession::getUnsavedChangesWarning() const
     return "World \"" + name + "\" has unsaved changes. Do you want to save them?";
 }
 
+// ---------------------------------------------------------------------------
+// T3.3 — SurBuf / palette read helpers for the Qt UI.
+// ---------------------------------------------------------------------------
+
+unsigned char EditorSession::surBufAt(int x, int y) const
+{
+    if (!isWorldLoaded()) {
+        return 0;
+    }
+    const int mapW = static_cast<int>(vMap.H_SIZE);
+    const int mapH = static_cast<int>(vMap.V_SIZE);
+    if (x < 0 || y < 0 || x >= mapW || y >= mapH) {
+        return 0;
+    }
+    const int off = y * mapW + x;
+    return vMap.SurBuf[off];
+}
+
+unsigned int EditorSession::paletteRgb(int colorIndex) const
+{
+    if (!isWorldLoaded()) {
+        return 0;
+    }
+    if (colorIndex < 0 || colorIndex >= 256) {
+        return 0;
+    }
+    unsigned char r = 0, g = 0, b = 0;
+    if (colorIndex < 128) {
+        // Geo palette: 3 bytes per entry (BGR, stored as GeoPal[768]).
+        const int off = colorIndex * 3;
+        b = vMap.GeoPal[off];
+        g = vMap.GeoPal[off + 1];
+        r = vMap.GeoPal[off + 2];
+    } else {
+        // Dam palette: 3 bytes per entry (BGR, stored as DamPal[768]).
+        const int damIdx = colorIndex - 128;
+        const int off = damIdx * 3;
+        b = vMap.DamPal[off];
+        g = vMap.DamPal[off + 1];
+        r = vMap.DamPal[off + 2];
+    }
+    return (static_cast<unsigned int>(r) << 16) |
+           (static_cast<unsigned int>(g) << 8) |
+           static_cast<unsigned int>(b);
+}
+
 } // namespace MapEditor

@@ -11,6 +11,7 @@ class QDialog;
 class QLabel;
 class QMenu;
 class QSpinBox;
+class QToolButton;
 class QToolBar;
 
 namespace MapEditor {
@@ -75,6 +76,9 @@ private slots:
     /// Centre the viewport on the map cell clicked in the minimap (T2.4).
     void onMinimapCellClicked(int mapX, int mapY);
 
+    /// Handle eyedropper pick: update the color brush palette index (T3.3).
+    void onEyedropperPicked(int mapX, int mapY, unsigned char surIndex);
+
 private:
     void buildMenuBar();
     void buildEditMenu(QMenuBar *menuBar);
@@ -92,6 +96,9 @@ private:
     void buildBrushToolbar();
     // T3.2 — re-read the tool parameters into the buttons/spinbox state.
     void syncBrushControls();
+    // T3.3 — update the color swatch label and spinbox to reflect the
+    // current colorIndex in the brush params.
+    void syncColorControls();
 
     /// Put the current world name into the window title:
     /// "Perimeter Map Editor - <world>" while a world is loaded, otherwise
@@ -160,11 +167,19 @@ private:
     QAction *actBrushLower_ = nullptr;
     QAction *actBrushLevelZP_ = nullptr;
     QAction *actBrushLevelHeight_ = nullptr;
+    // T3.3 — color brush (SetSurf) action.
+    QAction *actBrushColor_ = nullptr;
+    // T3.3 — eyedropper toggle.
+    QAction *actEyedropper_ = nullptr;
     // T3.2 — brush mode actions: which layer the height tools drive.
     QAction *actBrushGeo_ = nullptr;
     QAction *actBrushDam_ = nullptr;
     // T3.2 — AlignVariableH target height (whole voxels 0..255).
     QSpinBox *brushLevelSpin_ = nullptr;
+    // T3.3 — palette index spinbox for the color brush (0..255).
+    QSpinBox *brushColorIndexSpin_ = nullptr;
+    // T3.3 — color swatch label showing the current color preview.
+    QLabel *brushColorSwatch_ = nullptr;
 
     // Toolbar readout of the current 3D camera.
     QLabel *viewReadout_ = nullptr;

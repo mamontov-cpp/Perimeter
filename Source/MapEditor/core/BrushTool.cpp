@@ -222,8 +222,9 @@ bool BrushTool::effectSupported(BrushEffect effect)
     case BrushEffect::ChangeHeight: // T3.2 raise/lower
     case BrushEffect::Align4ZP:     // T3.2 level to zeroplast
     case BrushEffect::AlignVariableH: // T3.2 smooth/level to height
+    case BrushEffect::SetColor:     // T3.3 paint SurBuf with palette index
         return true;
-    // The remaining effects are routed by T3.3–T3.5.
+    // The remaining effects are routed by T3.4–T3.5.
     default:
         return false;
     }
@@ -477,7 +478,15 @@ void BrushTool::applyEffectToCell(const BrushParams& params, int x, int y, unsig
         }
         break;
     }
-    // T3.3–T3.5 route further toolzers here; applyMask() refuses them until
+    case BrushEffect::SetColor: {
+        // T3.3 — paint the surface buffer with the selected palette index
+        // without touching the height buffers (VxGBuf, VxDBuf, AtrBuf).
+        // The caller validates that colorIndex is within [0, 255]; the game
+        // uses 0..127 for geo surface and 128..255 for dam surface.
+        vMap.SetTer(x, y, static_cast<unsigned char>(params.colorIndex));
+        break;
+    }
+    // T3.4–T3.5 route further toolzers here; applyMask() refuses them until
     // then (effectSupported), so these cases cannot be reached yet.
     default:
         break;

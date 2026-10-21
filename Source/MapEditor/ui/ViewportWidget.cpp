@@ -95,6 +95,11 @@ void ViewportWidget::setBrushEditingEnabled(bool enabled)
     }
 }
 
+void ViewportWidget::setEyedropperEnabled(bool enabled)
+{
+    eyedropperEnabled_ = enabled;
+}
+
 /// Apply one brush stamp at the cell under the cursor; returns true when the
 /// world changed. Same guard set used by press and move.
 static bool applyBrushStampHere(ViewportWidget &viewport, const QPoint &cell)
@@ -766,6 +771,22 @@ void ViewportWidget::drawHud(QPainter &painter)
 void ViewportWidget::mousePressEvent(QMouseEvent *event)
 {
     if (event->button() == Qt::MiddleButton || event->button() == Qt::RightButton) {
+        // T3.3 — eyedropper: right-click in TopDown mode picks the SurBuf
+        // index under the cursor, unless the eyedropper is off (fall through
+        // to pan below).
+        if (eyedropperEnabled_ && viewMode_ == ViewMode::TopDown) {
+            const QPoint pos = event->position().toPoint();
+            const QPoint cell = screenToMap(pos.x(), pos.y());
+            if (cell.x() >= 0 && cell.y() >= 0
+                    && renderer_ && renderer_->isBound()
+                    && cell.x() < renderer_->width()
+                    && cell.y() < renderer_->height()) {
+                const unsigned char surIndex = session_->surBufAt(cell.x(), cell.y());
+                emit eyedropperPicked(cell.x(), cell.y(), surIndex);
+            }
+            event->accept();
+            return;
+        }
         panning_ = true;
         panStart_ = event->position();
         setCursor(Qt::ClosedHandCursor);
