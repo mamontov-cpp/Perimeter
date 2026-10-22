@@ -24,7 +24,7 @@
 |---|---|---|
 | `output.vmp` | `sVmpHeader` ("S2T0" без сжатия / "S2T1" zlib) + 4 буфера `VxG,VxD,Atr,Sur` по `XS_Buf*YS_Buf` | да (`fullLoad`) |
 | `world.ini` | INI: `[Global Parameters] Map Power X/Y` → `H_SIZE=1<<power` (лимит `MAX_H_SIZE_POWER=14`, `Source/Terra/terra.h:13`), `GeoNet Power`, `Section Size Power`, `Minimal Square Power`, `hZeroPlast`, `Version=1.4`, `[Storage] File Name=output` | да (`analyzeINI`) |
-| `inGeo.act`, `inDam.act` | 768 байт BGR (256×3) | да (`loadGeoDamPal`) |
+| `inGeo.act`, `inDam.act` | 768 байт RGB (256×3, `palBuf[i*3+0]` — красный; T4.1-ревизия, прежняя пометка «BGR» была неверна) | да (`loadGeoDamPal`); в `_TX3D_LIBRARY_` GeoPal при загрузке берётся из `geoPal.xml`, поэтому при правке палитры нужно синхронизировать и XML |
 | `geoPal.xml`, `geoTx.xml` | XML (палитра 256 цветов и 3D-текстура геослоя) | да при `_TX3D_LIBRARY_` (сборка игры такая) |
 | `leveledSurfaceTexture.tga` | палитровый TGA, размер — степень 2 и ≤ размера карты | да, иначе `xassert` (`VMAP.cpp:2464-2490`) |
 | `cache.tga` | 24-бит несжатый TGA `H_SIZE×V_SIZE` | да, иначе `xassert` (`VMAP.cpp:935-941`) |
@@ -143,8 +143,8 @@ CMake: `OPTION(OPTION_MAP_EDITOR "Build map editor" OFF)`; `find_package(Qt6 COM
 - *Готово, когда:* все формы/режимы/кисти применяются с Undo и корректным рендером; результаты совпадают с поведением игры (проверка терраформерами в игре).
 
 ### T4 — Палитры
-- **T4.1** Панель палитр: `GeoPal`/`DamPal` (из `inGeo.act`/`inDam.act`), редактирование RGB, применение (`convertPal2TableSurCol`), синхронизация `geoPal.xml`.
-- **T4.2** Выбор цвета для кисти + отображение индекса/цвета под курсором.
+- **T4.1** *выполнено (T4.1-ревизия: модель SurBuf/палитр перепроверена по игре и мирам, см. docs/architecture.md §5.13 и docs/context.md).* Панель палитр: `GeoPal`/`DamPal` (из `inGeo.act`/`inDam.act`), редактирование RGB, применение (`convertPal2TableSurCol`), синхронизация `geoPal.xml`.
+- **T4.2** *выполнено (T4.2 + доработка чтения слоя при выборке в T4.1).* Выбор цвета для кисти + отображение индекса/цвета под курсором.
 
 ### T5 — Параметры мира и создание нового
 - **T5.1** Диалог параметров: `hZeroPlast`, размеры (только для новых карт: `createWorld(hSizePower, vSizePower)`), `GeoNet/Section/MinimalSquare`, `[Storage]` (сжатие S2T0/S2T1), `[3DF Parameters]` (`f3d.kmx/kmy/kmz/function`), цвет зеропласта (`TD/Color ZeroLayer` в `Perimeter.ini` читается в `analyzeINI`).

@@ -26,7 +26,8 @@
 // Covered files (names mirror the vrtMap constants in Terra/VMAP.cpp):
 //   world.ini                  all sections; order, comments and unknown keys
 //                              are preserved
-//   inGeo.act / inDam.act      256 x 3 BGR palettes (768 bytes each)
+//   inGeo.act / inDam.act      256 x 3 RGB palettes (768 bytes each, the raw
+//                              GeoPal/DamPal layout Terra loads into)
 //   hardness.bin               uint16 width/height + packed 2-bit hardness
 //                              (optional file, see vrtMap::loadHardness)
 //   geoPal.xml / geoTx.xml     geo layer palette and 3D texture (XML)
@@ -82,8 +83,9 @@ inline constexpr const char* Keys       = "Keys";
 
 } // namespace WorldIni
 
-/// Palettes of inGeo.act / inDam.act: 256 colors of three bytes each in BGR
-/// order — the same layout as vrtMap::GeoPal / vrtMap::DamPal.
+/// Palettes of inGeo.act / inDam.act: 256 colors of three bytes each in plain
+/// RGB order — the raw layout of vrtMap::GeoPal / vrtMap::DamPal
+/// (vrtMap::convertPal2TableSurCol reads palBuf[i*3+0] as red).
 struct GeoDamPalettes
 {
     static constexpr std::size_t SizeBytes = 768; // 256 * 3

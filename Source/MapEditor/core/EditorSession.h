@@ -208,10 +208,48 @@ public:
     /// Returns 0 when the world is not loaded or the cell is out of range.
     unsigned char surBufAt(int x, int y) const;
 
-    /// Read the RGB color of the given palette index.
-    /// Indices 0..127 use the geo palette, 128..255 use the dam palette.
-    /// Returns RGB as 0x00RRGGBB; 0 when the world is not loaded.
-    unsigned int paletteRgb(int colorIndex) const;
+    /// Palette of one material layer (T4.1). A SurBuf value indexes the
+    /// palette of the cell's own layer directly — the render tables
+    /// Sur2Col32[SurBuf][...] are built exactly that way
+    /// (vrtMap::convertPal2TableSurCol, VMAP.cpp:1367): dam-free cells take
+    /// GeoPal[SurBuf], dam cells (VxDBuf != 0) take DamPal[SurBuf]. Makes
+    /// no sense to bake a 0..127/128..255 split into the index — real dam
+    /// SurBuf values cover the whole 0..255 range in shipped worlds — so the
+    /// helpers below take the layer explicitly.
+    enum class PaletteLayer
+    {
+        Geo, ///< vrtMap::GeoPal (inGeo.act + geoPal.xml).
+        Dam, ///< vrtMap::DamPal (inDam.act).
+    };
+
+    /// Read RGB of one palette entry as 0x00RRGGBB.
+    /// Returns 0 when the world is not loaded or the index is out of range.
+    unsigned int paletteRgb(PaletteLayer layer, int paletteIndex) const;
+
+    /// The layer whose palette the SurBuf value at the cell belongs to
+    /// (dam ⇔ VxDBuf != 0). Returns false / Geo when out of range/not loaded.
+    bool cellIsDam(int x, int y) const;
+
+    // -----------------------------------------------------------------------
+    // T4.1 — palette editing. The palette buffers live in vrtMap (GeoPal /
+    // DamPal); the Qt UI reaches them only through these helpers.
+    // -----------------------------------------------------------------------
+
+    /// Write RGB (0x00RRGGBB) into the palette entry of `layer` (0..255).
+    /// Only records the change — rebuild the surface color tables with
+    /// applyPalettes() to make the viewport show it. Returns false when the
+    /// world is not loaded or the index is out of range.
+    bool setPaletteRgb(PaletteLayer layer, int paletteIndex, unsigned int rgb);
+
+    /// Rebuild vrtMap's surface color tables from the current GeoPal/DamPal
+    /// bytes (vrtMap::convertPal2TableSurCol for both palettes — the same
+    /// call loadGeoDamPal performs after loading). The next viewport repaint
+    /// then shows the edited palette. Returns false when no world is loaded.
+    bool applyPalettes();
+
+    /// True when the palette was changed since the last load/save (palette
+    /// edits are outside the undo history, so this is tracked separately).
+    bool isPaletteModified() const { return paletteModified_; }
 
 private:
     /// Re-derive modified_ from the undo position vs. the position recorded at
@@ -228,6 +266,9 @@ private:
     std::vector<WorldInfo> worldList_;
     int32_t currentWorldIndex_ = -1;
     bool modified_ = false;
+    /// T4.1 — the palette was edited since the last load/save (outside the
+    /// undo history; synced to inGeo.act/inDam.act + geoPal.xml on save).
+    bool paletteModified_ = false;
     SessionState state_ = SessionState::NoGame;
     std::string loadedWorldFolderName_;
 

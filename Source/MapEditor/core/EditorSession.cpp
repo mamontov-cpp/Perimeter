@@ -3,6 +3,7 @@
 // ============================================================================
 
 #include "EditorSession.h"
+#include "PaletteOps.h"
 #include "ViewportRenderer.h"
 #include "WorldImages.h"
 
@@ -238,6 +239,7 @@ bool EditorSession::loadWorld(size_t worldIndex)
     currentWorldIndex_ = static_cast<int32_t>(worldIndex);
     loadedWorldFolderName_ = wantedName;
     modified_ = false;
+    paletteModified_ = false;
     vMap.worldChanged = false;
     state_ = SessionState::WorldLoaded;
 
@@ -272,6 +274,7 @@ void EditorSession::unloadWorld()
     currentWorldIndex_ = -1;
     loadedWorldFolderName_.clear();
     modified_ = false;
+    paletteModified_ = false;
     if (isWorldLoaded() && vMap.VxGBuf) {
         // Just in case, clear flag if still set
         vMap.worldChanged = false;
@@ -394,6 +397,20 @@ bool EditorSession::saveWorld()
     }
 
     // ------------------------------------------------------------------
+    // 1b. Edited palettes (T4.1): inGeo.act/inDam.act via Terra, plus the
+    // geoPal.xml color table — in _TX3D_LIBRARY_ builds the game reloads the
+    // geo palette from the XML, not from inGeo.act, so saving only the .act
+    // files would silently drop the edits on the next load.
+    // ------------------------------------------------------------------
+    if (paletteModified_) {
+        vMap.saveGeoDamPal();
+        if (!files->writeGeoPalXml(PaletteOps::geoPalXml(vMap.GeoPal))) {
+            fprintf(stderr, "EditorSession::saveWorld: geoPal.xml sync failed.\n");
+            return false;
+        }
+    }
+
+    // ------------------------------------------------------------------
     // 2. world.ini — size, zero-layer height and storage version.
     // ------------------------------------------------------------------
     // Map Power is authoritative for the map size the game allocates.
@@ -421,6 +438,7 @@ bool EditorSession::saveWorld()
     hasSavedUndoPos_ = true;
     savedUndoPos_ = undoPos_;
     modified_ = false;
+    paletteModified_ = false;
     vMap.worldChanged = false;
     printf("EditorSession: saved world '%s' to '%s'\n",
            currentWorldName().c_str(), worldDir.u8string().c_str());
@@ -494,6 +512,27 @@ bool EditorSession::saveWorldAs(const std::string& newWorldName)
             // writeIniString/writeIniInt do read-modify-write; use generic write via helper style
             destFiles.writeIniString(WorldIni::Storage, WorldIni::FileName, newWorldName);
             // Also ensure map power/zero layer copied values are consistent if desired (copied already)
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // T4.1 — carry in-memory palette edits into the copy: the reload below
+    // reads the palettes back from the new world's files, so the edited
+    // buffers must be written there before unloadWorld() discards the
+    // in-memory state.
+    // ------------------------------------------------------------------
+    if (paletteModified_) {
+        WorldFiles destFiles(destDir);
+        GeoDamPalettes pal;
+        std::copy(vMap.GeoPal, vMap.GeoPal + GeoDamPalettes::SizeBytes,
+                  pal.geo.begin());
+        std::copy(vMap.DamPal, vMap.DamPal + GeoDamPalettes::SizeBytes,
+                  pal.dam.begin());
+        if (!destFiles.writePalettes(pal) ||
+            !destFiles.writeGeoPalXml(PaletteOps::geoPalXml(vMap.GeoPal))) {
+            fprintf(stderr,
+                    "EditorSession::saveWorldAs: cannot transfer the edited palettes.\n");
+            return false;
         }
     }
 
@@ -696,7 +735,9 @@ void EditorSession::markModifiedAgainstSavedState()
 
 bool EditorSession::hasUnsavedChanges() const
 {
-    return isModified();
+    // Palette edits (T4.1) live outside the undo history that isModified()
+    // tracks, so they are reported separately.
+    return isModified() || (isWorldLoaded() && isPaletteModified());
 }
 
 std::string EditorSession::getUnsavedChangesWarning() const
@@ -712,8 +753,27 @@ std::string EditorSession::getUnsavedChangesWarning() const
 }
 
 // ---------------------------------------------------------------------------
-// T3.3 — SurBuf / palette read helpers for the Qt UI.
+// T3.3/T4.1 — SurBuf / palette helpers for the Qt UI.
+//
+// Model (verified against the game code and the shipped worlds — see
+// docs/context.md): a SurBuf value indexes the palette of the cell's own
+// layer directly. The render tables Sur2Col32[SurBuf][...] are built by
+// convertPal2TableSurCol (VMAP.cpp:1367) from palBuf[i*3+0]=R, +1=G, +2=B:
+// dam-free cells take GeoPal[SurBuf] (the geo conversion, columns 0..126),
+// dam cells VxDBuf != 0 take DamPal[SurBuf] (the dam conversion, columns
+// 128..254; RnrBuf bit 7 carries the layer). Real dam SurBuf values cover
+// the whole 0..255 range, so the old "0..127 geo / 128..255 dam" index
+// split was wrong and the helpers take the layer explicitly.
 // ---------------------------------------------------------------------------
+
+namespace {
+
+unsigned char* paletteBuffer(EditorSession::PaletteLayer layer)
+{
+    return layer == EditorSession::PaletteLayer::Geo ? vMap.GeoPal : vMap.DamPal;
+}
+
+} // namespace
 
 unsigned char EditorSession::surBufAt(int x, int y) const
 {
@@ -729,32 +789,66 @@ unsigned char EditorSession::surBufAt(int x, int y) const
     return vMap.SurBuf[off];
 }
 
-unsigned int EditorSession::paletteRgb(int colorIndex) const
+unsigned int EditorSession::paletteRgb(PaletteLayer layer, int paletteIndex) const
+{
+    if (!isWorldLoaded() || paletteIndex < 0 || paletteIndex >= 256) {
+        return 0;
+    }
+    const unsigned char* pal = paletteBuffer(layer);
+    const int off = paletteIndex * 3;
+    return (static_cast<unsigned int>(pal[off + 0]) << 16) |
+           (static_cast<unsigned int>(pal[off + 1]) << 8) |
+           static_cast<unsigned int>(pal[off + 2]);
+}
+
+bool EditorSession::cellIsDam(int x, int y) const
 {
     if (!isWorldLoaded()) {
-        return 0;
+        return false;
     }
-    if (colorIndex < 0 || colorIndex >= 256) {
-        return 0;
+    const int mapW = static_cast<int>(vMap.H_SIZE);
+    const int mapH = static_cast<int>(vMap.V_SIZE);
+    if (x < 0 || y < 0 || x >= mapW || y >= mapH) {
+        return false;
     }
-    unsigned char r = 0, g = 0, b = 0;
-    if (colorIndex < 128) {
-        // Geo palette: 3 bytes per entry (BGR, stored as GeoPal[768]).
-        const int off = colorIndex * 3;
-        b = vMap.GeoPal[off];
-        g = vMap.GeoPal[off + 1];
-        r = vMap.GeoPal[off + 2];
-    } else {
-        // Dam palette: 3 bytes per entry (BGR, stored as DamPal[768]).
-        const int damIdx = colorIndex - 128;
-        const int off = damIdx * 3;
-        b = vMap.DamPal[off];
-        g = vMap.DamPal[off + 1];
-        r = vMap.DamPal[off + 2];
+    return vMap.VxDBuf[y * mapW + x] != 0;
+}
+
+// ---------------------------------------------------------------------------
+// T4.1 — palette editing.
+// ---------------------------------------------------------------------------
+
+bool EditorSession::setPaletteRgb(PaletteLayer layer, int paletteIndex,
+                                  unsigned int rgb)
+{
+    if (!isWorldLoaded() || paletteIndex < 0 || paletteIndex >= 256) {
+        return false;
     }
-    return (static_cast<unsigned int>(r) << 16) |
-           (static_cast<unsigned int>(g) << 8) |
-           static_cast<unsigned int>(b);
+
+    unsigned char* pal = paletteBuffer(layer);
+    const int off = paletteIndex * 3;
+    // Plain RGB byte order — convertPal2TableSurCol reads palBuf[i*3+0]
+    // as red (VMAP.cpp:1347).
+    pal[off + 0] = static_cast<unsigned char>((rgb >> 16) & 0xFF);
+    pal[off + 1] = static_cast<unsigned char>((rgb >> 8) & 0xFF);
+    pal[off + 2] = static_cast<unsigned char>(rgb & 0xFF);
+    paletteModified_ = true;
+    return true;
+}
+
+bool EditorSession::applyPalettes()
+{
+    if (!isWorldLoaded()) {
+        return false;
+    }
+
+    // Exactly what loadGeoDamPal() runs after filling GeoPal/DamPal: rebuild
+    // every Sur2Col*/Tex2Col*/SurZP2Col* table, and (for the dam palette)
+    // re-derive veryLightDam. The next viewport repaint re-renders the world
+    // through these tables.
+    vMap.convertPal2TableSurCol(vMap.GeoPal, vrtMap::Geologic);
+    vMap.convertPal2TableSurCol(vMap.DamPal, vrtMap::Damming);
+    return true;
 }
 
 } // namespace MapEditor

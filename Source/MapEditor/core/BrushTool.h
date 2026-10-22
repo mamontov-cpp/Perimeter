@@ -74,6 +74,9 @@ enum class BrushEffect
 
     // --- routing entry points for later tasks (not applied) ---------------
     SetColor,       ///< T3.3: SurBuf := params.colorIndex, height untouched.
+    PickColor,      ///< T4.2: eyedropper — sample the Geo/Dam surface pixel
+                    ///< (SurBuf index) at the stamp centre into the color
+                    ///< brush; no buffer is written.
     PlotZeroplast,  ///< T3.4: height=zeroPlast + At_ZEROPLAST.
     EraseZeroplast, ///< T3.4: T2TE_ERASE_ZEROPLAST.
     PlotSoot,       ///< T3.4: T2TE_PLOTTING_SOOT.
@@ -197,6 +200,20 @@ public:
     bool applyStamp(int cx, int cy);
     bool applyStamp(int cx, int cy, const BrushParams& params);
 
+    // --- T4.2: eyedropper brush type ---------------------------------------
+    /// The PickColor brush type applied at one map cell: sample the surface
+    /// palette index (the Geo/Dam pixel, i.e. the SurBuf entry — indices
+    /// 0..127 are geo palette colors, 128..255 dam palette colors) without
+    /// writing any buffer. The sampled index becomes the color brush's
+    /// params().colorIndex, so switching back to SetColor paints it right
+    /// away; read lastPickedColorIndex() for the value. One pick = no undo
+    /// entry. Returns true when a pixel was sampled.
+    bool pickColorAt(int cx, int cy);
+    /// The last index pickColorAt() sampled (valid after hasPickedColor()).
+    unsigned char lastPickedColorIndex() const { return lastPickedColorIndex_; }
+    /// Whether pickColorAt() has already sampled at least one pixel.
+    bool hasPickedColor() const { return hasPickedColor_; }
+
     /// The Line shape: apply the stamped mask along a Bresenham path —
     /// one call, one undo entry, cells counted once (see BrushMasks::lineStamp).
     /// Returns true when the world changed.
@@ -243,6 +260,10 @@ private:
 
     /// T3.5: brush-image mask loaded from file (pixel values → influence 0..255).
     BrushMask imageMask_;
+
+    /// T4.2: the last index pickColorAt() sampled (SurBuf at the click cell).
+    unsigned char lastPickedColorIndex_ = 0;
+    bool hasPickedColor_ = false;
 };
 
 } // namespace MapEditor

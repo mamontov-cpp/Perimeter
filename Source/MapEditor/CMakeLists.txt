@@ -40,6 +40,7 @@ ADD_LIBRARY(MapEditorCore STATIC
         core/WorldImages.cpp
         core/EditorSession.cpp
         core/BrushTool.cpp
+        core/PaletteOps.cpp
         core/ColorMipmap.cpp
         core/ViewportRenderer.cpp
         core/View3DRenderer.cpp
@@ -98,6 +99,8 @@ SET(MAP_EDITOR_APP_SRCS
         ui/ViewportWidget.h
         ui/MinimapWidget.cpp
         ui/MinimapWidget.h
+        ui/PalettePanel.cpp
+        ui/PalettePanel.h
 )
 
 ADD_EXECUTABLE(map_editor ${MAP_EDITOR_APP_SRCS})

@@ -5,6 +5,8 @@
 #include <EditorSession.h>
 #include <GameDirManager.h>
 #include <MinimapWidget.h>
+#include <PalettePanel.h>
+#include <ViewportRenderer.h>
 #include <ViewportWidget.h>
 
 #include <algorithm>
@@ -269,6 +271,28 @@ QIcon makeBrushIcon()
          << QPointF(10.5, 16.5)
          << QPointF(14.0, 15.5);
     p.drawPolygon(drop);                                   // bristle tip
+    return QIcon(pm);
+}
+
+/// T4.2 — View editor mode: the mouse-arrow the navigation gives back after
+/// the brush/pipette are put down.
+QIcon makeViewModeIcon()
+{
+    QPixmap pm(22, 22);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setPen(QPen(kInk, 1.6));
+    p.setBrush(kAccent);
+    QPolygonF arrow;
+    arrow << QPointF(6.0, 3.5)
+          << QPointF(6.0, 17.0)
+          << QPointF(9.8, 13.6)
+          << QPointF(12.4, 18.5)
+          << QPointF(14.6, 17.3)
+          << QPointF(12.0, 12.6)
+          << QPointF(16.5, 12.0);
+    p.drawPolygon(arrow);
     return QIcon(pm);
 }
 
@@ -540,9 +564,17 @@ void MainWindow::buildViewport()
     // T3.1 — plug the brush tool in and mirror its shape/radius in the
     // cursor preview (the viewport draws the outline over the raster).
     viewport_->setBrushTool(brushTool_);
-    // The toolbar/menu toggle was set before this widget existed — push the
-    // checked state into the viewport now that it is here.
-    viewport_->setBrushEditingEnabled(actBrushEdit_ && actBrushEdit_->isChecked());
+    // The editor mode actions were created before this widget existed — push
+    // the checked state into the viewport now that it is here (the Brush
+    // mode is the viewport default, so it needs no explicit set).
+    if (viewport_ && actModeEyedropper_ && actModeView_) {
+        if (actModeEyedropper_->isChecked()) {
+            viewport_->setEditorMode(
+                MapEditor::ViewportWidget::EditorMode::Eyedropper);
+        } else if (actModeView_->isChecked()) {
+            viewport_->setEditorMode(MapEditor::ViewportWidget::EditorMode::View);
+        }
+    }
     syncBrushControls();
     viewport_->setBrushPreviewVisible(true);
 
@@ -578,6 +610,13 @@ void MainWindow::buildViewport()
     connect(viewport_, &MapEditor::ViewportWidget::obliqueCameraChanged,
             this, &MainWindow::onObliqueCameraChanged);
 
+    // T4.2 — editor mode follows the viewport too (mode actions keep their
+    // check state when the interaction switches the mode side-effects).
+    connect(viewport_, &MapEditor::ViewportWidget::editorModeChanged, this,
+            [this](MapEditor::ViewportWidget::EditorMode mode) {
+                onEditorModeChanged(static_cast<int>(mode));
+            });
+
     // T3.3 — eyedropper signal: right-click in TopDown mode picks SurBuf.
     connect(viewport_, &MapEditor::ViewportWidget::eyedropperPicked,
             this, &MainWindow::onEyedropperPicked);
@@ -593,6 +632,8 @@ void MainWindow::buildViewport()
 
     // T2.4 — the minimap goes into its own dock next to the central widget.
     buildMinimapDock();
+    // T4.1 — the palette panel takes its place below the minimap dock.
+    buildPaletteDock();
 }
 
 void MainWindow::buildMinimapDock()
@@ -638,6 +679,67 @@ void MainWindow::buildMinimapDock()
     minimap_->setViewRect(viewport_->currentViewRect());
 }
 
+void MainWindow::buildPaletteDock()
+{
+    palettePanel_ = new MapEditor::PalettePanel(this);
+
+    paletteDock_ = new QDockWidget(tr("Palette"), this);
+    paletteDock_->setObjectName(QStringLiteral("PaletteDock"));
+    paletteDock_->setWidget(palettePanel_);
+    paletteDock_->setAllowedAreas(Qt::LeftDockWidgetArea |
+                                  Qt::RightDockWidgetArea |
+                                  Qt::TopDockWidgetArea |
+                                  Qt::BottomDockWidgetArea);
+    paletteDock_->setFeatures(QDockWidget::DockWidgetClosable |
+                              QDockWidget::DockWidgetMovable |
+                              QDockWidget::DockWidgetFloatable);
+    // Stacks under the minimap dock on the same side.
+    addDockWidget(Qt::RightDockWidgetArea, paletteDock_);
+
+    // The View menu owns the show/hide toggle (default: visible).
+    if (viewMenu_) {
+        viewMenu_->addSeparator();
+        QAction *toggleAction = paletteDock_->toggleViewAction();
+        toggleAction->setText(tr("&Palette"));
+        toggleAction->setToolTip(
+            tr("Show or hide the palette panel (P)"));
+        toggleAction->setShortcut(QKeySequence(Qt::Key_P));
+        viewMenu_->addAction(toggleAction);
+    }
+
+    // A selected swatch becomes the color the brush paints: the palette the
+    // swatch lives in follows the brush (Geo / Dam layer, T4.1 model — a
+    // SurBuf value indexes the palette of the cell's layer directly).
+    connect(palettePanel_, &MapEditor::PalettePanel::colorSelected,
+            this, [this](int paletteIndex, bool dam) {
+        if (brushTool_) {
+            MapEditor::BrushParams params = brushTool_->params();
+            params.mode = dam ? MapEditor::BrushMode::Dam
+                              : MapEditor::BrushMode::Geo;
+            params.colorIndex = paletteIndex;
+            brushTool_->setParams(params);
+        }
+        if (brushColorIndexSpin_) {
+            brushColorIndexSpin_->blockSignals(true);
+            brushColorIndexSpin_->setValue(paletteIndex);
+            brushColorIndexSpin_->blockSignals(false);
+        }
+        syncBrushControls();
+        syncColorControls();
+    });
+
+    // An edited palette re-tints the whole world: rebuild both render paths.
+    connect(palettePanel_, &MapEditor::PalettePanel::paletteEdited,
+            this, [this](int, bool) {
+        refreshPaletteRenderers();
+        // The current brush color swatch may be the entry that was edited.
+        syncColorControls();
+    });
+
+    // Push the session that may already be bound.
+    palettePanel_->setSession(session_);
+}
+
 void MainWindow::onWorldLoaded()
 {
     // Rebind the viewport to pick up the newly loaded world.
@@ -650,6 +752,11 @@ void MainWindow::onWorldLoaded()
         minimap_->setSession(session_);
         minimap_->setViewRect(viewport_ ? viewport_->currentViewRect()
                                         : QRect());
+    }
+    // Rebuild the palette panel grids (T4.1) — the palette belongs to the
+    // newly loaded world.
+    if (palettePanel_ && session_) {
+        palettePanel_->setSession(session_);
     }
     // The title carries the world name (also after "Save As", which
     // rebinds the session onto the renamed world and lands here).
@@ -666,6 +773,9 @@ void MainWindow::onWorldUnload()
         minimap_->setSession(session_);
         minimap_->setViewRect(QRect());
     }
+    if (palettePanel_ && session_) {
+        palettePanel_->setSession(session_);
+    }
     updateWindowTitle();
     updateStatusBar();
 }
@@ -675,6 +785,21 @@ void MainWindow::updateCursorInfo(int mapX, int mapY)
     // Both view modes report the cell under the cursor: TopDown maps the
     // screen linearly, Oblique ray-picks the rendered voxel surface.
     QString info = QString(tr("X: %1  Y: %2")).arg(mapX).arg(mapY);
+    // T4.2 — also show the palette entry and RGB of the pixel: a SurBuf
+    // value indexes the palette of the cell's own layer (T4.1 model), so the
+    // readout resolves it the same way the renderer does (geo/dam).
+    if (session_ && session_->isWorldLoaded() && mapX >= 0 && mapY >= 0) {
+        const int surIndex = session_->surBufAt(mapX, mapY);
+        const bool dam = session_->cellIsDam(mapX, mapY);
+        const unsigned int rgb =
+            session_->paletteRgb(dam ? MapEditor::EditorSession::PaletteLayer::Dam
+                                     : MapEditor::EditorSession::PaletteLayer::Geo,
+                                 surIndex);
+        info += QString(tr("  Sur: %1 (%2)  %3"))
+                    .arg(surIndex)
+                    .arg(dam ? tr("Dam") : tr("Geo"))
+                    .arg(rgb, 6, 16, QLatin1Char('0'));
+    }
     statusBar()->showMessage(info, 3000);
 }
 
@@ -706,6 +831,23 @@ void MainWindow::onObliqueCameraChanged(const MapEditor::View3DCamera &)
     updateViewReadout();
 }
 
+void MainWindow::onEditorModeChanged(int mode)
+{
+    using Viewport = MapEditor::ViewportWidget;
+    // Only mirrors the viewport state into the exclusive mode actions —
+    // the View mode stays reachable no matter how the mode was switched.
+    if (actModeView_) {
+        actModeView_->setChecked(mode == static_cast<int>(Viewport::EditorMode::View));
+    }
+    if (actModeBrush_) {
+        actModeBrush_->setChecked(mode == static_cast<int>(Viewport::EditorMode::Brush));
+    }
+    if (actModeEyedropper_) {
+        actModeEyedropper_->setChecked(
+            mode == static_cast<int>(Viewport::EditorMode::Eyedropper));
+    }
+}
+
 void MainWindow::onMinimapCellClicked(int mapX, int mapY)
 {
     if (viewport_) {
@@ -715,10 +857,17 @@ void MainWindow::onMinimapCellClicked(int mapX, int mapY)
 
 void MainWindow::onEyedropperPicked(int mapX, int mapY, unsigned char surIndex)
 {
-    // T3.3 — set the color brush to the picked SurBuf index.
+    // T4.2 — BrushTool::pickColorAt already stored the sampled pixel and put
+    // it into params().colorIndex; the eyedropper readout slots the color
+    // brush in for painting the sampled color afterwards. The SurBuf value
+    // indexes the palette of the sampled cell's layer — point the brush at
+    // the same layer so the color readout and the paint resolve it exactly
+    // like the renderer does (T4.1 model).
+    const bool dam = session_ && session_->cellIsDam(mapX, mapY);
     MapEditor::BrushParams params = brushTool_->params();
     params.effect = MapEditor::BrushEffect::SetColor;
     params.colorIndex = surIndex;
+    params.mode = dam ? MapEditor::BrushMode::Dam : MapEditor::BrushMode::Geo;
     brushTool_->setParams(params);
 
     if (brushColorIndexSpin_) {
@@ -728,6 +877,11 @@ void MainWindow::onEyedropperPicked(int mapX, int mapY, unsigned char surIndex)
     }
     syncColorControls();
     syncBrushControls();
+
+    // T4.1 — mirror the pick into the palette panel selection.
+    if (palettePanel_) {
+        palettePanel_->selectIndex(static_cast<int>(surIndex), dam);
+    }
 
     statusBar()->showMessage(
         tr("Eyedropper: SurBuf(%1,%2) = %3")
@@ -829,27 +983,13 @@ void MainWindow::buildEditMenu(QMenuBar *menuBar)
 
     editMenu->addSeparator();
 
-    // T3.1 — brush painting toggle: when checked, a left-button press/drag
-    // applies the brush stamps in both view modes (default raise, filled
-    // circle).
-    actBrushEdit_ = editMenu->addAction(tr("&Brush Editing"));
-    actBrushEdit_->setIcon(makeBrushIcon());
-    actBrushEdit_->setToolTip(
-        tr("Apply the brush with a left click/drag in the 2D and the 3D view (T).\n"
-           "The brush type (raise/lower/levellers/zeroplast/color/image), the "
-           "stamp form and the layer mode (Geo/Dam) are picked on the Brush "
-           "toolbar.\nIn the 3D view Alt+left still orbits the camera."));
-    actBrushEdit_->setCheckable(true);
-    actBrushEdit_->setShortcut(QKeySequence(Qt::Key_T));
-    // Context must be `this`: buildEditMenu() runs before buildViewport(), so
-    // viewport_ is still null here and using it as a context would make Qt
-    // drop the connection ("invalid nullptr parameter").
-    connect(actBrushEdit_, &QAction::toggled, this, [this](bool checked) {
-        if (viewport_) {
-            viewport_->setBrushEditingEnabled(checked);
-        }
-    });
-    actBrushEdit_->setChecked(true);
+    // T4.2 — the editor interaction modes (View / Brush / Eyedropper) as an
+    // exclusive switch, exposed at the top of the Edit menu next to the
+    // brush function they drive.
+    QMenu *modeMenu = editMenu->addMenu(tr("Edito&r Mode"));
+    modeMenu->addAction(actModeView_);
+    modeMenu->addAction(actModeBrush_);
+    modeMenu->addAction(actModeEyedropper_);
 
     // T3.2 — the same brush type/mode actions as the Brush toolbar,
     // packed into an Edit-menu submenu for discoverability.
@@ -863,7 +1003,7 @@ void MainWindow::buildEditMenu(QMenuBar *menuBar)
     brushMenu->addAction(actBrushDam_);
     brushMenu->addSeparator();
     brushMenu->addAction(actBrushColor_);
-    brushMenu->addAction(actEyedropper_);
+    brushMenu->addAction(actBrushPickColor_);
     brushMenu->addSeparator();
     brushMenu->addAction(actBrushPlotZP_);
     brushMenu->addAction(actBrushEraseZP_);
@@ -1088,6 +1228,9 @@ void MainWindow::buildViewToolbar()
 
 void MainWindow::createBrushActions()
 {
+    using Viewport = MapEditor::ViewportWidget;
+    using EditorMode = Viewport::EditorMode;
+
     const MapEditor::BrushParams &brush = brushTool_->params();
 
     // --- Type: what the brush does -----------------------------------
@@ -1110,6 +1253,16 @@ void MainWindow::createBrushActions()
             params.effect = effect;
             params.direction = direction;
             brushTool_->setParams(params);
+            // T4.2 — keep the interaction mode in step with the brush type:
+            // the picking type (eyedropper) drives the Eyedropper mode, every
+            // painting type drives the Brush mode. The View mode stays as the
+            // user left it (the type buttons themselves are Edit actions).
+            if (viewport_) {
+                viewport_->setEditorMode(
+                    effect == MapEditor::BrushEffect::PickColor
+                        ? MapEditor::ViewportWidget::EditorMode::Eyedropper
+                        : MapEditor::ViewportWidget::EditorMode::Brush);
+            }
             syncBrushControls();
         });
         typeGroup->addAction(action);
@@ -1146,6 +1299,18 @@ void MainWindow::createBrushActions()
            "palette index. Height is not changed.\n"
            "Geo palette: indices 0..127; Dam palette: 128..255."),
         MapEditor::BrushEffect::SetColor, 0);
+
+    // T4.2 — the eyedropper as a brush type: the PickColor effect samples the
+    // Geo/Dam pixel (SurBuf index) at the click cell into the color brush —
+    // no buffer is written, the pick is a BrushTool point operation like any
+    // other type (the interaction runs in the editor mode Eyedropper).
+    actBrushPickColor_ = addType(
+        makeEyedropperIcon(), tr("Pick Color"),
+        tr("The brush samples the surface color under the cursor (the Geo/Dam "
+           "palette pixel) into the color brush instead of painting. A click "
+           "or a drag over the map in the 2D and the 3D view; use the editor "
+           "mode \"Eyedropper\" (E) as the switch."),
+        MapEditor::BrushEffect::PickColor, 0);
 
     // T3.4 — zeroplast: level to hZeroPlast + mark At_ZEROPLAST.
     actBrushPlotZP_ = addType(
@@ -1269,20 +1434,63 @@ void MainWindow::createBrushActions()
            "Bresenham line stamped with the filled circle of the current "
            "radius — one undo entry per line. Works in both view modes."));
 
-    // T3.3 — eyedropper toggle: when checked, right-click reads the SurBuf
-    // index at the cursor cell and sets it as the color brush index.
-    actEyedropper_ = new QAction(makeEyedropperIcon(), tr("Eyedropper"), this);
-    actEyedropper_->setToolTip(
-        tr("Right-click in the 2D view to pick the surface color index "
-           "under the cursor into the color brush (E)."));
-    actEyedropper_->setCheckable(true);
-    actEyedropper_->setChecked(false);
-    actEyedropper_->setShortcut(QKeySequence(Qt::Key_E));
-    connect(actEyedropper_, &QAction::toggled, this, [this](bool checked) {
-        if (viewport_) {
-            viewport_->setEyedropperEnabled(checked);
-        }
-    });
+    // --- Editor interaction mode: View / Brush / Eyedropper -------------
+    // What a click in the world does (T4.2), in both the 2D and the 3D view:
+    //   View  — full camera control (left drag pans/orbits);
+    //   Brush — the click applies the brush (camera: pan/zoom, Alt+left orbit
+    //           in the 3D view);
+    //   Eyedropper — the click samples the Geo/Dam pixel through the PickColor
+    //           brush type (same limited camera as Brush).
+    QActionGroup *interactionGroup = new QActionGroup(this);
+    const auto addEditorMode = [this, interactionGroup](
+            QIcon icon, const QString &text, const QString &toolTip,
+            const QKeySequence &shortcut, EditorMode mode) {
+        QAction *action = new QAction(icon, text, this);
+        action->setToolTip(toolTip);
+        action->setCheckable(true);
+        action->setShortcut(shortcut);
+        connect(action, &QAction::triggered, this, [this, mode] {
+            if (!viewport_) {
+                return;
+            }
+            // The brush type carries which tool the interaction works with:
+            // entering the Eyedropper mode selects the PickColor type, and
+            // returning to the Brush mode turns it back into an actually
+            // painting color brush (SetBrush params note in BrushTool.h).
+            MapEditor::BrushParams params = brushTool_->params();
+            if (mode == EditorMode::Eyedropper) {
+                params.effect = MapEditor::BrushEffect::PickColor;
+                brushTool_->setParams(params);
+            } else if (mode == EditorMode::Brush
+                       && params.effect == MapEditor::BrushEffect::PickColor) {
+                params.effect = MapEditor::BrushEffect::SetColor;
+                brushTool_->setParams(params);
+            }
+            viewport_->setEditorMode(mode);
+            syncBrushControls();
+        });
+        interactionGroup->addAction(action);
+        return action;
+    };
+
+    actModeView_ = addEditorMode(
+        makeViewModeIcon(), tr("&View Mode"),
+        tr("Navigate only: left drag pans the 2D view / orbits the 3D view, "
+           "middle/right drag pans, wheel zooms (V). The brush does nothing."),
+        QKeySequence(Qt::Key_V), EditorMode::View);
+    actModeBrush_ = addEditorMode(
+        makeBrushIcon(), tr("&Brush"),
+        tr("Apply the brush with a left click/drag in the 2D and the 3D view "
+           "(T). Camera changes stay limited: pan and zoom are always "
+           "available, Alt+left still orbits in the 3D view."),
+        QKeySequence(Qt::Key_T), EditorMode::Brush);
+    actModeEyedropper_ = addEditorMode(
+        makeEyedropperIcon(), tr("&Eyedropper"),
+        tr("Sample the surface color instead of painting: a click/drag picks "
+           "the Geo/Dam palette pixel under the cursor through the PickColor "
+           "brush type (E). Same limited camera as the Brush mode."),
+        QKeySequence(Qt::Key_E), EditorMode::Eyedropper);
+    actModeBrush_->setChecked(true);
 }
 
 void MainWindow::buildBrushToolbar()
@@ -1296,8 +1504,12 @@ void MainWindow::buildBrushToolbar()
         QStringLiteral("QToolButton:enabled:hover, QToolButton:enabled:checked "
                        "{ background: rgba(0, 96, 170, 35); border-radius: 4px; }"));
 
-    // T3.1 painting toggle (moved from the View toolbar).
-    bar->addAction(actBrushEdit_);
+    // T4.2 — the editor interaction mode switch (View / Brush / Eyedropper);
+    // picking the Eyedropper mode selects the PickColor brush type, picking
+    // the Brush mode swaps it back to the painting color brush.
+    bar->addAction(actModeView_);
+    bar->addAction(actModeBrush_);
+    bar->addAction(actModeEyedropper_);
     bar->addSeparator();
 
     // T3.1 form buttons: the stamp silhouette + the stamp half-size. The
@@ -1401,6 +1613,33 @@ void MainWindow::syncBrushControls()
 {
     const MapEditor::BrushParams params = brushTool_->params();
 
+    // T4.2 — brush type buttons: the exclusive action group only auto-checks
+    // user-triggered actions, so every programmatic effect change (eyedropper
+    // pick, Eyedropper/Brush mode switch, ...) mirrors into the buttons here.
+    const auto syncType = [params](QAction *action, bool active) {
+        if (action) {
+            action->setChecked(active);
+        }
+    };
+    syncType(actBrushRaise_, params.effect == MapEditor::BrushEffect::ChangeHeight
+                                 && params.direction > 0);
+    syncType(actBrushLower_, params.effect == MapEditor::BrushEffect::ChangeHeight
+                                 && params.direction < 0);
+    syncType(actBrushLevelZP_, params.effect == MapEditor::BrushEffect::Align4ZP);
+    syncType(actBrushLevelHeight_,
+             params.effect == MapEditor::BrushEffect::AlignVariableH);
+    syncType(actBrushColor_, params.effect == MapEditor::BrushEffect::SetColor);
+    syncType(actBrushPickColor_,
+             params.effect == MapEditor::BrushEffect::PickColor);
+    syncType(actBrushPlotZP_,
+             params.effect == MapEditor::BrushEffect::PlotZeroplast);
+    syncType(actBrushEraseZP_,
+             params.effect == MapEditor::BrushEffect::EraseZeroplast);
+    syncType(actBrushSoot_, params.effect == MapEditor::BrushEffect::PlotSoot);
+    syncType(actBrushVeryLightDam_,
+             params.effect == MapEditor::BrushEffect::VeryLightDam);
+    syncType(actBrushImage_, params.effect == MapEditor::BrushEffect::ImageBrush);
+
     if (brushLevelSpin_) {
         // "Level to Height" is the only consumer of the spinbox value.
         brushLevelSpin_->setEnabled(
@@ -1412,10 +1651,12 @@ void MainWindow::syncBrushControls()
         }
     }
 
-    // T3.1 — the stamp form drives the cursor preview silhouette.
+    // T3.1 — the stamp form drives the cursor preview silhouette; T4.2 — the
+    // eyedropper is a point operation, the radius then does not matter.
     if (brushRadiusSpin_) {
         brushRadiusSpin_->setEnabled(
-            params.effect != MapEditor::BrushEffect::ImageBrush);
+            params.effect != MapEditor::BrushEffect::ImageBrush &&
+            params.effect != MapEditor::BrushEffect::PickColor);
         if (brushRadiusSpin_->value() != params.radius) {
             brushRadiusSpin_->blockSignals(true);
             brushRadiusSpin_->setValue(params.radius);
@@ -1428,10 +1669,12 @@ void MainWindow::syncBrushControls()
     if (actShapeSquareOutline_) actShapeSquareOutline_->setChecked(params.shape == MapEditor::BrushShape::SquareOutline);
     if (actShapeLine_) actShapeLine_->setChecked(params.shape == MapEditor::BrushShape::Line);
 
-    // T3.3 — color index spinbox is enabled only for the SetColor effect.
+    // T3.3/T4.2 — the color index spinbox paints (SetColor) and displays the
+    // last sampled pixel (PickColor).
     if (brushColorIndexSpin_) {
         brushColorIndexSpin_->setEnabled(
-            params.effect == MapEditor::BrushEffect::SetColor);
+            params.effect == MapEditor::BrushEffect::SetColor ||
+            params.effect == MapEditor::BrushEffect::PickColor);
         if (brushColorIndexSpin_->value() != params.colorIndex) {
             brushColorIndexSpin_->blockSignals(true);
             brushColorIndexSpin_->setValue(params.colorIndex);
@@ -1441,7 +1684,9 @@ void MainWindow::syncBrushControls()
 
     // Mirror the tool into the viewport cursor preview: the square silhouette
     // for the square forms and for the image mask (a rectangle), the circle
-    // otherwise; the radius is the mask half-size for the image brush.
+    // otherwise; the radius is the mask half-size for the image brush. The
+    // preview only follows the brush — the View/Eyedropper modes hide it in
+    // the viewport (drawBrushPreview) anyway.
     if (viewport_) {
         const bool squarePreview =
             params.shape == MapEditor::BrushShape::FilledSquare ||
@@ -1469,9 +1714,15 @@ void MainWindow::syncColorControls()
     }
 
     // Build the color swatch from the palette via the session helper.
+    // The colorIndex is a SurBuf value: it indexes the palette of the
+    // brush's current layer (T4.1 model, docs/architecture.md §5.13).
     if (session_ && session_->isWorldLoaded()) {
         const int idx = brushColorIndexSpin_->value();
-        const unsigned int rgb = session_->paletteRgb(idx);
+        const bool dam = brushTool_->params().mode == MapEditor::BrushMode::Dam;
+        const unsigned int rgb =
+            session_->paletteRgb(dam ? MapEditor::EditorSession::PaletteLayer::Dam
+                                     : MapEditor::EditorSession::PaletteLayer::Geo,
+                                 idx);
         QColor color(static_cast<int>((rgb >> 16) & 0xFF),
                      static_cast<int>((rgb >> 8) & 0xFF),
                      static_cast<int>(rgb & 0xFF));
@@ -1482,6 +1733,21 @@ void MainWindow::syncColorControls()
                     .arg(color.name()));
         }
     }
+}
+
+void MainWindow::refreshPaletteRenderers()
+{
+    if (!viewport_) {
+        return;
+    }
+    // Every pixel's color may have changed: the 2D cache is repainted as a
+    // whole, and the 3D view re-seeds its mip pyramid from the same cache
+    // (which invalidateAll() starts by marking the map fully dirty).
+    if (MapEditor::ViewportRenderer *renderer = viewport_->renderer()) {
+        renderer->invalidateAll();
+    }
+    viewport_->setNeeds3DRedraw();
+    viewport_->update();
 }
 
 void MainWindow::buildStatusBar()
@@ -1884,13 +2150,21 @@ void MainWindow::updateActionStates()
             action->setEnabled(worldLoaded);
         }
     }
-    // T3.1 — painting without a world cannot change anything.
-    if (actBrushEdit_) {
-        actBrushEdit_->setEnabled(worldLoaded);
+    // T3.1/T4.2 — the editor interaction mode: navigation works everywhere,
+    // painting and picking need a world.
+    if (actModeView_) {
+        actModeView_->setEnabled(true);
+    }
+    if (actModeBrush_) {
+        actModeBrush_->setEnabled(worldLoaded);
+    }
+    if (actModeEyedropper_) {
+        actModeEyedropper_->setEnabled(worldLoaded);
     }
     // T3.2 — the brush type/mode buttons follow the same rule.
     for (QAction *action : {actBrushRaise_, actBrushLower_, actBrushLevelZP_,
                             actBrushLevelHeight_, actBrushColor_,
+                            actBrushPickColor_,
                             actBrushGeo_, actBrushDam_,
                             actBrushPlotZP_, actBrushEraseZP_,
                             actBrushSoot_, actBrushVeryLightDam_,
@@ -1903,22 +2177,23 @@ void MainWindow::updateActionStates()
         }
     }
     // T3.1 — the stamp radius applies to every form except the image mask
-    // (which carries its own size), and only with a loaded world.
+    // (which carries its own size) and the point-operated pick, and only with
+    // a loaded world.
     if (brushRadiusSpin_) {
         brushRadiusSpin_->setEnabled(
             worldLoaded && brushTool_ &&
-            brushTool_->params().effect != MapEditor::BrushEffect::ImageBrush);
+            brushTool_->params().effect != MapEditor::BrushEffect::ImageBrush &&
+            brushTool_->params().effect != MapEditor::BrushEffect::PickColor);
     }
-    // T3.3 — eyedropper and color spinbox.
-    if (actEyedropper_) {
-        actEyedropper_->setEnabled(worldLoaded);
-    }
+    // T3.3/T4.2 — color spinbox: painting and pick readout.
     if (brushColorIndexSpin_) {
+        const MapEditor::BrushEffect effect =
+            brushTool_ ? brushTool_->params().effect
+                       : MapEditor::BrushEffect::None;
         brushColorIndexSpin_->setEnabled(
             worldLoaded &&
-            brushTool_ &&
-            brushTool_->params().effect ==
-                MapEditor::BrushEffect::SetColor);
+            (effect == MapEditor::BrushEffect::SetColor ||
+             effect == MapEditor::BrushEffect::PickColor));
     }
     if (brushLevelSpin_) {
         brushLevelSpin_->setEnabled(

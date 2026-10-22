@@ -223,6 +223,7 @@ bool BrushTool::effectSupported(BrushEffect effect)
     case BrushEffect::Align4ZP:     // T3.2 level to zeroplast
     case BrushEffect::AlignVariableH: // T3.2 smooth/level to height
     case BrushEffect::SetColor:     // T3.3 paint SurBuf with palette index
+    case BrushEffect::PickColor:    // T4.2 eyedropper: sample SurBuf pixel
     case BrushEffect::PlotZeroplast:   // T3.4 level + mark zeroplast
     case BrushEffect::EraseZeroplast:  // T3.4 remove zeroplast flag
     case BrushEffect::PlotSoot:        // T3.4 mark soot
@@ -276,6 +277,12 @@ bool BrushTool::applyStamp(int cx, int cy, const BrushParams& params)
     if (clamped.effect == BrushEffect::None) {
         return false; // no world edit requested
     }
+    // T4.2: the eyedropper is a point operation — the sample point is the
+    // stamp centre cell only (mask/shape/radius are irrelevant), and it
+    // writes no buffer, so it never reaches applyMask()/the undo stack.
+    if (clamped.effect == BrushEffect::PickColor) {
+        return pickColorAt(cx, cy);
+    }
     // T3.5: image brush uses the loaded image mask as the stamp geometry.
     if (clamped.effect == BrushEffect::ImageBrush) {
         if (imageMask_.empty()) {
@@ -302,6 +309,11 @@ bool BrushTool::applyLine(int x0, int y0, int x1, int y1, const BrushParams& par
 {
     const BrushParams clamped = clampedParams(params);
     if (clamped.effect == BrushEffect::None || !effectSupported(clamped.effect)) {
+        return false;
+    }
+    // T4.2: picking is a point operation — stroking a "line" of samples makes
+    // no sense, so the Line shape refuses the PickColor effect.
+    if (clamped.effect == BrushEffect::PickColor) {
         return false;
     }
     const int stampRadius = clampRadius(clamped.radius);
@@ -572,6 +584,36 @@ void BrushTool::applyEffectToCell(const BrushParams& params, int x, int y, unsig
     default:
         break;
     }
+}
+
+// ---------------------------------------------------------------------------
+// T4.2 — eyedropper brush type (PickColor).
+//
+// SurBuf carries the pixel the renderer shows: indices 0..127 are Geo palette
+// colors, 128..255 Dam palette colors (the same split the SetColor brush
+// paints with). The sampled index feeds params().colorIndex so the common
+// brush interface round-trips the pick: the click samples the Geo/Dam pixel
+// of the layer that is actually displayed at that cell.
+// ---------------------------------------------------------------------------
+
+bool BrushTool::pickColorAt(int cx, int cy)
+{
+    if (!session_.isWorldLoaded()) {
+        return false;
+    }
+    const int mapW = static_cast<int>(vMap.H_SIZE);
+    const int mapH = static_cast<int>(vMap.V_SIZE);
+    if (cx < 0 || cy < 0 || cx >= mapW || cy >= mapH) {
+        return false; // sky / off-map pick — nothing to sample
+    }
+    const int off = cy * mapW + cx;
+    lastPickedColorIndex_ = vMap.SurBuf[off];
+    hasPickedColor_ = true;
+    // The pick result belongs to the color brush: keep it in the shared
+    // parameters so switching the brush type back to SetColor paints the
+    // sampled color without any extra UI round-trip.
+    params_.colorIndex = lastPickedColorIndex_;
+    return true;
 }
 
 } // namespace MapEditor

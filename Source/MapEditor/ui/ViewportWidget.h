@@ -65,6 +65,21 @@ class BrushTool;
 //     still orbits. The Line form is a press→drag→release two-point stroke.
 //     The preview outline follows the cursor (screen-space ring in 3D).
 //
+//   * Editor interaction modes (View / Brush / Eyedropper) — orthogonal to the
+//     view mode and supported in BOTH (2D and 3D):
+//       - View      — navigation: left drag pans (TopDown) or orbits
+//                     (Oblique), middle/right drag pans, wheel zooms —
+//                     the full camera control.
+//       - Brush     — the click in the world applies the selected brush: left
+//                     press/drag stamps (both view modes), Alt+left orbits in
+//                     Oblique ("limited" camera change), middle/right drag
+//                     pans, wheel zooms.
+//       - Eyedropper — like Brush, but the click/drag samples the color: the
+//                     PickColor brush type reads the Geo/Dam pixel (SurBuf
+//                     index) at the cursor cell and reports colorPicked (the
+//                     picked index lands in BrushTool::params().colorIndex).
+//     Alt+left in Oblique still orbits; middle/right drags still pan.
+//
 // Both base rasters are painted from zero-copy QImages: the ARGB32 cache of
 // ViewportRenderer and the RGB16 (565) frame of View3DRenderer.
 // All vMap access happens in the UI thread (Terra is not thread-safe).
@@ -128,22 +143,37 @@ public:
     // Brush editing (T3.1)
     // -----------------------------------------------------------------------
 
-    /// Attach the brush tool that left-button drag applies in TopDown mode.
-    /// Pass nullptr (or disable below) to return the viewport to a plain
-    /// navigate-only widget.
+    /// Attach the brush tool the Brush mode paints with (and the Eyedropper
+    /// mode samples through the PickColor brush type). Pass nullptr to return
+    /// the viewport to a plain navigate-only widget.
     void setBrushTool(BrushTool *brush);
     BrushTool *brushTool() const { return brushTool_; }
-    /// Brush painting on/off (checked state of the UI toggle).
-    void setBrushEditingEnabled(bool enabled);
+
+    // -----------------------------------------------------------------------
+    // Editor interaction mode (View / Brush / Eyedropper)
+    // -----------------------------------------------------------------------
+
+    /// What a mouse click in the world does (independent of the 2D/3D view
+    /// mode).
+    enum class EditorMode
+    {
+        View,       ///< navigation only: drag pans (TopDown) / orbits (Oblique).
+        Brush,      ///< left press/drag applies the brush stamp (both view modes).
+        Eyedropper, ///< left press/drag samples the Geo/Dam pixel color (T4.2).
+    };
+
+    /// Switch what a click in the world does. The mode is orthogonal to the
+    /// 2D/3D view mode: navigation keeps working in every mode (middle/right
+    /// drag pan, wheel zoom; View mode adds left-drag pan/orbit, Brush and
+    /// Eyedropper limit the camera to Alt+left orbit / pan / zoom).
+    void setEditorMode(EditorMode mode);
+    EditorMode editorMode() const { return editorMode_; }
+    /// True when the current mode paints with the brush (mode Brush with a
+    /// tool attached) — the viewport's internal paint-path guard.
     bool isBrushEditingEnabled() const
     {
-        return brushEditingEnabled_ && brushTool_ != nullptr;
+        return editorMode_ == EditorMode::Brush && brushTool_ != nullptr;
     }
-
-    /// T3.3 — eyedropper mode: when enabled, a right-click in TopDown mode
-    /// reads the SurBuf index under the cursor and emits eyedropperPicked().
-    void setEyedropperEnabled(bool enabled);
-    bool isEyedropperEnabled() const { return eyedropperEnabled_; }
 
     // -----------------------------------------------------------------------
     // View state
@@ -292,7 +322,10 @@ signals:
     /// Emitted right after a brush stamp changed the world (T3.1) so the
     /// MainWindow can refresh the modified state in the status bar.
     void worldEdited();
-    /// Emitted when the eyedropper is triggered (T3.3) — provides the
+    /// Emitted after setEditorMode() — MainWindow keeps its mode buttons in
+    /// sync with it (the interactions can also switch the mode internally).
+    void editorModeChanged(MapEditor::ViewportWidget::EditorMode mode);
+    /// Emitted when the eyedropper is triggered (T3.3/T4.2) — provides the
     /// map cell coordinates and the current SurBuf palette index at that cell.
     void eyedropperPicked(int mapX, int mapY, unsigned char surIndex);
 
@@ -335,6 +368,25 @@ private:
     /// given pixel deltas — inverse view-basis mapping, see the .cpp.
     void panObliqueBy(double dxCursorPx, double dyCursorPx);
 
+    /// Cursor shape for the current editor mode: cross over a brush/pipette
+    /// working area, arrow for pure navigation.
+    Qt::CursorShape paintCursorShape() const
+    {
+        return editorMode_ == EditorMode::View ? Qt::ArrowCursor
+                                               : Qt::CrossCursor;
+    }
+
+    /// The pick action of the Eyedropper mode at one cell: run the PickColor
+    /// brush type through BrushTool (the common brush interface — the sample
+    /// lands in BrushTool::params().colorIndex) and emit eyedropperPicked().
+    /// Returns true when a color was sampled.
+    bool pickColorAtCell(const QPoint &cell);
+
+    /// Convert a widget position into a valid, on-map cell in the current
+    /// view mode; (-1,-1) when the point is outside the map or nothing is
+    /// loaded. Shared by the paint/pick press paths.
+    QPoint onMapCellAtWidgetPos(const QPoint &widgetPos) const;
+
     /// Screen-space ground scale of the 3D view: widget pixels per ground cell
     /// across the view (x) and along the view direction (y, the kv-scaled
     /// depth axis). Used by the 3D brush preview ring.
@@ -343,11 +395,17 @@ private:
     EditorSession *session_ = nullptr;
     ViewportRenderer *renderer_ = nullptr;
 
-    // T3.1 — brush painting: left-drag applies stamps (both view modes).
+    // T3.1 — brush painting: left-drag applies stamps (both view modes) when
+    // the editor mode is Brush.
     BrushTool *brushTool_ = nullptr;
-    bool brushEditingEnabled_ = true;
+    /// What a click in the world does (View / Brush / Eyedropper).
+    EditorMode editorMode_ = EditorMode::Brush;
     bool brushPainting_ = false;
     QPoint lastPaintCell_{-1, -1};
+    /// Eyedropper drag: left held down re-picks at every new cell (the brush
+    /// mode stamps along the drag, the eyedropper samples along it).
+    bool picking_ = false;
+    QPoint lastPickCell_{-1, -1};
     /// Line-shape stroke: the press marks lineStart_, the release draws one
     /// Bresenham line from the start to the release cell (single undo entry).
     bool linePending_ = false;
@@ -359,9 +417,6 @@ private:
     /// Widget position of the cursor — the 3D preview ring is drawn in screen
     /// space (the oblique projection has no linear cell→screen mapping).
     QPoint cursorWidgetPos_{-1, -1};
-
-    // T3.3 — eyedropper: right-click reads SurBuf at cursor.
-    bool eyedropperEnabled_ = false;
 
     /// Oblique mode: true when the 3D buffer needs a fresh render (camera
     /// changed, terrain stamped, window resized). When false, paintEvent()

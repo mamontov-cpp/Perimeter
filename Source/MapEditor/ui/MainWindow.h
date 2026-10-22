@@ -18,6 +18,7 @@ namespace MapEditor {
 class EditorSession;
 class ViewportWidget;
 class MinimapWidget;
+class PalettePanel;
 class BrushTool;
 struct View3DCamera;
 }
@@ -33,6 +34,16 @@ struct View3DCamera;
 //        their tooltips and get in sync with the viewport via signals.
 // T2.4 — MinimapWidget in a dockable panel (View menu toggle action), fed by
 //        the viewport's viewRectChanged signal; minimap clicks navigate.
+// T3.2 — Brush toolbar: the brush type (effect) buttons, the Geo/Dam brush
+//        mode buttons and the stamp form/radius controls drive BrushTool.
+// T4.2 — the editor interaction modes (View / Brush / Eyedropper) with their
+//        exclusive switch actions in the Edit menu and on the Brush toolbar;
+//        the eyedropper is the PickColor brush type in the common brush
+//        interface, supported in the 2D and the 3D view alike.
+// T4.1 — PalettePanel in a dockable panel (View menu toggle): the Geo/Dam
+//        palettes with RGB editing (double click), apply through
+//        convertPal2TableSurCol and geoPal.xml sync on save; swatch/dropper
+//        selections drive the brush colorIndex.
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
@@ -67,6 +78,10 @@ private slots:
     /// Update status bar text with cursor position from the viewport.
     void updateCursorInfo(int mapX, int mapY);
 
+    /// React to the viewport switching its editor interaction mode
+    /// (View / Brush / Eyedropper): keep the mode actions checked.
+    void onEditorModeChanged(int mode);
+
     /// Refresh the view readout toolbar after the viewport changed its mode.
     void onViewportViewModeChanged(int mode);
 
@@ -90,12 +105,16 @@ private:
     void buildStatusBar();
     void buildViewport();
     void buildMinimapDock();
+    // T4.1 — the palette panel dock (built right after the minimap dock).
+    void buildPaletteDock();
 
-    // T3.2 — create the brush type (effect) and brush mode (Geo/Dam)
-    // actions. Called before the menus/toolbars so both can embed them.
+    // T3.2 — create the brush type (effect), the brush mode (Geo/Dam) and
+    // the editor interaction mode (View/Brush/Eyedropper) actions. Called
+    // before the menus/toolbars so both can embed them.
     void createBrushActions();
-    // T3.2 — the Brush toolbar: the T3.1 painting toggle, the type buttons
-    // and the target-height spinbox of the level tool, the mode buttons.
+    // T3.2 — the Brush toolbar: the View/Brush/Eyedropper mode switch, the
+    // type buttons, the target-height spinbox of the level tool and the
+    // Geo/Dam mode buttons.
     void buildBrushToolbar();
     // T3.2 — re-read the tool parameters into the buttons/spinbox state.
     void syncBrushControls();
@@ -127,6 +146,11 @@ private:
 
     /// Update status bar text based on current session state.
     void updateStatusBar();
+
+    /// T4.1 — a palette edit re-tints every surface pixel: invalidate the
+    /// whole 2D cache and force a full 3D redraw (the mip pyramid re-seeds
+    /// from the cache).
+    void refreshPaletteRenderers();
 
     /// Enable/disable Save, Save As, Undo, Redo... according to session state.
     void updateActionStates();
@@ -164,9 +188,14 @@ private:
     QAction *actZoomOut_ = nullptr;
     QAction *actResetView_ = nullptr;
 
-    // T3.1 — Edit-menu toggle for brush painting (mirrored in the Brush
-    // toolbar icon set).
-    QAction *actBrushEdit_ = nullptr;
+    // T3.1 — the editor interaction mode the mouse follows: View navigates,
+    // Brush paints, Eyedropper samples the surface color. Exclusive group,
+    // shared between the Edit menu and the Brush toolbar; switching to Brush
+    // turns a PickColor brush type back into SetColor, switching to
+    // Eyedropper selects the PickColor type (§ docs/architecture.md).
+    QAction *actModeView_ = nullptr;
+    QAction *actModeBrush_ = nullptr;
+    QAction *actModeEyedropper_ = nullptr;
 
     // T3.2 — brush type (effect) actions: raise / lower / level to
     // zeroplast / level to an arbitrary height.
@@ -176,6 +205,10 @@ private:
     QAction *actBrushLevelHeight_ = nullptr;
     // T3.3 — color brush (SetSurf) action.
     QAction *actBrushColor_ = nullptr;
+    // T4.2 — eyedropper as a brush type: the PickColor effect. Exclusive
+    // member of the brush type group; while it is selected the Brush toolbar
+    // acts on the surface pixels by sampling them (editor mode Eyedropper).
+    QAction *actBrushPickColor_ = nullptr;
     // T3.4 — zeroplast brush tools.
     QAction *actBrushPlotZP_ = nullptr;
     QAction *actBrushEraseZP_ = nullptr;
@@ -194,8 +227,6 @@ private:
     QAction *actShapeLine_ = nullptr;
     // T3.1 — stamp half-size in map cells (BrushParams::radius).
     QSpinBox *brushRadiusSpin_ = nullptr;
-    // T3.3 — eyedropper toggle.
-    QAction *actEyedropper_ = nullptr;
     // T3.2 — brush mode actions: which layer the height tools drive.
     QAction *actBrushGeo_ = nullptr;
     QAction *actBrushDam_ = nullptr;
@@ -214,4 +245,9 @@ private:
     QMenu *viewMenu_ = nullptr;
     QDockWidget *minimapDock_ = nullptr;
     MapEditor::MinimapWidget *minimap_ = nullptr;
+
+    // T4.1 — palette panel: Geo/Dam palettes with RGB editing and selection
+    // feeding the brush colorIndex; dockable like the minimap.
+    QDockWidget *paletteDock_ = nullptr;
+    MapEditor::PalettePanel *palettePanel_ = nullptr;
 };

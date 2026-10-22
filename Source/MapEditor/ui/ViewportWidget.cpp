@@ -89,17 +89,23 @@ void ViewportWidget::setBrushTool(BrushTool *brush)
     brushTool_ = brush;
 }
 
-void ViewportWidget::setBrushEditingEnabled(bool enabled)
+void ViewportWidget::setEditorMode(EditorMode mode)
 {
-    brushEditingEnabled_ = enabled;
-    if (!brushEditingEnabled_) {
-        brushPainting_ = false;
+    if (editorMode_ == mode) {
+        return;
     }
-}
-
-void ViewportWidget::setEyedropperEnabled(bool enabled)
-{
-    eyedropperEnabled_ = enabled;
+    editorMode_ = mode;
+    // An in-flight drag belongs to the old mode: drop it so the mouse does
+    // not continue a brush stroke as a pick (or vice versa) after a switch.
+    brushPainting_ = false;
+    linePending_ = false;
+    lineStart_ = {-1, -1};
+    lineStartWidgetPos_ = {-1, -1};
+    picking_ = false;
+    lastPickCell_ = {-1, -1};
+    setCursor(paintCursorShape());
+    emit editorModeChanged(editorMode_);
+    update();
 }
 
 /// Apply one brush stamp at the cell under the cursor; returns true when the
@@ -124,6 +130,49 @@ static bool applyBrushStampHere(ViewportWidget &viewport, const QPoint &cell)
         viewport.update();
     }
     return changed;
+}
+
+/// The Eyedropper-mode click at `cell`: run the PickColor brush type through
+/// BrushTool (the pick sample lands in BrushTool::params().colorIndex) and
+/// announce the sampled Geo/Dam pixel. Returns true when a color was picked.
+bool ViewportWidget::pickColorAtCell(const QPoint &cell)
+{
+    MapEditor::BrushTool *brush = brushTool_;
+    if (!brush || !session_ || !session_->isWorldLoaded()
+            || editorMode_ != EditorMode::Eyedropper) {
+        return false;
+    }
+    const MapEditor::ViewportRenderer *r = renderer();
+    if (!r || !r->isBound()
+            || cell.x() < 0 || cell.y() < 0
+            || cell.x() >= r->width() || cell.y() >= r->height()) {
+        return false;
+    }
+    // The mode is authoritative for what a click does: the effect is forced
+    // to PickColor here, so a mode switched from the UI picks even if the
+    // brush parameters were not re-synced yet. BrushTool::pickColorAt also
+    // updates params().colorIndex with the sampled index.
+    MapEditor::BrushParams pickParams = brush->params();
+    pickParams.effect = MapEditor::BrushEffect::PickColor;
+    if (!brush->applyStamp(cell.x(), cell.y(), pickParams)) {
+        return false;
+    }
+    // No world edit happened — no worldEdited / 3D redraw, only the pick.
+    emit eyedropperPicked(cell.x(), cell.y(), brush->lastPickedColorIndex());
+    update();
+    return true;
+}
+
+QPoint ViewportWidget::onMapCellAtWidgetPos(const QPoint &widgetPos) const
+{
+    const QPoint cell = cellAtWidgetPos(widgetPos);
+    if (!renderer_ || !renderer_->isBound()
+            || cell.x() < 0 || cell.y() < 0
+            || cell.x() >= renderer_->width()
+            || cell.y() >= renderer_->height()) {
+        return {-1, -1};
+    }
+    return cell;
 }
 
 // ---------------------------------------------------------------------------
@@ -737,8 +786,10 @@ void ViewportWidget::drawGrid(QPainter &painter)
 
 void ViewportWidget::drawBrushPreview(QPainter &painter)
 {
-    if (!renderer_ || !renderer_->isBound()) return;
-    if (!brushPreviewVisible_) return;
+    if (!renderer_ || !renderer_->isBound() || !brushPreviewVisible_) return;
+    // The stamp silhouette only follows the brush; the Eyedropper mode has no
+    // stamp (a pipette point), the View mode does not edit at all.
+    if (editorMode_ != EditorMode::Brush) return;
 
     QPoint cell = cursorCell_;
     if (cell.x() < 0 || cell.y() < 0 ||
@@ -843,26 +894,32 @@ void ViewportWidget::drawHud(QPainter &painter)
     if (!renderer_->isBound()) return;
 
     QString info;
+    // The editor interaction mode the cursor carries right now.
+    const QString modeLabel = editorMode_ == EditorMode::View
+        ? tr("View") : (editorMode_ == EditorMode::Eyedropper ? tr("Pipette")
+                                                              : tr("Brush"));
     if (viewMode_ == ViewMode::Oblique) {
         // The 3D camera line-up; lean is the value viewV2D will actually use
         // (may be clamped by the stable band, see View3DRenderer).
         const double lean = View3DRenderer::stableLeanDeg(
             obliqueCamera_.leanDeg, obliqueCamera_.focusC,
             std::max(1, view3d_ ? view3d_->windowHeight() / 2 : height() / 2));
-        info = tr("3D  |  Rot: %1\u00B0  Tilt: %2\u00B0  Lift: %3  Focus: %4")
+        info = tr("%1  |  3D  |  Rot: %2\u00B0  Tilt: %3\u00B0  Lift: %4  Focus: %5")
+                   .arg(modeLabel)
                    .arg(qRound(obliqueCamera_.turnAngleDeg))
                    .arg(qRound(lean))
                    .arg(obliqueCamera_.cameraDZ)
                    .arg(obliqueCamera_.focusC);
     } else {
+        info = modeLabel;
         if (cursorCell_.x() >= 0 && cursorCell_.y() >= 0 &&
             cursorCell_.x() < renderer_->width() &&
             cursorCell_.y() < renderer_->height()) {
-            info = QString(tr("X: %1  Y: %2")).arg(cursorCell_.x()).arg(cursorCell_.y());
+            info += QString(tr("  |  X: %1  Y: %2")).arg(cursorCell_.x()).arg(cursorCell_.y());
         } else {
-            info = tr("Outside map");
+            info += tr("  |  Outside map");
         }
-        info += QString(tr("  |  Zoom: %1%").arg(qRound(zoom_ * 100)));
+        info += QString(tr("  |  Zoom: %1%")).arg(qRound(zoom_ * 100));
     }
 
     QRect hudRect = rect().adjusted(4, 0, -4, -4);
@@ -879,22 +936,9 @@ void ViewportWidget::drawHud(QPainter &painter)
 void ViewportWidget::mousePressEvent(QMouseEvent *event)
 {
     if (event->button() == Qt::MiddleButton || event->button() == Qt::RightButton) {
-        // T3.3 — eyedropper: right-click picks the SurBuf index under the
-        // cursor in both view modes (the cell comes from the same mapping the
-        // brush uses), unless the eyedropper is off (fall through to pan).
-        if (eyedropperEnabled_ && session_ && session_->isWorldLoaded()) {
-            const QPoint pos = event->position().toPoint();
-            const QPoint cell = cellAtWidgetPos(pos);
-            if (cell.x() >= 0 && cell.y() >= 0
-                    && renderer_ && renderer_->isBound()
-                    && cell.x() < renderer_->width()
-                    && cell.y() < renderer_->height()) {
-                const unsigned char surIndex = session_->surBufAt(cell.x(), cell.y());
-                emit eyedropperPicked(cell.x(), cell.y(), surIndex);
-            }
-            event->accept();
-            return;
-        }
+        // The pan drag works in every editor mode (navigation is always
+        // available; the eyedropper of T4.2 is left-click, so right-click is
+        // free for the camera here).
         panning_ = true;
         panStart_ = event->position();
         setCursor(Qt::ClosedHandCursor);
@@ -903,13 +947,12 @@ void ViewportWidget::mousePressEvent(QMouseEvent *event)
     }
 
     const bool altDown = event->modifiers().testFlag(Qt::AltModifier);
-    const bool brushLeft = event->button() == Qt::LeftButton
-                           && isBrushEditingEnabled() && !altDown;
-
-    if (viewMode_ == ViewMode::Oblique && event->button() == Qt::LeftButton
-            && !brushLeft) {
-        // Orbit drag (brush editing off, or Alt held): horizontal — rotation
-        // around Z, vertical — tilt.
+    if (event->button() == Qt::LeftButton
+            && viewMode_ == ViewMode::Oblique
+            && (editorMode_ == EditorMode::View || altDown)) {
+        // Orbit drag — the View-mode record of camera control and the
+        // "limited" camera change the Brush/Eyedropper modes keep (Alt held).
+        // Horizontal — rotation around Z, vertical — tilt.
         orbiting_ = true;
         panStart_ = event->position();
         setCursor(Qt::SizeAllCursor);
@@ -917,16 +960,50 @@ void ViewportWidget::mousePressEvent(QMouseEvent *event)
         return;
     }
 
-    if (brushLeft) {
-        // Brush painting (T3.1, T3.4/T3.5 tools) works in BOTH view modes:
-        // TopDown maps the cursor linearly, Oblique ray-picks the voxel
-        // surface (cellAtWidgetPos). Press applies one stamp at the cursor
-        // cell; a following drag stamps along the path (mouseMoveEvent).
+    if (event->button() == Qt::LeftButton
+            && viewMode_ == ViewMode::TopDown
+            && editorMode_ == EditorMode::View) {
+        // Navigation mode in the 2D view: left drag pans the map (in Oblique
+        // the left drag orbits instead — handled above).
+        panning_ = true;
+        panStart_ = event->position();
+        setCursor(Qt::ClosedHandCursor);
+        event->accept();
+        return;
+    }
+
+    if (event->button() == Qt::LeftButton
+            && editorMode_ == EditorMode::Eyedropper) {
+        // T4.2 — the eyedropper click: sample the Geo/Dam pixel (SurBuf index)
+        // under the cursor in BOTH view modes through the PickColor brush
+        // type; holding the button down keeps sampling while the cursor moves
+        // over new cells (drag = stamping in Brush mode, sampling here).
         const QPoint pos = event->position().toPoint();
-        const QPoint cell = cellAtWidgetPos(pos);
-        if (cell.x() >= 0 && cell.y() >= 0
-                && renderer_ && renderer_->isBound()
-                && cell.x() < renderer_->width() && cell.y() < renderer_->height()) {
+        const QPoint cell = onMapCellAtWidgetPos(pos);
+        if (cell.x() >= 0 && cell.y() >= 0) {
+            cursorWidgetPos_ = pos;
+            cursorCell_ = cell;
+            picking_ = true;
+            lastPickCell_ = cell;
+            setCursor(Qt::CrossCursor);
+            pickColorAtCell(cell);
+        }
+        event->accept();
+        return;
+    }
+
+    const bool brushLeft = event->button() == Qt::LeftButton
+                           && isBrushEditingEnabled();
+
+    if (brushLeft) {
+        // Brush painting (T3.1..T3.5 tools) works in BOTH view modes when the
+        // editor mode is Brush: TopDown maps the cursor linearly, Oblique
+        // ray-picks the voxel surface (cellAtWidgetPos). Press applies one
+        // stamp at the cursor cell; a following drag stamps along the path
+        // (mouseMoveEvent).
+        const QPoint pos = event->position().toPoint();
+        const QPoint cell = onMapCellAtWidgetPos(pos);
+        if (cell.x() >= 0) {
             cursorWidgetPos_ = pos;
             cursorCell_ = cell;
             if (brushTool_ && brushTool_->params().shape == BrushShape::Line) {
@@ -993,8 +1070,12 @@ void ViewportWidget::mouseMoveEvent(QMouseEvent *event)
         if (cell.x() >= 0 && cell.y() >= 0) {
             emit cursorMapPosition(cell.x(), cell.y());
         }
-        // Continue painting or update the brush preview position.
-        if (brushPainting_ && cell != lastPaintCell_ && cell.x() >= 0) {
+        // Continue painting / picking along the drag path, or update the
+        // brush preview position.
+        if (picking_ && cell != lastPickCell_ && cell.x() >= 0) {
+            lastPickCell_ = cell;
+            pickColorAtCell(cell);
+        } else if (brushPainting_ && cell != lastPaintCell_ && cell.x() >= 0) {
             lastPaintCell_ = cell;
             applyBrushStampHere(*this, cell);
         } else if (linePending_ && brushPreviewVisible_) {
@@ -1002,18 +1083,33 @@ void ViewportWidget::mouseMoveEvent(QMouseEvent *event)
         } else if (brushPreviewVisible_) {
             update();
         }
-    } else if (brushPainting_ && cell != lastPaintCell_ && cell.x() >= 0) {
+    } else if ((picking_ && cell != lastPickCell_ && cell.x() >= 0)
+               || (brushPainting_ && cell != lastPaintCell_ && cell.x() >= 0)) {
         // Re-entered the previous drag cell after panning the view beneath.
-        lastPaintCell_ = cell;
-        applyBrushStampHere(*this, cell);
+        if (picking_) {
+            lastPickCell_ = cell;
+            pickColorAtCell(cell);
+        } else {
+            lastPaintCell_ = cell;
+            applyBrushStampHere(*this, cell);
+        }
     }
+    // The pick result is announced by pickColorAtCell(); the brush preview is
+    // Brush-only, so a plain move in the Eyedropper mode needs no repaint.
 }
 
 void ViewportWidget::mouseReleaseEvent(QMouseEvent *event)
 {
     if (panning_) {
         panning_ = false;
-        setCursor(brushPainting_ ? Qt::CrossCursor : Qt::ArrowCursor);
+        setCursor(paintCursorShape());
+        event->accept();
+        return;
+    }
+    if (picking_) {
+        picking_ = false;
+        lastPickCell_ = {-1, -1};
+        setCursor(paintCursorShape());
         event->accept();
         return;
     }
@@ -1021,8 +1117,8 @@ void ViewportWidget::mouseReleaseEvent(QMouseEvent *event)
         // Finish the Line-shape stroke: one applyLine() call = one undo entry.
         linePending_ = false;
         const QPoint pos = event->position().toPoint();
-        const QPoint cell = cellAtWidgetPos(pos);
-        if (brushTool_ && cell.x() >= 0 && cell.y() >= 0 && cell != lineStart_) {
+        const QPoint cell = onMapCellAtWidgetPos(pos);
+        if (brushTool_ && cell.x() >= 0 && cell != lineStart_) {
             if (brushTool_->applyLine(lineStart_.x(), lineStart_.y(),
                                       cell.x(), cell.y())) {
                 needs3DRedraw_ = true;
@@ -1030,14 +1126,14 @@ void ViewportWidget::mouseReleaseEvent(QMouseEvent *event)
             }
         }
         lineStart_ = {-1, -1};
-        setCursor(isBrushEditingEnabled() ? Qt::CrossCursor : Qt::ArrowCursor);
+        setCursor(paintCursorShape());
         update();
         event->accept();
         return;
     }
     if (brushPainting_) {
         brushPainting_ = false;
-        setCursor(isBrushEditingEnabled() ? Qt::CrossCursor : Qt::ArrowCursor);
+        setCursor(paintCursorShape());
         event->accept();
         return;
     }
