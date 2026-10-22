@@ -78,6 +78,8 @@ enum class BrushEffect
     EraseZeroplast, ///< T3.4: T2TE_ERASE_ZEROPLAST.
     PlotSoot,       ///< T3.4: T2TE_PLOTTING_SOOT.
     VeryLightDam,   ///< T3.4: T2TE_PLOTTING_VERY_LIGHT_DAM.
+    ImageBrush,     ///< T3.5: terrain editing driven by a loaded image mask
+                    ///< (pixel value = influence 0..255).
 };
 
 /// Full brush configuration (plan §5 T3.1: shape/radius/strength/mode/
@@ -206,6 +208,16 @@ public:
     /// applyStamp/applyLine funnels across here too.
     bool applyMask(const BrushMask& absoluteMask, const BrushParams& params);
 
+    // --- T3.5: image brush mask --------------------------------------------
+    /// Set the image mask used when effect == ImageBrush. The mask carries
+    /// per-cell influence in 0..255 (pixel brightness or alpha-derived).
+    /// The Qt UI layer converts TGA/PNG/BMP → BrushMask and calls this.
+    void setImageMask(const BrushMask& mask);
+    /// The current image mask (empty when no image loaded).
+    const BrushMask& imageMask() const { return imageMask_; }
+    /// Whether a non-empty image mask is loaded.
+    bool hasImageMask() const { return !imageMask_.empty(); }
+
     /// The per-cell delta the ChangeHeight effect uses: the direction times
     /// the strength in 1/32 m voxel units scaled by the mask influence
     /// (0..255); rounded half away from zero. Exposed for the tests.
@@ -228,6 +240,9 @@ private:
 
     EditorSession& session_;
     BrushParams params_;
+
+    /// T3.5: brush-image mask loaded from file (pixel values → influence 0..255).
+    BrushMask imageMask_;
 };
 
 } // namespace MapEditor

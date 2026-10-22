@@ -371,4 +371,121 @@ void View3DRenderer::renderSmooth(int cx, int cy)
     }
 }
 
+// ---------------------------------------------------------------------------
+// Ground pick (inverse projection for 3D brush painting)
+// ---------------------------------------------------------------------------
+
+bool View3DRenderer::pickGroundCell(int cx, int cy, int col, int row,
+                                    int &mapX, int &mapY) const
+{
+    // Preconditions: must have been rendered (buffer + camera set) and the
+    // requested pixel must be inside the window.
+    if (buffer_.empty() || width_ <= 0 || height_ <= 0) {
+        return false;
+    }
+    if (col < 0 || col >= width_ || row < 0 || row >= height_) {
+        return false;
+    }
+    if (!isWorldAvailable()) {
+        return false;
+    }
+
+    const int xside = width_ / 2;
+    const int yside = height_ / 2;
+    const int GB_MAXX = width_;
+    const int GB_MAXY = height_;
+
+    // Same clamped camera values render() pushes into vMap, taken from our own
+    // camera_ so the pick does not depend on vMap's current contents.
+    const int focusC = clampFocus(camera_.focusC);
+    const int cameraDZ = clampCameraDZ(camera_.cameraDZ);
+    const double lean = stableLeanDeg(camera_.leanDeg, focusC, yside);
+    const double leanRad = lean * 3.14159265358979323846 / 180.0;
+    const double turnRad = camera_.turnAngleDeg * 3.14159265358979323846 / 180.0;
+
+    const float tga = static_cast<float>(std::tan(leanRad));
+    const float cosT = static_cast<float>(std::cos(turnRad));
+    const float sinT = static_cast<float>(std::sin(turnRad));
+
+    const int dh = static_cast<int>(xm::round(65536.0 *
+        (std::sin(leanRad - 3.14159265358979323846 / 2.0) * focusC /
+         static_cast<double>(focusC + cameraDZ))));
+
+    const int x0 = vMap.XCYCL(cx) << 16;
+    const int y0 = vMap.YCYCL(cy) << 16;
+
+    const unsigned char *lvG = vMap.VxGBuf;
+    const unsigned char *lvD = vMap.VxDBuf;
+
+    // Walk the frustum rows near → far exactly like viewV2D (VMAP.cpp:2078)
+    // and return the first row whose ground strip covers `row`: nearer strips
+    // paint lower on the screen and occlude the distant ones, which is what
+    // the rendered frame shows.
+    for (int d = -yside - 200; d < yside; ++d) {
+        const double denom = d + tga * focusC;
+        if (std::fabs(denom) < 1e-6) {
+            continue; // projection singularity (excluded by stableLeanDeg)
+        }
+
+        const double near = static_cast<double>(d) * (focusC + cameraDZ) / denom;
+        const double tanNear = static_cast<double>(tga) * near;
+        int DY = static_cast<int>(
+            xm::round(std::sqrt(near * near + tanNear * tanNear) * 65536.0));
+        if (d < 0) {
+            DY = -DY;
+        }
+        const int DX = static_cast<int>(xm::round(
+            65536.0 * xside * (focusC + (cameraDZ - near)) / focusC));
+
+        // The row endpoints on the ground, 16.16 cells (viewV2D:2096-2099).
+        const int xxLeft = x0 + static_cast<int>(
+            (-DX) * cosT - (-DY) * sinT);
+        const int yyLeft = y0 + static_cast<int>(
+            (-DY) * cosT + (-DX) * sinT);
+        const int xxRight = x0 + static_cast<int>(
+            (+DX) * cosT - (-DY) * sinT);
+        const int yyRight = y0 + static_cast<int>(
+            (-DY) * cosT + (+DX) * sinT);
+
+        // Per-column ground advance along the row (viewV2D:2108).
+        const int sx = (xxRight - xxLeft) / GB_MAXX;
+        const int sy = (yyRight - yyLeft) / GB_MAXX;
+
+        const int xx = xxLeft + sx * col;
+        const int yy = yyLeft + sy * col;
+
+        // Bilinear height sample of the ground point (viewV2D:2112-2128).
+        const int u0 = (xx >> 16) & vMap.clip_mask_x;
+        const int a = (xx >> 8) & 255;
+        const int v0r = (yy >> 16) & vMap.clip_mask_y;
+        const int b = (yy >> 8) & 255;
+        const int u1 = (u0 + 1) & vMap.clip_mask_x;
+        const int v1r = (v0r + 1) & vMap.clip_mask_y;
+
+        const int off0 = v0r * vMap.XS_Buf;
+        const int off1 = v1r * vMap.XS_Buf;
+
+        int h0 = lvD[u0 + off0]; if (!h0) h0 = lvG[u0 + off0];
+        int h1 = lvD[u1 + off0]; if (!h1) h1 = lvG[u1 + off0];
+        int h2 = lvD[u0 + off1]; if (!h2) h2 = lvG[u0 + off1];
+        int h3 = lvD[u1 + off1]; if (!h3) h3 = lvG[u1 + off1];
+
+        h0 = (h0 << 8) + a * (h1 - h0);
+        h2 = (h2 << 8) + a * (h3 - h2);
+        const int h = ((h0 << 8) + b * (h2 - h0)) >> 16;
+
+        // Screen row of this strip's top edge (viewV2D:2173).
+        const int y = GB_MAXY / 2 - d - (dh * h >> 16);
+        if (y <= row) {
+            mapX = vMap.XCYCL(xx >> 16);
+            mapY = vMap.YCYCL(yy >> 16);
+            return true;
+        }
+    }
+
+    // Sky — no surface under the pixel.
+    mapX = mapY = -1;
+    return false;
+}
+
 } // namespace MapEditor

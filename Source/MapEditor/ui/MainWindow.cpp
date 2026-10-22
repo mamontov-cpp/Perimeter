@@ -7,13 +7,18 @@
 #include <MinimapWidget.h>
 #include <ViewportWidget.h>
 
+#include <algorithm>
+
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
 #include <QCloseEvent>
 #include <QDockWidget>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QHBoxLayout>
+#include <QImage>
+#include <QImageReader>
 #include <QInputDialog>
 #include <QLabel>
 #include <QLinearGradient>
@@ -358,6 +363,130 @@ QIcon makeEyedropperIcon()
     return QIcon(pm);
 }
 
+/// T3.5 — image brush icon: a small picture frame with a landscape.
+QIcon makeImageBrushIcon()
+{
+    QPixmap pm(22, 22);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setPen(QPen(kInk, 1.8));
+    p.setBrush(Qt::NoBrush);
+    p.drawRect(QRectF(3.0, 4.0, 16.0, 14.0));
+    // Miniature mountain inside.
+    p.setPen(Qt::NoPen);
+    p.setBrush(QColor(60, 120, 60));
+    QPolygonF mtn;
+    mtn << QPointF(5.0, 16.0) << QPointF(10.0, 8.0) << QPointF(14.0, 16.0);
+    p.drawPolygon(mtn);
+    p.setBrush(QColor(100, 160, 100));
+    QPolygonF mtn2;
+    mtn2 << QPointF(12.0, 16.0) << QPointF(16.0, 10.0) << QPointF(18.0, 16.0);
+    p.drawPolygon(mtn2);
+    // Sun circle.
+    p.setBrush(QColor(220, 180, 50));
+    p.drawEllipse(QRectF(5.5, 5.5, 4.0, 4.0));
+    return QIcon(pm);
+}
+
+/// T3.5 — load-image action icon: folder with import arrow.
+QIcon makeLoadImageIcon()
+{
+    QPixmap pm(22, 22);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setPen(QPen(kInk, 1.5));
+    p.setBrush(QColor(220, 200, 140));
+    QPolygonF folder;
+    folder << QPointF(3.0, 8.0) << QPointF(3.0, 18.0) << QPointF(19.0, 18.0)
+           << QPointF(19.0, 8.0) << QPointF(11.0, 8.0) << QPointF(9.0, 5.0)
+           << QPointF(3.0, 5.0);
+    p.drawPolygon(folder);
+    p.setPen(QPen(kAccent, 2.0, Qt::SolidLine, Qt::RoundCap));
+    p.drawLine(QPointF(11.0, 10.0), QPointF(11.0, 15.0));
+    p.setBrush(kAccent);
+    p.setPen(Qt::NoPen);
+    QPolygonF arrow;
+    arrow << QPointF(11.0, 16.5) << QPointF(8.5, 13.5) << QPointF(13.5, 13.5);
+    p.drawPolygon(arrow);
+    return QIcon(pm);
+}
+
+/// T3.1 — brush form (stamp shape) glyphs: the silhouette the brush paints
+/// with, drawn as it looks on the map (filled/outline circle and square, the
+/// two-point line).
+QIcon makeShapeIcon(MapEditor::BrushShape shape)
+{
+    QPixmap pm(22, 22);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    const QColor fill(120, 170, 220, 200);
+    switch (shape) {
+    case MapEditor::BrushShape::FilledCircle:
+        p.setPen(QPen(kInk, 1.5));
+        p.setBrush(fill);
+        p.drawEllipse(QRectF(4.0, 4.0, 14.0, 14.0));
+        break;
+    case MapEditor::BrushShape::FilledSquare:
+        p.setPen(QPen(kInk, 1.5));
+        p.setBrush(fill);
+        p.drawRect(QRectF(4.5, 4.5, 13.0, 13.0));
+        break;
+    case MapEditor::BrushShape::CircleOutline:
+        p.setPen(QPen(kAccent, 2.0));
+        p.setBrush(Qt::NoBrush);
+        p.drawEllipse(QRectF(4.0, 4.0, 14.0, 14.0));
+        break;
+    case MapEditor::BrushShape::SquareOutline:
+        p.setPen(QPen(kAccent, 2.0));
+        p.setBrush(Qt::NoBrush);
+        p.drawRect(QRectF(4.5, 4.5, 13.0, 13.0));
+        break;
+    case MapEditor::BrushShape::Line:
+        p.setPen(QPen(kInk, 2.0, Qt::SolidLine, Qt::RoundCap));
+        p.drawLine(QPointF(5.0, 16.0), QPointF(17.0, 6.0));
+        p.setBrush(kAccent);
+        p.setPen(Qt::NoPen);
+        p.drawEllipse(QPointF(5.0, 16.0), 2.5, 2.5);
+        p.drawEllipse(QPointF(17.0, 6.0), 2.5, 2.5);
+        break;
+    }
+    return QIcon(pm);
+}
+
+/// T3.5: Convert a QImage to a BrushMask (pixel alpha/luminance → influence).
+MapEditor::BrushMask imageToBrushMask(const QImage &img)
+{
+    MapEditor::BrushMask mask;
+    if (img.isNull() || img.width() <= 0 || img.height() <= 0) {
+        return mask;
+    }
+    const QImage fmt = img.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    const int w = fmt.width();
+    const int h = fmt.height();
+    mask.sx = w;
+    mask.sy = h;
+    mask.x = -(w / 2);
+    mask.y = -(h / 2);
+    mask.influence.resize(static_cast<std::size_t>(w) * h);
+    for (int y = 0; y < h; ++y) {
+        const QRgb *line = reinterpret_cast<const QRgb *>(fmt.constScanLine(y));
+        for (int x = 0; x < w; ++x) {
+            const QRgb px = line[x];
+            const int a = qAlpha(px);
+            unsigned char inf = 0;
+            if (a > 0) {
+                const int lum = (qRed(px) * 76 + qGreen(px) * 150 + qBlue(px) * 29) / 256;
+                inf = static_cast<unsigned char>(std::min(255, (lum * a) / 255));
+            }
+            mask.influence[static_cast<std::size_t>(y) * w + x] = inf;
+        }
+    }
+    return mask;
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -411,13 +540,10 @@ void MainWindow::buildViewport()
     // T3.1 — plug the brush tool in and mirror its shape/radius in the
     // cursor preview (the viewport draws the outline over the raster).
     viewport_->setBrushTool(brushTool_);
-    const MapEditor::BrushParams &brush = brushTool_->params();
-    const MapEditor::BrushPreviewShape previewShape =
-        (brush.shape == MapEditor::BrushShape::FilledSquare ||
-         brush.shape == MapEditor::BrushShape::SquareOutline)
-            ? MapEditor::BrushPreviewShape::Square
-            : MapEditor::BrushPreviewShape::Circle;
-    viewport_->setBrushPreview(previewShape, brush.radius);
+    // The toolbar/menu toggle was set before this widget existed — push the
+    // checked state into the viewport now that it is here.
+    viewport_->setBrushEditingEnabled(actBrushEdit_ && actBrushEdit_->isChecked());
+    syncBrushControls();
     viewport_->setBrushPreviewVisible(true);
 
     // Connect cursor position signal to status bar.
@@ -546,11 +672,8 @@ void MainWindow::onWorldUnload()
 
 void MainWindow::updateCursorInfo(int mapX, int mapY)
 {
-    if (viewport_ && viewport_->viewMode() == MapEditor::ViewportWidget::ViewMode::Oblique) {
-        // The oblique view has no linear screen→cell mapping; the viewport
-        // does not emit positions there.
-        return;
-    }
+    // Both view modes report the cell under the cursor: TopDown maps the
+    // screen linearly, Oblique ray-picks the rendered voxel surface.
     QString info = QString(tr("X: %1  Y: %2")).arg(mapX).arg(mapY);
     statusBar()->showMessage(info, 3000);
 }
@@ -706,20 +829,27 @@ void MainWindow::buildEditMenu(QMenuBar *menuBar)
 
     editMenu->addSeparator();
 
-    // T3.1 — brush painting toggle: when checked, a left-button drag in the
-    // 2D view applies the brush stamps (default raise, filled circle).
+    // T3.1 — brush painting toggle: when checked, a left-button press/drag
+    // applies the brush stamps in both view modes (default raise, filled
+    // circle).
     actBrushEdit_ = editMenu->addAction(tr("&Brush Editing"));
     actBrushEdit_->setIcon(makeBrushIcon());
     actBrushEdit_->setToolTip(
-        tr("Apply the brush with a left drag in the 2D view (T).\n"
-           "The brush type (raise/lower/levellers) and layer mode "
-           "(Geo/Dam) are picked on the Brush toolbar."));
+        tr("Apply the brush with a left click/drag in the 2D and the 3D view (T).\n"
+           "The brush type (raise/lower/levellers/zeroplast/color/image), the "
+           "stamp form and the layer mode (Geo/Dam) are picked on the Brush "
+           "toolbar.\nIn the 3D view Alt+left still orbits the camera."));
     actBrushEdit_->setCheckable(true);
-    actBrushEdit_->setChecked(true);
     actBrushEdit_->setShortcut(QKeySequence(Qt::Key_T));
-    connect(actBrushEdit_, &QAction::toggled, viewport_, [this](bool checked) {
-        viewport_->setBrushEditingEnabled(checked);
+    // Context must be `this`: buildEditMenu() runs before buildViewport(), so
+    // viewport_ is still null here and using it as a context would make Qt
+    // drop the connection ("invalid nullptr parameter").
+    connect(actBrushEdit_, &QAction::toggled, this, [this](bool checked) {
+        if (viewport_) {
+            viewport_->setBrushEditingEnabled(checked);
+        }
     });
+    actBrushEdit_->setChecked(true);
 
     // T3.2 — the same brush type/mode actions as the Brush toolbar,
     // packed into an Edit-menu submenu for discoverability.
@@ -739,6 +869,16 @@ void MainWindow::buildEditMenu(QMenuBar *menuBar)
     brushMenu->addAction(actBrushEraseZP_);
     brushMenu->addAction(actBrushSoot_);
     brushMenu->addAction(actBrushVeryLightDam_);
+    brushMenu->addSeparator();
+    brushMenu->addAction(actBrushImage_);
+    brushMenu->addAction(actLoadBrushImage_);
+    brushMenu->addSeparator();
+    // T3.1 — the stamp form, same actions as on the Brush toolbar.
+    brushMenu->addAction(actShapeCircle_);
+    brushMenu->addAction(actShapeSquare_);
+    brushMenu->addAction(actShapeCircleOutline_);
+    brushMenu->addAction(actShapeSquareOutline_);
+    brushMenu->addAction(actShapeLine_);
 }
 
 void MainWindow::buildViewMenu(QMenuBar *menuBar)
@@ -1040,7 +1180,25 @@ void MainWindow::createBrushActions()
         tr("The brush seeds a very light dam layer at the geo height and "
            "paints the surface with the very light dam texture index. "
            "Equivalent to the game's initial dam deployment."),
-        MapEditor::BrushEffect::VeryLightDam, 0);
+         MapEditor::BrushEffect::VeryLightDam, 0);
+
+    // T3.5 — image brush: terrain editing driven by a loaded image mask.
+    actBrushImage_ = addType(
+        makeImageBrushIcon(), tr("Image Brush"),
+        tr("The brush applies a loaded image as the terrain-edit mask. "
+           "Each pixel's brightness (0..255) controls the per-cell strength "
+           "of the height change. Load an image with the \"Load Image\" "
+           "button below."),
+        MapEditor::BrushEffect::ImageBrush, 1);
+
+    // T3.5 — load brush image from file.
+    actLoadBrushImage_ = new QAction(makeLoadImageIcon(), tr("&Load Image..."),
+                                      this);
+    actLoadBrushImage_->setToolTip(
+        tr("Load a TGA/PNG/BMP image as the brush mask for the Image Brush. "
+           "Pixel brightness (0..255) controls per-cell influence."));
+    connect(actLoadBrushImage_, &QAction::triggered,
+            this, &MainWindow::onLoadBrushImage);
 
     // --- Mode: which terrain layer the height tools drive -------------
     QActionGroup *modeGroup = new QActionGroup(this);
@@ -1073,6 +1231,44 @@ void MainWindow::createBrushActions()
            "at or above the geo."),
         MapEditor::BrushMode::Dam);
 
+    // --- Form: the stamp silhouette (T3.1 BrushShape) -----------------
+    QActionGroup *shapeGroup = new QActionGroup(this);
+    const auto addShape = [this, shapeGroup](MapEditor::BrushShape shape,
+                                             const QString &text,
+                                             const QString &toolTip) {
+        QAction *action = new QAction(makeShapeIcon(shape), text, this);
+        action->setToolTip(toolTip);
+        action->setCheckable(true);
+        action->setChecked(brushTool_->params().shape == shape);
+        connect(action, &QAction::triggered, this, [this, shape] {
+            MapEditor::BrushParams params = brushTool_->params();
+            params.shape = shape;
+            brushTool_->setParams(params);
+            syncBrushControls();
+        });
+        shapeGroup->addAction(action);
+        return action;
+    };
+
+    actShapeCircle_ = addShape(
+        MapEditor::BrushShape::FilledCircle, tr("Circle"),
+        tr("Filled circle stamp — the shape the game's terraformers influence. "
+           "Radius is the disc half-size in map cells."));
+    actShapeSquare_ = addShape(
+        MapEditor::BrushShape::FilledSquare, tr("Square"),
+        tr("Filled square stamp covering |dx| <= radius and |dy| <= radius."));
+    actShapeCircleOutline_ = addShape(
+        MapEditor::BrushShape::CircleOutline, tr("Circle Outline"),
+        tr("One-cell ring exactly at the radius — draws circular borders."));
+    actShapeSquareOutline_ = addShape(
+        MapEditor::BrushShape::SquareOutline, tr("Square Outline"),
+        tr("One-cell square border at the radius — draws rectangular borders."));
+    actShapeLine_ = addShape(
+        MapEditor::BrushShape::Line, tr("Line"),
+        tr("Two-point stroke: press marks the start, release draws a "
+           "Bresenham line stamped with the filled circle of the current "
+           "radius — one undo entry per line. Works in both view modes."));
+
     // T3.3 — eyedropper toggle: when checked, right-click reads the SurBuf
     // index at the cursor cell and sets it as the color brush index.
     actEyedropper_ = new QAction(makeEyedropperIcon(), tr("Eyedropper"), this);
@@ -1102,6 +1298,30 @@ void MainWindow::buildBrushToolbar()
 
     // T3.1 painting toggle (moved from the View toolbar).
     bar->addAction(actBrushEdit_);
+    bar->addSeparator();
+
+    // T3.1 form buttons: the stamp silhouette + the stamp half-size. The
+    // silhouette is what the cursor preview shows and what a stamp paints.
+    bar->addAction(actShapeCircle_);
+    bar->addAction(actShapeSquare_);
+    bar->addAction(actShapeCircleOutline_);
+    bar->addAction(actShapeSquareOutline_);
+    bar->addAction(actShapeLine_);
+
+    // Stamp half-size in map cells (BrushParams::radius, clamped by the tool
+    // to Terra's radius tables length).
+    brushRadiusSpin_ = new QSpinBox(bar);
+    brushRadiusSpin_->setRange(0, MapEditor::BrushTool::maxRadius());
+    brushRadiusSpin_->setSuffix(tr(" c"));
+    brushRadiusSpin_->setToolTip(
+        tr("Brush radius in map cells (the stamp half-size)."));
+    connect(brushRadiusSpin_, &QSpinBox::valueChanged, this, [this](int value) {
+        MapEditor::BrushParams params = brushTool_->params();
+        params.radius = value;
+        brushTool_->setParams(params);
+        syncBrushControls();
+    });
+    bar->addWidget(brushRadiusSpin_);
     bar->addSeparator();
 
     // T3.2 type buttons: raise / lower / the two levellers.
@@ -1167,6 +1387,12 @@ void MainWindow::buildBrushToolbar()
     bar->addAction(actBrushSoot_);
     bar->addAction(actBrushVeryLightDam_);
 
+    bar->addSeparator();
+
+    // T3.5 — image brush type + load-image button.
+    bar->addAction(actBrushImage_);
+    bar->addAction(actLoadBrushImage_);
+
     syncBrushControls();
     syncColorControls();
 }
@@ -1186,6 +1412,22 @@ void MainWindow::syncBrushControls()
         }
     }
 
+    // T3.1 — the stamp form drives the cursor preview silhouette.
+    if (brushRadiusSpin_) {
+        brushRadiusSpin_->setEnabled(
+            params.effect != MapEditor::BrushEffect::ImageBrush);
+        if (brushRadiusSpin_->value() != params.radius) {
+            brushRadiusSpin_->blockSignals(true);
+            brushRadiusSpin_->setValue(params.radius);
+            brushRadiusSpin_->blockSignals(false);
+        }
+    }
+    if (actShapeCircle_) actShapeCircle_->setChecked(params.shape == MapEditor::BrushShape::FilledCircle);
+    if (actShapeSquare_) actShapeSquare_->setChecked(params.shape == MapEditor::BrushShape::FilledSquare);
+    if (actShapeCircleOutline_) actShapeCircleOutline_->setChecked(params.shape == MapEditor::BrushShape::CircleOutline);
+    if (actShapeSquareOutline_) actShapeSquareOutline_->setChecked(params.shape == MapEditor::BrushShape::SquareOutline);
+    if (actShapeLine_) actShapeLine_->setChecked(params.shape == MapEditor::BrushShape::Line);
+
     // T3.3 — color index spinbox is enabled only for the SetColor effect.
     if (brushColorIndexSpin_) {
         brushColorIndexSpin_->setEnabled(
@@ -1196,6 +1438,27 @@ void MainWindow::syncBrushControls()
             brushColorIndexSpin_->blockSignals(false);
         }
     }
+
+    // Mirror the tool into the viewport cursor preview: the square silhouette
+    // for the square forms and for the image mask (a rectangle), the circle
+    // otherwise; the radius is the mask half-size for the image brush.
+    if (viewport_) {
+        const bool squarePreview =
+            params.shape == MapEditor::BrushShape::FilledSquare ||
+            params.shape == MapEditor::BrushShape::SquareOutline ||
+            params.effect == MapEditor::BrushEffect::ImageBrush;
+        int previewRadius = params.radius;
+        if (params.effect == MapEditor::BrushEffect::ImageBrush &&
+            brushTool_->hasImageMask()) {
+            previewRadius = std::max(brushTool_->imageMask().sx,
+                                     brushTool_->imageMask().sy) / 2;
+        }
+        viewport_->setBrushPreview(
+            squarePreview ? MapEditor::BrushPreviewShape::Square
+                          : MapEditor::BrushPreviewShape::Circle,
+            previewRadius);
+    }
+
     syncColorControls();
 }
 
@@ -1467,6 +1730,50 @@ void MainWindow::onActionClearUndoHistory()
     updateStatusBar();
 }
 
+void MainWindow::onLoadBrushImage()
+{
+    const QString filter = tr("Images (*.png *.tga *.bmp *.jpg *.jpeg);;All Files (*)");
+    const QString filePath = QFileDialog::getOpenFileName(
+        this, tr("Load Brush Image"), QString(), filter);
+    if (filePath.isEmpty()) {
+        return;
+    }
+
+    // Load via QImageReader for explicit format control.
+    QImageReader reader(filePath);
+    reader.setAutoTransform(true);
+    const QImage img = reader.read();
+    if (img.isNull()) {
+        QMessageBox::warning(this, tr("Image Load Failed"),
+            tr("Cannot load image '%1':\n%2")
+                .arg(filePath, reader.errorString()));
+        return;
+    }
+
+    // Convert to brush mask.
+    const MapEditor::BrushMask mask = imageToBrushMask(img);
+    if (mask.empty()) {
+        QMessageBox::warning(this, tr("Empty Image"),
+            tr("The loaded image produced an empty brush mask."));
+        return;
+    }
+
+    brushTool_->setImageMask(mask);
+
+    // Switch to ImageBrush effect so the user can start painting immediately.
+    MapEditor::BrushParams params = brushTool_->params();
+    params.effect = MapEditor::BrushEffect::ImageBrush;
+    brushTool_->setParams(params);
+    syncBrushControls();
+
+    statusBar()->showMessage(
+        tr("Brush image loaded: %1 (%2x3)")
+            .arg(QFileInfo(filePath).fileName())
+            .arg(mask.sx)
+            .arg(mask.sy),
+        5000);
+}
+
 // ---------------------------------------------------------------------------
 // Unsaved changes / Save As helpers (T1.4)
 // ---------------------------------------------------------------------------
@@ -1584,10 +1891,21 @@ void MainWindow::updateActionStates()
                             actBrushLevelHeight_, actBrushColor_,
                             actBrushGeo_, actBrushDam_,
                             actBrushPlotZP_, actBrushEraseZP_,
-                            actBrushSoot_, actBrushVeryLightDam_}) {
+                            actBrushSoot_, actBrushVeryLightDam_,
+                            actBrushImage_, actLoadBrushImage_,
+                            actShapeCircle_, actShapeSquare_,
+                            actShapeCircleOutline_, actShapeSquareOutline_,
+                            actShapeLine_}) {
         if (action) {
             action->setEnabled(worldLoaded);
         }
+    }
+    // T3.1 — the stamp radius applies to every form except the image mask
+    // (which carries its own size), and only with a loaded world.
+    if (brushRadiusSpin_) {
+        brushRadiusSpin_->setEnabled(
+            worldLoaded && brushTool_ &&
+            brushTool_->params().effect != MapEditor::BrushEffect::ImageBrush);
     }
     // T3.3 — eyedropper and color spinbox.
     if (actEyedropper_) {

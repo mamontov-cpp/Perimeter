@@ -227,8 +227,8 @@ bool BrushTool::effectSupported(BrushEffect effect)
     case BrushEffect::EraseZeroplast:  // T3.4 remove zeroplast flag
     case BrushEffect::PlotSoot:        // T3.4 mark soot
     case BrushEffect::VeryLightDam:    // T3.4 very light dam
+    case BrushEffect::ImageBrush:      // T3.5 image-driven terrain edit
         return true;
-    // T3.5 (brush-image) routed later.
     default:
         return false;
     }
@@ -237,6 +237,11 @@ bool BrushTool::effectSupported(BrushEffect effect)
 void BrushTool::setParams(const BrushParams& params)
 {
     params_ = clampedParams(params);
+}
+
+void BrushTool::setImageMask(const BrushMask& mask)
+{
+    imageMask_ = mask;
 }
 
 int BrushTool::heightDeltaMagnitude(const BrushParams& params, unsigned char influence)
@@ -270,6 +275,15 @@ bool BrushTool::applyStamp(int cx, int cy, const BrushParams& params)
     const BrushParams clamped = clampedParams(params);
     if (clamped.effect == BrushEffect::None) {
         return false; // no world edit requested
+    }
+    // T3.5: image brush uses the loaded image mask as the stamp geometry.
+    if (clamped.effect == BrushEffect::ImageBrush) {
+        if (imageMask_.empty()) {
+            return false; // no image loaded
+        }
+        BrushMask mask = imageMask_; // copy, then translate to (cx,cy)
+        mask.translate(cx, cy);
+        return applyMask(mask, clamped);
     }
     BrushMask mask = BrushMasks::byShape(clamped.shape, clamped.radius);
     if (mask.empty()) {
@@ -541,8 +555,20 @@ void BrushTool::applyEffectToCell(const BrushParams& params, int x, int y, unsig
         }
         break;
     }
-    // T3.5 (brush-image) routed here later; applyMask() refuses them until
-    // then (effectSupported), so these cases cannot be reached yet.
+    case BrushEffect::ImageBrush: {
+        // T3.5 — image-driven terrain edit: the image pixel value (0..255)
+        // acts as per-cell influence; the delta magnitude is strength scaled
+        // by that influence (same formula ChangeHeight uses). The BrushMode
+        // Geo/Dam layer selection applies identically.
+        const int dV = changeHeightDelta(params, influence);
+        if (params.mode == BrushMode::Geo) {
+            geoHeightChange(off, dV);
+        } else {
+            damHeightChange(off, dV);
+        }
+        break;
+    }
+    // applyMask() refuses unsupported effects, so these cases are unreachable.
     default:
         break;
     }

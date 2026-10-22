@@ -57,10 +57,13 @@ class BrushTool;
 //   * Cursor → map cell conversion (screenToMap) and a coordinate/zoom readout
 //     (TopDown mode).
 //
-//   * Brush editing (T3.1) — with a BrushTool attached and brush editing
-//     enabled, left-button press/drag in TopDown mode stamps the brush
-//     (undo/redo and dirty-rect pipeline run inside the tool); the preview
-//     outline follows the cursor.
+//   * Brush editing (T3.1, tools through T3.5) — with a BrushTool attached and
+//     brush editing enabled, left-button press/drag stamps the brush in BOTH
+//     view modes (undo/redo and the dirty-rect pipeline run inside the tool).
+//     TopDown maps the cursor to a cell linearly; Oblique ray-picks the voxel
+//     surface through View3DRenderer::pickGroundCell(). Alt+left in Oblique
+//     still orbits. The Line form is a press→drag→release two-point stroke.
+//     The preview outline follows the cursor (screen-space ring in 3D).
 //
 // Both base rasters are painted from zero-copy QImages: the ARGB32 cache of
 // ViewportRenderer and the RGB16 (565) frame of View3DRenderer.
@@ -254,6 +257,12 @@ public:
     /// Map cell under the cursor (-1,-1 when outside the map).
     QPoint cursorCell() const { return cursorCell_; }
 
+    /// Map cell under an arbitrary widget position in the current view mode:
+    /// TopDown uses the linear screenToMap(); Oblique ray-picks the rendered
+    /// voxel surface through View3DRenderer::pickGroundCell(). Returns
+    /// (-1,-1) for sky / off-window positions.
+    QPoint cellAtWidgetPos(const QPoint &widgetPos) const;
+
     // -----------------------------------------------------------------------
     // Coordinate conversion (public: reused by tool panels / tests)
     // -----------------------------------------------------------------------
@@ -321,14 +330,30 @@ private:
     /// given pixel deltas — inverse view-basis mapping, see the .cpp.
     void panObliqueBy(double dxCursorPx, double dyCursorPx);
 
+    /// Screen-space ground scale of the 3D view: widget pixels per ground cell
+    /// across the view (x) and along the view direction (y, the kv-scaled
+    /// depth axis). Used by the 3D brush preview ring.
+    QPointF obliquePxPerCell() const;
+
     EditorSession *session_ = nullptr;
     ViewportRenderer *renderer_ = nullptr;
 
-    // T3.1 — brush painting: left-drag applies stamps (TopDown mode).
+    // T3.1 — brush painting: left-drag applies stamps (both view modes).
     BrushTool *brushTool_ = nullptr;
     bool brushEditingEnabled_ = true;
     bool brushPainting_ = false;
     QPoint lastPaintCell_{-1, -1};
+    /// Line-shape stroke: the press marks lineStart_, the release draws one
+    /// Bresenham line from the start to the release cell (single undo entry).
+    bool linePending_ = false;
+    QPoint lineStart_{-1, -1};
+    /// Widget position of the line-stroke press — the 3D preview has no
+    /// cell→screen mapping, so the preview line runs between the two cursor
+    /// positions.
+    QPoint lineStartWidgetPos_{-1, -1};
+    /// Widget position of the cursor — the 3D preview ring is drawn in screen
+    /// space (the oblique projection has no linear cell→screen mapping).
+    QPoint cursorWidgetPos_{-1, -1};
 
     // T3.3 — eyedropper: right-click reads SurBuf at cursor.
     bool eyedropperEnabled_ = false;

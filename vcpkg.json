@@ -1,18 +1,25 @@
 {
-	"name": "perimeter",
-	"version": "3.1.11",
-	"dependencies": [
-		"zlib",
-		"boost-stacktrace",
-		"libvpx",
-		"sdl2",
-		"sdl2-image",
-		"sdl2-mixer",
-		"sdl2-net",
-		{
-			"name": "ffmpeg",
-			"default-features": false,
-			"features": [ "avcodec", "avformat", "avfilter", "swscale", "swresample" ]
-		}
-	]
+  "name": "perimeter",
+  "version": "3.1.11",
+  "dependencies": [
+    "zlib",
+    "boost-stacktrace",
+    "libvpx",
+    "sdl2",
+    "sdl2-image",
+    "sdl2-mixer",
+    "sdl2-net",
+    {
+      "name": "ffmpeg",
+      "default-features": false,
+      "features": [
+        "avcodec",
+        "avformat",
+        "avfilter",
+        "swscale",
+        "swresample"
+      ]
+    }
+  ],
+  "builtin-baseline": "e456309491fd875487bf02b8a0dca76c1b1b00cc"
 }

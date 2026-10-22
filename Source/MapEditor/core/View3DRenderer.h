@@ -128,6 +128,14 @@ public:
         return buffer_.empty() ? nullptr : buffer_.data();
     }
 
+    /// Inverse of the oblique projection: the map cell whose voxel top is the
+    /// first surface hit by the view ray through the buffer pixel (col, row)
+    /// — the same near→far march that viewV2D draws with, so the picked cell
+    /// is exactly what the rendered frame shows there (near rows occlude far
+    /// ones).  Returns false for sky pixels and out-of-window coordinates.
+    bool pickGroundCell(int cx, int cy, int col, int row,
+                        int &mapX, int &mapY) const;
+
 private:
     /// The mip-filtered voxel renderer walking the same frustum math as
     /// viewV2D (VMAP.cpp:2041) with pyramid sampling; render() dispatches

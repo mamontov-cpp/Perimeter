@@ -79,6 +79,9 @@ private slots:
     /// Handle eyedropper pick: update the color brush palette index (T3.3).
     void onEyedropperPicked(int mapX, int mapY, unsigned char surIndex);
 
+    /// T3.5 — open a file dialog, load an image as brush mask.
+    void onLoadBrushImage();
+
 private:
     void buildMenuBar();
     void buildEditMenu(QMenuBar *menuBar);
@@ -178,6 +181,19 @@ private:
     QAction *actBrushEraseZP_ = nullptr;
     QAction *actBrushSoot_ = nullptr;
     QAction *actBrushVeryLightDam_ = nullptr;
+    // T3.5 — image brush type + load-image action.
+    QAction *actBrushImage_ = nullptr;
+    QAction *actLoadBrushImage_ = nullptr;
+    // T3.1 — brush form (stamp shape) actions: filled circle/square, the two
+    // outlines and the two-point line. Exclusive group, mirrored in the
+    // viewport preview and in BrushParams::shape.
+    QAction *actShapeCircle_ = nullptr;
+    QAction *actShapeSquare_ = nullptr;
+    QAction *actShapeCircleOutline_ = nullptr;
+    QAction *actShapeSquareOutline_ = nullptr;
+    QAction *actShapeLine_ = nullptr;
+    // T3.1 — stamp half-size in map cells (BrushParams::radius).
+    QSpinBox *brushRadiusSpin_ = nullptr;
     // T3.3 — eyedropper toggle.
     QAction *actEyedropper_ = nullptr;
     // T3.2 — brush mode actions: which layer the height tools drive.

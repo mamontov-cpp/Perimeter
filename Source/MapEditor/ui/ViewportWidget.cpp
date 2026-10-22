@@ -544,6 +544,9 @@ void ViewportWidget::paintEvent(QPaintEvent * /*event*/)
 
     if (viewMode_ == ViewMode::Oblique) {
         draw3DRaster(painter);
+        // The brush works in the 3D view as well — the preview ring and the
+        // pending line stroke are drawn in screen space at the cursor.
+        if (brushPreviewVisible_) drawBrushPreview(painter);
         drawHud(painter);
         emitViewRectIfChanged();
         return;
@@ -718,12 +721,32 @@ void ViewportWidget::drawBrushPreview(QPainter &painter)
         return;
     }
 
+    painter.setPen(QPen(QColor(255, 255, 0, 180), 1.5, Qt::DashLine));
+    painter.setBrush(Qt::NoBrush);
+
+    if (viewMode_ == ViewMode::Oblique) {
+        // The oblique projection has no linear cell→screen map, so the ring is
+        // centred on the cursor and sized by the camera's approximate
+        // widget-pixels-per-ground-cell (the same basis the pick uses).
+        const QPointF pxPerCell = obliquePxPerCell();
+        const double rx = qMax(3.0, brushRadius_ * pxPerCell.x());
+        const double ry = qMax(3.0, brushRadius_ * pxPerCell.y());
+        const QPointF center(cursorWidgetPos_);
+        if (brushShape_ == BrushPreviewShape::Circle) {
+            painter.drawEllipse(center, rx, ry);
+        } else {
+            painter.drawRect(QRectF(center.x() - rx, center.y() - ry,
+                                    rx * 2.0, ry * 2.0));
+        }
+        if (linePending_ && lineStartWidgetPos_.x() >= 0) {
+            painter.drawLine(QPointF(lineStartWidgetPos_), center);
+        }
+        return;
+    }
+
     // Center of the cell in widget coords.
     QPointF center = mapToScreen(cell.x() + 0.5, cell.y() + 0.5);
     double screenR = brushRadius_ * zoom_;
-
-    painter.setPen(QPen(QColor(255, 255, 0, 180), 1.5, Qt::DashLine));
-    painter.setBrush(Qt::NoBrush);
 
     if (brushShape_ == BrushPreviewShape::Circle) {
         painter.drawEllipse(center, screenR, screenR);
@@ -731,6 +754,18 @@ void ViewportWidget::drawBrushPreview(QPainter &painter)
         QRectF r(center.x() - screenR, center.y() - screenR,
                  screenR * 2, screenR * 2);
         painter.drawRect(r);
+    }
+
+    // Pending Line stroke: start marker + the line to the cursor cell.
+    if (linePending_ && lineStart_.x() >= 0) {
+        const QPointF start = mapToScreen(lineStart_.x() + 0.5,
+                                          lineStart_.y() + 0.5);
+        painter.drawLine(start, center);
+        if (brushShape_ == BrushPreviewShape::Circle) {
+            painter.drawEllipse(start, screenR, screenR);
+        } else {
+            painter.drawEllipse(start, 3.0, 3.0);
+        }
     }
 }
 
@@ -819,12 +854,12 @@ void ViewportWidget::drawHud(QPainter &painter)
 void ViewportWidget::mousePressEvent(QMouseEvent *event)
 {
     if (event->button() == Qt::MiddleButton || event->button() == Qt::RightButton) {
-        // T3.3 — eyedropper: right-click in TopDown mode picks the SurBuf
-        // index under the cursor, unless the eyedropper is off (fall through
-        // to pan below).
-        if (eyedropperEnabled_ && viewMode_ == ViewMode::TopDown) {
+        // T3.3 — eyedropper: right-click picks the SurBuf index under the
+        // cursor in both view modes (the cell comes from the same mapping the
+        // brush uses), unless the eyedropper is off (fall through to pan).
+        if (eyedropperEnabled_ && session_ && session_->isWorldLoaded()) {
             const QPoint pos = event->position().toPoint();
-            const QPoint cell = screenToMap(pos.x(), pos.y());
+            const QPoint cell = cellAtWidgetPos(pos);
             if (cell.x() >= 0 && cell.y() >= 0
                     && renderer_ && renderer_->isBound()
                     && cell.x() < renderer_->width()
@@ -841,23 +876,45 @@ void ViewportWidget::mousePressEvent(QMouseEvent *event)
         event->accept();
         return;
     }
-    if (viewMode_ == ViewMode::Oblique && event->button() == Qt::LeftButton) {
-        // Orbit drag: horizontal — rotation around Z, vertical — tilt.
+
+    const bool altDown = event->modifiers().testFlag(Qt::AltModifier);
+    const bool brushLeft = event->button() == Qt::LeftButton
+                           && isBrushEditingEnabled() && !altDown;
+
+    if (viewMode_ == ViewMode::Oblique && event->button() == Qt::LeftButton
+            && !brushLeft) {
+        // Orbit drag (brush editing off, or Alt held): horizontal — rotation
+        // around Z, vertical — tilt.
         orbiting_ = true;
         panStart_ = event->position();
         setCursor(Qt::SizeAllCursor);
         event->accept();
         return;
     }
-    if (viewMode_ == ViewMode::TopDown && event->button() == Qt::LeftButton) {
-        // Brush painting (T3.1): press applies one stamp at the cursor cell,
-        // a following drag stamps along the path (mouseMoveEvent).
+
+    if (brushLeft) {
+        // Brush painting (T3.1, T3.4/T3.5 tools) works in BOTH view modes:
+        // TopDown maps the cursor linearly, Oblique ray-picks the voxel
+        // surface (cellAtWidgetPos). Press applies one stamp at the cursor
+        // cell; a following drag stamps along the path (mouseMoveEvent).
         const QPoint pos = event->position().toPoint();
-        const QPoint cell = screenToMap(pos.x(), pos.y());
-        if (isBrushEditingEnabled()
-                && cell.x() >= 0 && cell.y() >= 0
+        const QPoint cell = cellAtWidgetPos(pos);
+        if (cell.x() >= 0 && cell.y() >= 0
                 && renderer_ && renderer_->isBound()
                 && cell.x() < renderer_->width() && cell.y() < renderer_->height()) {
+            cursorWidgetPos_ = pos;
+            cursorCell_ = cell;
+            if (brushTool_ && brushTool_->params().shape == BrushShape::Line) {
+                // The Line form is a two-point stroke: press marks the start,
+                // the release draws the whole line as ONE undo entry.
+                linePending_ = true;
+                lineStart_ = cell;
+                lineStartWidgetPos_ = pos;
+                setCursor(Qt::CrossCursor);
+                update();
+                event->accept();
+                return;
+            }
             brushPainting_ = true;
             lastPaintCell_ = cell;
             setCursor(Qt::CrossCursor);
@@ -900,26 +957,27 @@ void ViewportWidget::mouseMoveEvent(QMouseEvent *event)
         return;
     }
 
-    if (viewMode_ == ViewMode::Oblique) {
-        // The oblique view is not a linear map projection — screen-space cell
-        // lookup is undefined there; keep the last TopDown cell in the panels.
-        return;
-    }
-
-    // Compute the cell under cursor and emit only when it changes.
+    // Compute the cell under cursor in the CURRENT view mode (TopDown is a
+    // linear map; Oblique ray-picks the voxel surface) and emit only when it
+    // changes.
     QPoint pos = event->position().toPoint();
-    QPoint cell = screenToMap(pos.x(), pos.y());
+    cursorWidgetPos_ = pos;
+    QPoint cell = cellAtWidgetPos(pos);
     if (cell != cursorCell_) {
         cursorCell_ = cell;
-        emit cursorMapPosition(cell.x(), cell.y());
+        if (cell.x() >= 0 && cell.y() >= 0) {
+            emit cursorMapPosition(cell.x(), cell.y());
+        }
         // Continue painting or update the brush preview position.
-        if (brushPainting_ && cell != lastPaintCell_) {
+        if (brushPainting_ && cell != lastPaintCell_ && cell.x() >= 0) {
             lastPaintCell_ = cell;
             applyBrushStampHere(*this, cell);
+        } else if (linePending_ && brushPreviewVisible_) {
+            update(); // redraw the pending line preview
         } else if (brushPreviewVisible_) {
             update();
         }
-    } else if (brushPainting_ && cell != lastPaintCell_) {
+    } else if (brushPainting_ && cell != lastPaintCell_ && cell.x() >= 0) {
         // Re-entered the previous drag cell after panning the view beneath.
         lastPaintCell_ = cell;
         applyBrushStampHere(*this, cell);
@@ -931,6 +989,23 @@ void ViewportWidget::mouseReleaseEvent(QMouseEvent *event)
     if (panning_) {
         panning_ = false;
         setCursor(brushPainting_ ? Qt::CrossCursor : Qt::ArrowCursor);
+        event->accept();
+        return;
+    }
+    if (linePending_) {
+        // Finish the Line-shape stroke: one applyLine() call = one undo entry.
+        linePending_ = false;
+        const QPoint pos = event->position().toPoint();
+        const QPoint cell = cellAtWidgetPos(pos);
+        if (brushTool_ && cell.x() >= 0 && cell.y() >= 0 && cell != lineStart_) {
+            if (brushTool_->applyLine(lineStart_.x(), lineStart_.y(),
+                                      cell.x(), cell.y())) {
+                emit worldEdited();
+            }
+        }
+        lineStart_ = {-1, -1};
+        setCursor(isBrushEditingEnabled() ? Qt::CrossCursor : Qt::ArrowCursor);
+        update();
         event->accept();
         return;
     }
@@ -960,6 +1035,12 @@ void ViewportWidget::leaveEvent(QEvent *)
     // Only drop the cursor cell; brush-preview visibility stays under the tool
     // panel's control (T3) — drawBrushPreview already skips off-map cells.
     cursorCell_ = {-1, -1};
+    cursorWidgetPos_ = {-1, -1};
+    // A stroke interrupted by the cursor leaving the widget must not leave a
+    // dangling line preview / half-finished line state.
+    linePending_ = false;
+    lineStart_ = {-1, -1};
+    lineStartWidgetPos_ = {-1, -1};
     update();
 }
 
@@ -1048,6 +1129,61 @@ void ViewportWidget::panObliqueBy(double dxCursorPx, double dyCursorPx)
     const double moveX = (-dxCursorPx * cosT + dyCursorPx * forwardScale * sinT) * cellsPerPxX;
     const double moveY = (-dxCursorPx * sinT - dyCursorPx * forwardScale * cosT) * cellsPerPxX;
     obliqueCenter_ += QPointF(moveX, moveY);
+}
+
+QPoint ViewportWidget::cellAtWidgetPos(const QPoint &widgetPos) const
+{
+    if (!renderer_ || !renderer_->isBound()) {
+        return {-1, -1};
+    }
+    if (viewMode_ == ViewMode::TopDown) {
+        return screenToMap(widgetPos.x(), widgetPos.y());
+    }
+    if (!view3d_ || view3d_->windowWidth() <= 0 || view3d_->windowHeight() <= 0) {
+        return {-1, -1};
+    }
+    // The 3D buffer is the widget size clamped to Terra's window limit and
+    // then scaled back up by draw3DRaster — convert widget px to buffer px.
+    const int bw = view3d_->windowWidth();
+    const int bh = view3d_->windowHeight();
+    const int col = qFloor(widgetPos.x() * bw / static_cast<double>(qMax(1, width())));
+    const int row = qFloor(widgetPos.y() * bh / static_cast<double>(qMax(1, height())));
+    if (col < 0 || col >= bw || row < 0 || row >= bh) {
+        return {-1, -1};
+    }
+    // The look-at cell draw3DRaster renders with — the pick must use the same.
+    const int mapW = renderer_->width();
+    const int mapH = renderer_->height();
+    const int cx = ((static_cast<int>(std::floor(obliqueCenter_.x())) % mapW) + mapW) % mapW;
+    const int cy = ((static_cast<int>(std::floor(obliqueCenter_.y())) % mapH) + mapH) % mapH;
+    int mx = -1;
+    int my = -1;
+    if (!view3d_->pickGroundCell(cx, cy, col, row, mx, my)) {
+        return {-1, -1}; // sky
+    }
+    return {mx, my};
+}
+
+QPointF ViewportWidget::obliquePxPerCell() const
+{
+    if (!view3d_ || view3d_->windowWidth() <= 0 || view3d_->windowHeight() <= 0
+        || width() <= 0 || height() <= 0) {
+        return QPointF(1.0, 1.0);
+    }
+    const QSize buffer = obliqueBufferSize();
+    const double leanDeg = View3DRenderer::stableLeanDeg(
+        obliqueCamera_.leanDeg, obliqueCamera_.focusC, buffer.height() / 2);
+    const double kv = obliqueForwardScale(obliqueCamera_, leanDeg);
+    // Ground cells per rendered buffer pixel (see currentViewRect()).
+    const double cellsPerPx =
+        (obliqueCamera_.focusC + obliqueCamera_.cameraDZ) /
+        static_cast<double>(qMax(1, obliqueCamera_.focusC));
+    const double widgetPxPerBufferPxX =
+        width() / static_cast<double>(qMax(1, buffer.width()));
+    const double widgetPxPerBufferPxY =
+        height() / static_cast<double>(qMax(1, buffer.height()));
+    return QPointF(widgetPxPerBufferPxX / cellsPerPx,
+                   widgetPxPerBufferPxY / (cellsPerPx * kv));
 }
 
 } // namespace MapEditor
