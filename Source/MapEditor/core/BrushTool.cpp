@@ -223,8 +223,12 @@ bool BrushTool::effectSupported(BrushEffect effect)
     case BrushEffect::Align4ZP:     // T3.2 level to zeroplast
     case BrushEffect::AlignVariableH: // T3.2 smooth/level to height
     case BrushEffect::SetColor:     // T3.3 paint SurBuf with palette index
+    case BrushEffect::PlotZeroplast:   // T3.4 level + mark zeroplast
+    case BrushEffect::EraseZeroplast:  // T3.4 remove zeroplast flag
+    case BrushEffect::PlotSoot:        // T3.4 mark soot
+    case BrushEffect::VeryLightDam:    // T3.4 very light dam
         return true;
-    // The remaining effects are routed by T3.4–T3.5.
+    // T3.5 (brush-image) routed later.
     default:
         return false;
     }
@@ -486,7 +490,58 @@ void BrushTool::applyEffectToCell(const BrushParams& params, int x, int y, unsig
         vMap.SetTer(x, y, static_cast<unsigned char>(params.colorIndex));
         break;
     }
-    // T3.4–T3.5 route further toolzers here; applyMask() refuses them until
+    case BrushEffect::PlotZeroplast: {
+        // T3.4 — flashCircleLeveling + plotCircleZL:
+        //   1. set height to hZeroPlast (Dam mode: seed dam at geo height first,
+        //      then level the dam to hZeroPlast, like the game's leveller);
+        //   2. mark At_ZEROPLAST when the cell reached the target altitude.
+        if (params.mode == BrushMode::Dam && vMap.VxDBuf[off] == 0) {
+            // Seed the dam at the geo height so that the toolzer can drive it.
+            const int seed = vMap.VxGBuf[off] ? vMap.VxGBuf[off] : 1;
+            vMap.VxDBuf[off] = static_cast<unsigned char>(seed);
+            vMap.SurBuf[off] = vMap.veryLightDam;
+        }
+        {
+            static individualToolzer<T2TE_ALIGNMENT_TERRAIN_4ZP> alignZPToolzer;
+            alignZPToolzer.setHAppoximation(static_cast<int>(vMap.hZeroPlast));
+            const int dV = 1; // non-zero — the toolzer caps at hZeroPlast
+            alignZPToolzer.tVoxSet(off, dV);
+        }
+        {
+            static individualToolzer<T2TE_PLOTTING_ZEROPLAST> plotZPToolzer;
+            plotZPToolzer.setHAppoximation(static_cast<int>(vMap.hZeroPlast));
+            plotZPToolzer.tVoxSet(off, 1);
+        }
+        break;
+    }
+    case BrushEffect::EraseZeroplast: {
+        // T3.4 — eraseCircleZL analogue: remove zeroplast flag via the
+        // T2TE_ERASE_ZEROPLAST toolzer (clears At_NOTPURESURFACE).
+        {
+            static individualToolzer<T2TE_ERASE_ZEROPLAST> eraseZPToolzer;
+            eraseZPToolzer.tVoxSet(off, 1);
+        }
+        break;
+    }
+    case BrushEffect::PlotSoot: {
+        // T3.4 — T2TE_PLOTTING_SOOT toolzer: mark cell as soot (At_SOOT)
+        // when the mask has influence and the cell is not zeroplast.
+        {
+            static individualToolzer<T2TE_PLOTTING_SOOT> sootToolzer;
+            sootToolzer.tVoxSet(off, 1);
+        }
+        break;
+    }
+    case BrushEffect::VeryLightDam: {
+        // T3.4 — T2TE_PLOTTING_VERY_LIGHT_DAM toolzer: seed a dam at geo
+        // height and paint the surface with the very light dam index.
+        {
+            static individualToolzer<T2TE_PLOTTING_VERY_LIGHT_DAM> vldToolzer;
+            vldToolzer.tVoxSet(off, 1);
+        }
+        break;
+    }
+    // T3.5 (brush-image) routed here later; applyMask() refuses them until
     // then (effectSupported), so these cases cannot be reached yet.
     default:
         break;

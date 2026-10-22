@@ -734,6 +734,11 @@ void MainWindow::buildEditMenu(QMenuBar *menuBar)
     brushMenu->addSeparator();
     brushMenu->addAction(actBrushColor_);
     brushMenu->addAction(actEyedropper_);
+    brushMenu->addSeparator();
+    brushMenu->addAction(actBrushPlotZP_);
+    brushMenu->addAction(actBrushEraseZP_);
+    brushMenu->addAction(actBrushSoot_);
+    brushMenu->addAction(actBrushVeryLightDam_);
 }
 
 void MainWindow::buildViewMenu(QMenuBar *menuBar)
@@ -1002,6 +1007,41 @@ void MainWindow::createBrushActions()
            "Geo palette: indices 0..127; Dam palette: 128..255."),
         MapEditor::BrushEffect::SetColor, 0);
 
+    // T3.4 — zeroplast: level to hZeroPlast + mark At_ZEROPLAST.
+    actBrushPlotZP_ = addType(
+        makeGroundLetterIcon(QStringLiteral("Z"), kAccent),
+        tr("Plot Zeroplast"),
+        tr("The brush sets the terrain height to the world zeroplast level "
+           "(hZeroPlast) and marks the cells as zeroplast. In Geo mode only "
+           "the geo layer is levelled; in Dam mode a dam layer is seeded if "
+           "needed before levelling."),
+        MapEditor::BrushEffect::PlotZeroplast, 1);
+
+    // T3.4 — erase zeroplast: remove At_ZEROPLAST / At_SOOT flags.
+    actBrushEraseZP_ = addType(
+        makeGroundLetterIcon(QStringLiteral("E"), kInk),
+        tr("Erase Zeroplast"),
+        tr("The brush removes the zeroplast and soot marks from the cells "
+           "under it, restoring them to the leveled state."),
+        MapEditor::BrushEffect::EraseZeroplast, 0);
+
+    // T3.4 — plot soot (burn marks on the terrain).
+    actBrushSoot_ = addType(
+        makeGroundLetterIcon(QStringLiteral("S"), QColor(80, 50, 20)),
+        tr("Plot Soot"),
+        tr("The brush marks cells as soot (burn residue). Zeroplast cells "
+           "are never marked as soot — the game's rule."),
+        MapEditor::BrushEffect::PlotSoot, 0);
+
+    // T3.4 — very light dam: seed a thin dam layer at geo height.
+    actBrushVeryLightDam_ = addType(
+        makeGroundLetterIcon(QStringLiteral("V"), QColor(100, 140, 180)),
+        tr("Very Light Dam"),
+        tr("The brush seeds a very light dam layer at the geo height and "
+           "paints the surface with the very light dam texture index. "
+           "Equivalent to the game's initial dam deployment."),
+        MapEditor::BrushEffect::VeryLightDam, 0);
+
     // --- Mode: which terrain layer the height tools drive -------------
     QActionGroup *modeGroup = new QActionGroup(this);
     const auto addMode = [this, modeGroup](QIcon icon, const QString &text,
@@ -1118,6 +1158,14 @@ void MainWindow::buildBrushToolbar()
     brushColorSwatch_->setToolTip(
         tr("Current color index preview."));
     bar->addWidget(brushColorSwatch_);
+
+    bar->addSeparator();
+
+    // T3.4 — zeroplast/soot/very-light-dam buttons.
+    bar->addAction(actBrushPlotZP_);
+    bar->addAction(actBrushEraseZP_);
+    bar->addAction(actBrushSoot_);
+    bar->addAction(actBrushVeryLightDam_);
 
     syncBrushControls();
     syncColorControls();
@@ -1534,7 +1582,9 @@ void MainWindow::updateActionStates()
     // T3.2 — the brush type/mode buttons follow the same rule.
     for (QAction *action : {actBrushRaise_, actBrushLower_, actBrushLevelZP_,
                             actBrushLevelHeight_, actBrushColor_,
-                            actBrushGeo_, actBrushDam_}) {
+                            actBrushGeo_, actBrushDam_,
+                            actBrushPlotZP_, actBrushEraseZP_,
+                            actBrushSoot_, actBrushVeryLightDam_}) {
         if (action) {
             action->setEnabled(worldLoaded);
         }

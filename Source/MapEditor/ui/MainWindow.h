@@ -173,6 +173,11 @@ private:
     QAction *actBrushLevelHeight_ = nullptr;
     // T3.3 — color brush (SetSurf) action.
     QAction *actBrushColor_ = nullptr;
+    // T3.4 — zeroplast brush tools.
+    QAction *actBrushPlotZP_ = nullptr;
+    QAction *actBrushEraseZP_ = nullptr;
+    QAction *actBrushSoot_ = nullptr;
+    QAction *actBrushVeryLightDam_ = nullptr;
     // T3.3 — eyedropper toggle.
     QAction *actEyedropper_ = nullptr;
     // T3.2 — brush mode actions: which layer the height tools drive.
