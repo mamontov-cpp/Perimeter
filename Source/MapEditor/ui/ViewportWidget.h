@@ -263,6 +263,9 @@ public:
     /// (-1,-1) for sky / off-window positions.
     QPoint cellAtWidgetPos(const QPoint &widgetPos) const;
 
+    /// Trigger a fresh 3D render on the next paint event (used by undo/redo).
+    void setNeeds3DRedraw() { needs3DRedraw_ = true; }
+
     // -----------------------------------------------------------------------
     // Coordinate conversion (public: reused by tool panels / tests)
     // -----------------------------------------------------------------------
@@ -309,6 +312,8 @@ private:
 
     void drawBaseRaster(QPainter &painter);
     void draw3DRaster(QPainter &painter);
+    /// Blit the cached RGB565 frame without calling viewV2D() again.
+    void blit3DFrame(QPainter &painter);
     void drawGrid(QPainter &painter);
     void drawBrushPreview(QPainter &painter);
     void drawMarkers(QPainter &painter);
@@ -357,6 +362,11 @@ private:
 
     // T3.3 — eyedropper: right-click reads SurBuf at cursor.
     bool eyedropperEnabled_ = false;
+
+    /// Oblique mode: true when the 3D buffer needs a fresh render (camera
+    /// changed, terrain stamped, window resized). When false, paintEvent()
+    /// blits the cached RGB565 frame without calling viewV2D() again.
+    bool needs3DRedraw_ = true;
 
     ViewMode viewMode_ = ViewMode::TopDown;
     View3DRenderer *view3d_ = nullptr;

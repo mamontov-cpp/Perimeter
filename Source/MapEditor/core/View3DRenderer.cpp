@@ -126,10 +126,10 @@ void View3DRenderer::render(int cx, int cy)
     // projection instead of Terra's point-sampled loop.
     if (smooth_) {
         renderSmooth(cx, cy);
-        return;
+    } else {
+        vMap.viewV2D(cx, cy, width_ / 2, height_ / 2, width_ / 2, height_ / 2,
+                     buffer_.data(), width_, height_);
     }
-    vMap.viewV2D(cx, cy, width_ / 2, height_ / 2, width_ / 2, height_ / 2,
-                 buffer_.data(), width_, height_);
 }
 
 // ---------------------------------------------------------------------------
@@ -471,7 +471,7 @@ bool View3DRenderer::pickGroundCell(int cx, int cy, int col, int row,
         int h3 = lvD[u1 + off1]; if (!h3) h3 = lvG[u1 + off1];
 
         h0 = (h0 << 8) + a * (h1 - h0);
-        h2 = (h2 << 8) + a * (h3 - h2);
+        h2 = (h2 << 8) + b * (h3 - h2);
         const int h = ((h0 << 8) + b * (h2 - h0)) >> 16;
 
         // Screen row of this strip's top edge (viewV2D:2173).

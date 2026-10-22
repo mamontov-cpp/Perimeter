@@ -63,6 +63,7 @@ void ViewportWidget::reloadWorld()
         delete renderer_;
         renderer_ = nullptr;
         updateFitScale();
+        needs3DRedraw_ = true;
         update();
         return;
     }
@@ -73,6 +74,7 @@ void ViewportWidget::reloadWorld()
         if (renderer_->bindWorld()) {
             updateFitScale();
             zoomToFit();
+            needs3DRedraw_ = true;
             update();
         }
     }
@@ -118,6 +120,7 @@ static bool applyBrushStampHere(ViewportWidget &viewport, const QPoint &cell)
     const bool changed = brush->applyStamp(cell.x(), cell.y());
     if (changed) {
         emit viewport.worldEdited();
+        viewport.setNeeds3DRedraw();
         viewport.update();
     }
     return changed;
@@ -200,6 +203,7 @@ void ViewportWidget::setViewMode(ViewMode mode)
     // Reset stale pointer/drag state so the mouse does not drag the new mode
     // with a half-finished gesture.
     orbiting_ = false;
+    needs3DRedraw_ = true;
     emit viewModeChanged(viewMode_);
     update();
 }
@@ -250,6 +254,7 @@ void ViewportWidget::setRenderStyle(RenderStyle style)
     } else {
         clampZoom();
     }
+    needs3DRedraw_ = true;
     update();
     emit renderStyleChanged(renderStyle_);
 }
@@ -278,6 +283,7 @@ void ViewportWidget::setObliqueCamera(const View3DCamera &camera)
     obliqueCamera_.leanDeg = camera.leanDeg;
     obliqueCamera_.cameraDZ = View3DRenderer::clampCameraDZ(camera.cameraDZ);
     obliqueCamera_.focusC = View3DRenderer::clampFocus(camera.focusC);
+    needs3DRedraw_ = true;
     emit obliqueCameraChanged(obliqueCamera_);
     update();
 }
@@ -289,6 +295,7 @@ void ViewportWidget::adjustObliqueRotation(double deltaDeg)
         return;
     }
     obliqueCamera_.turnAngleDeg = next;
+    needs3DRedraw_ = true;
     emit obliqueCameraChanged(obliqueCamera_);
     update();
 }
@@ -296,6 +303,7 @@ void ViewportWidget::adjustObliqueRotation(double deltaDeg)
 void ViewportWidget::adjustObliqueTilt(double deltaDeg)
 {
     obliqueCamera_.leanDeg += deltaDeg;
+    needs3DRedraw_ = true;
     emit obliqueCameraChanged(obliqueCamera_);
     update();
 }
@@ -308,6 +316,7 @@ void ViewportWidget::adjustObliqueLift(int deltaCells)
         return;
     }
     obliqueCamera_.cameraDZ = next;
+    needs3DRedraw_ = true;
     emit obliqueCameraChanged(obliqueCamera_);
     update();
 }
@@ -320,6 +329,7 @@ void ViewportWidget::adjustObliqueFocus(int deltaCells)
         return;
     }
     obliqueCamera_.focusC = next;
+    needs3DRedraw_ = true;
     emit obliqueCameraChanged(obliqueCamera_);
     update();
 }
@@ -330,6 +340,7 @@ void ViewportWidget::resetObliqueView()
     obliqueCenter_ = renderer_ ? QPointF(renderer_->width() / 2.0,
                                          renderer_->height() / 2.0)
                                : QPointF();
+    needs3DRedraw_ = true;
     setViewMode(ViewMode::Oblique); // no-op when already Oblique
     emit obliqueCameraChanged(obliqueCamera_);
     update();
@@ -491,6 +502,7 @@ void ViewportWidget::centerOnCell(const QPoint &cell)
 
     if (viewMode_ == ViewMode::Oblique) {
         obliqueCenter_ = QPointF(px, py);
+        needs3DRedraw_ = true;
     } else {
         panOffset_ = QPointF(width() / 2.0 - px * zoom_,
                              height() / 2.0 - py * zoom_);
@@ -543,7 +555,15 @@ void ViewportWidget::paintEvent(QPaintEvent * /*event*/)
     }
 
     if (viewMode_ == ViewMode::Oblique) {
-        draw3DRaster(painter);
+        // Only re-render the 3D frame when the camera moved, terrain was
+        // stamped, or the window resized. The preview ring and HUD are drawn
+        // on top of the cached frame regardless.
+        if (needs3DRedraw_) {
+            draw3DRaster(painter);
+            needs3DRedraw_ = false;
+        } else {
+            blit3DFrame(painter);
+        }
         // The brush works in the 3D view as well — the preview ring and the
         // pending line stroke are drawn in screen space at the cursor.
         if (brushPreviewVisible_) drawBrushPreview(painter);
@@ -636,10 +656,15 @@ void ViewportWidget::draw3DRaster(QPainter &painter)
     const int cy =
         ((static_cast<int>(std::floor(obliqueCenter_.y())) % mapH) + mapH) % mapH;
     view3d_->render(cx, cy);
-    if (view3d_->pixels() == nullptr) {
+
+    blit3DFrame(painter);
+}
+
+void ViewportWidget::blit3DFrame(QPainter &painter)
+{
+    if (!view3d_ || view3d_->pixels() == nullptr) {
         return;
     }
-
     // Zero-copy RGB16 (565) frame — exactly QImage::Format_RGB16 layout,
     // since Sur2Col cubes that pixel order (VMAP.cpp:1367-1370).
     const QImage image(
@@ -1000,6 +1025,7 @@ void ViewportWidget::mouseReleaseEvent(QMouseEvent *event)
         if (brushTool_ && cell.x() >= 0 && cell.y() >= 0 && cell != lineStart_) {
             if (brushTool_->applyLine(lineStart_.x(), lineStart_.y(),
                                       cell.x(), cell.y())) {
+                needs3DRedraw_ = true;
                 emit worldEdited();
             }
         }
@@ -1084,6 +1110,7 @@ void ViewportWidget::resizeEvent(QResizeEvent *event)
     QWidget::resizeEvent(event);
     updateFitScale();
     clampZoom();
+    needs3DRedraw_ = true;
     update();
 }
 
@@ -1129,6 +1156,7 @@ void ViewportWidget::panObliqueBy(double dxCursorPx, double dyCursorPx)
     const double moveX = (-dxCursorPx * cosT + dyCursorPx * forwardScale * sinT) * cellsPerPxX;
     const double moveY = (-dxCursorPx * sinT - dyCursorPx * forwardScale * cosT) * cellsPerPxX;
     obliqueCenter_ += QPointF(moveX, moveY);
+    needs3DRedraw_ = true;
 }
 
 QPoint ViewportWidget::cellAtWidgetPos(const QPoint &widgetPos) const

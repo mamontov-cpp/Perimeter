@@ -1705,6 +1705,7 @@ void MainWindow::onActionUndo()
         // regRender() marked the affected area; a repaint drains the dirty
         // rectangles and refreshes the raster.
         if (viewport_) {
+            viewport_->setNeeds3DRedraw();
             viewport_->update();
         }
         updateStatusBar();
@@ -1715,6 +1716,7 @@ void MainWindow::onActionRedo()
 {
     if (session_->redo()) {
         if (viewport_) {
+            viewport_->setNeeds3DRedraw();
             viewport_->update();
         }
         updateStatusBar();
