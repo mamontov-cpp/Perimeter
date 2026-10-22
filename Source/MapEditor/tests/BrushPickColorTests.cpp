@@ -216,6 +216,12 @@ bool runBrushPickColorTests()
     paintParams.effect = BrushEffect::SetColor;
     paintParams.colorIndex = paintColor;
     paintParams.radius = 1;
+    // The color paint honours the brush layer (T4.3), so the mode must match
+    // the layer of the painted cell.
+    const auto cellMode = [](int x, int y) {
+        return vMap.VxDBuf[mapOffset(x, y)] ? BrushMode::Dam : BrushMode::Geo;
+    };
+    paintParams.mode = cellMode(cx + 40, cy + 40);
 
     TEST_REQUIRE(brush.applyStamp(cx + 40, cy + 40, paintParams),
                  "the SetColor stamp around the center was refused.");
@@ -236,6 +242,7 @@ bool runBrushPickColorTests()
     // round-trip the UI performs after every pick).
     paintParams.colorIndex = brush.params().colorIndex;
     const int px = cx + 60;
+    paintParams.mode = cellMode(px, cy + 40);
     TEST_REQUIRE(brush.applyStamp(px, cy + 40, paintParams),
                  "the follow-up paint with the picked index was refused.");
     TEST_REQUIRE(vMap.SurBuf[mapOffset(px, cy + 40)] == paintColor,

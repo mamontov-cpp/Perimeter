@@ -509,10 +509,21 @@ void BrushTool::applyEffectToCell(const BrushParams& params, int x, int y, unsig
         break;
     }
     case BrushEffect::SetColor: {
-        // T3.3 — paint the surface buffer with the selected palette index
-        // without touching the height buffers (VxGBuf, VxDBuf, AtrBuf).
-        // The caller validates that colorIndex is within [0, 255]; the game
-        // uses 0..127 for geo surface and 128..255 for dam surface.
+        // T3.3/T4.3 — paint the surface buffer with the selected palette
+        // index, honouring the brush layer. SurBuf is a direct palette index
+        // of the cell's layer (T4.1), and the renderer resolves the color
+        // through the *layer's* palette (RnrBuf bit 7 is derived from
+        // VxDBuf at render time, LAND.cpp:1461-1462), so painting a dam
+        // index on a geo cell (or vice versa) would show an arbitrary color
+        // from the wrong palette. Layer selection therefore gates the paint:
+        //   Geo mode recolors geo cells only (VxDBuf == 0),
+        //   Dam mode recolors existing dam cells only (VxDBuf != 0) —
+        // the color brush never seeds or removes a dam; PlotZeroplast /
+        // VeryLightDam own dam creation. Height buffers stay untouched.
+        const bool isDamCell = vMap.VxDBuf[off] != 0;
+        if ((params.mode == BrushMode::Dam) != isDamCell) {
+            break; // wrong layer for this cell — skip, keep SurBuf as-is
+        }
         vMap.SetTer(x, y, static_cast<unsigned char>(params.colorIndex));
         break;
     }
