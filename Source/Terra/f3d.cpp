@@ -135,6 +135,7 @@ void s_f3d::recalcWorld(void)
 				if(v) 
 #endif
 					vMap.SurBuf[of]=calc(j,i, v);
+					vMap.surClearExt(of);
 			}
 		}
 	}

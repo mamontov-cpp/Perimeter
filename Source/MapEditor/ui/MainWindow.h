@@ -92,7 +92,7 @@ private slots:
     void onMinimapCellClicked(int mapX, int mapY);
 
     /// Handle eyedropper pick: update the color brush palette index (T3.3).
-    void onEyedropperPicked(int mapX, int mapY, unsigned char surIndex);
+    void onEyedropperPicked(int mapX, int mapY, int surIndex);
 
     /// T3.5 — open a file dialog, load an image as brush mask.
     void onLoadBrushImage();

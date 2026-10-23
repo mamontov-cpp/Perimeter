@@ -855,14 +855,15 @@ void MainWindow::onMinimapCellClicked(int mapX, int mapY)
     }
 }
 
-void MainWindow::onEyedropperPicked(int mapX, int mapY, unsigned char surIndex)
+void MainWindow::onEyedropperPicked(int mapX, int mapY, int surIndex)
 {
     // T4.2 — BrushTool::pickColorAt already stored the sampled pixel and put
     // it into params().colorIndex; the eyedropper readout slots the color
-    // brush in for painting the sampled color afterwards. The SurBuf value
-    // indexes the palette of the sampled cell's layer — point the brush at
-    // the same layer so the color readout and the paint resolve it exactly
-    // like the renderer does (T4.1 model).
+    // brush in for painting the sampled color afterwards. The value indexes
+    // the palette of the sampled cell's layer — point the brush at the same
+    // layer so the color readout and the paint resolve it exactly like the
+    // renderer does (T4.1 model). T4.4: an extended (>=256) index means the
+    // cell carries a custom color entry — index and cell layer always agree.
     const bool dam = session_ && session_->cellIsDam(mapX, mapY);
     MapEditor::BrushParams params = brushTool_->params();
     params.effect = MapEditor::BrushEffect::SetColor;
@@ -880,7 +881,7 @@ void MainWindow::onEyedropperPicked(int mapX, int mapY, unsigned char surIndex)
 
     // T4.1 — mirror the pick into the palette panel selection.
     if (palettePanel_) {
-        palettePanel_->selectIndex(static_cast<int>(surIndex), dam);
+        palettePanel_->selectIndex(surIndex, dam);
     }
 
     statusBar()->showMessage(
@@ -1565,13 +1566,13 @@ void MainWindow::buildBrushToolbar()
 
     bar->addSeparator();
 
-    // T3.3 — color palette index spinbox (0..255): 0..127 for geo, 128..255
-    // for dam surface.
+    // T3.3/T4.4 — color palette index spinbox: 0..255 base palette entries,
+    // 256+ the extended (custom) entries of the world sidecar.
     brushColorIndexSpin_ = new QSpinBox(bar);
-    brushColorIndexSpin_->setRange(0, 255);
+    brushColorIndexSpin_->setRange(0, 65535);
     brushColorIndexSpin_->setToolTip(
-        tr("Palette index for the \"Paint Color\" brush (0..127 = geo, "
-           "128..255 = dam)."));
+        tr("Palette index for the \"Paint Color\" brush (0..255 = base "
+           "palettes, 256+ = custom entries of the extended palette)."));
     connect(brushColorIndexSpin_, &QSpinBox::valueChanged, this, [this](int value) {
         MapEditor::BrushParams params = brushTool_->params();
         params.colorIndex = value;
@@ -1714,11 +1715,25 @@ void MainWindow::syncColorControls()
     }
 
     // Build the color swatch from the palette via the session helper.
-    // The colorIndex is a SurBuf value: it indexes the palette of the
-    // brush's current layer (T4.1 model, docs/architecture.md §5.13).
+    // The colorIndex indexes the palette of the brush's current layer
+    // (T4.1 model, docs/architecture.md §5.13). T4.4 — an extended index
+    // (>=256) belongs to a fixed layer of the global index space, resolved
+    // from the world's extended entry counts instead of the brush mode.
     if (session_ && session_->isWorldLoaded()) {
         const int idx = brushColorIndexSpin_->value();
-        const bool dam = brushTool_->params().mode == MapEditor::BrushMode::Dam;
+        bool dam;
+        bool valid;
+        if (idx >= 256) {
+            const int geoCustom =
+                session_->extendedPaletteSize(MapEditor::EditorSession::PaletteLayer::Geo);
+            const int damCustom =
+                session_->extendedPaletteSize(MapEditor::EditorSession::PaletteLayer::Dam);
+            dam = idx >= 256 + geoCustom;
+            valid = geoCustom + damCustom > 0 && idx < 256 + geoCustom + damCustom;
+        } else {
+            dam = brushTool_->params().mode == MapEditor::BrushMode::Dam;
+            valid = true;
+        }
         const unsigned int rgb =
             session_->paletteRgb(dam ? MapEditor::EditorSession::PaletteLayer::Dam
                                      : MapEditor::EditorSession::PaletteLayer::Geo,
@@ -1726,7 +1741,7 @@ void MainWindow::syncColorControls()
         QColor color(static_cast<int>((rgb >> 16) & 0xFF),
                      static_cast<int>((rgb >> 8) & 0xFF),
                      static_cast<int>(rgb & 0xFF));
-        if (rgb != 0 || idx == 0) {
+        if (valid) {
             brushColorSwatch_->setStyleSheet(
                 QStringLiteral("QLabel { border: 1px solid #808080; "
                                "background-color: %1; }")

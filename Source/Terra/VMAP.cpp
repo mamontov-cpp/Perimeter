@@ -25,6 +25,7 @@ const char* vrtMap::worldNetDataFile    = "output.vpr";
 const char* vrtMap::worldBuildScenarioFile = "output.vsc";
 const char* vrtMap::worldGeoPalFile     = "inGeo.act";
 const char* vrtMap::worldDamPalFile     = "inDam.act";
+const char* vrtMap::worldExtSurfFile    = "output.esur";
 #ifdef GPX
 const char* vrtMap::worldLeveledTextureFile= "leveledSurfaceTexture.surf";
 #else
@@ -195,6 +196,7 @@ vrtMap::vrtMap() {
 	//ClTrBuf=0; AtBuf=0; VxBuf=0;
 
 	VxGBuf=0; VxDBuf=0; SurBuf=0; AtrBuf=0; RnrBuf=0;
+	SurExtBuf=0;
 	GVBuf=0; GABuf=0;
 	SupBuf=0;
 	hZeroPlast=30; //Начальная высота зеропласта
@@ -273,6 +275,9 @@ void vrtMap::allocMem4Buf(void)
 	WVxBuf = VxGBuf; //Текущие редактируемые воксели - гео-слой
 	VxDBuf = new unsigned char [YS_Buf*XS_Buf];
 	SurBuf = new unsigned char [YS_Buf*XS_Buf];
+	//T4.4 — расширенные индексы: нулевые (базовая палитра) до заполнения
+	//сайдкаром/рисованием.
+	SurExtBuf = new unsigned short [YS_Buf*XS_Buf]();
 	AtrBuf = new unsigned char [YS_Buf*XS_Buf];
 	RnrBuf = new unsigned char [YS_Buf*XS_Buf];
 	SupBuf = new uint32_t[YS_Buf*XS_Buf];
@@ -301,6 +306,11 @@ void vrtMap::releaseMem4Buf(void)
 	delete [] RnrBuf;
 	delete [] AtrBuf;
 	delete [] SurBuf;
+	delete [] SurExtBuf;
+	SurExtBuf=0;
+	ExtGeoPal.clear();
+	ExtDamPal.clear();
+	ExtSur2Col32.clear();
 	delete [] VxDBuf;
 	delete [] VxGBuf;
 	VxGBuf=0;
@@ -999,6 +1009,7 @@ bool vrtMap::loadGameMap(XBuffer& ff, bool flag_FastLoad)
 					int offB=offsetBuf( (j<<kmGridChA), k+(i<<kmGridChA) );
 					for(m=0; m<sizeCellGridCA; m++){
 						SurBuf[offB+m]=buffer[cnt2];
+					surClearExt(offB+m);
 						cnt2++;
 					}
 				}
@@ -1433,6 +1444,8 @@ void vrtMap::loadGeoDamPal(void)
 	ff1.close();
 
 	convertPal2TableSurCol(DamPal, Damming);
+
+	loadExtendedSurface();
 }
 
 void vrtMap::saveGeoDamPal(void)//unsigned char palBuf[SIZE_GEO_PALETTE] //Bufer в формате BGR
@@ -1443,6 +1456,199 @@ void vrtMap::saveGeoDamPal(void)//unsigned char palBuf[SIZE_GEO_PALETTE] //Bufer
 	XStream ff1(GetTargetName(worldDamPalFile), XS_OUT);
 	ff1.write(DamPal, SIZE_GEO_PALETTE);//palBuf
 	ff1.close();
+}
+
+// ---------------------------------------------------------------------------
+// T4.4 — доп. (расширенная) палитра поверхностей: больше 256 цветов.
+//
+// Байтовый SurBuf клетки адресует только 256 записей на слой, поэтому
+// расширенный индекс живёт в отдельном 16-битном буфере SurExtBuf
+// (0 — базовая палитра, >=256 — доп. запись ExtGeoPal/ExtDamPal). Все реквизиты
+// расширенного мира хранятся в сайдкаре рядом с output.vmp — именно наличие
+// файла отличает «расширенный» мир от оригинального:
+//
+//   char id[4] == "ESUR", u32 version == 1, u32 kGeo, u32 kDam, u32 runCount,
+//   (kGeo+kDam)*3 байт RGB (сначала доп. Geo-записи, потом доп. Dam-),
+//   runCount * (u32 cellOff, u32 runLen, u16 extendedIndex) — неявная адресация
+//   по всему bufferу XS_Buf*YS_Buf.
+//
+// Миры без сайдкара грузятся как раньше; мир с нарисованными доп. цветами
+// конвертируется при сохранении. Shipped-игра без сайдкара будет показывать
+// базовый цвет SurBuf-фолбэка; собственная сборка читает доп. палитру.
+// ---------------------------------------------------------------------------
+
+void vrtMap::rebuildExtTables(void)
+{
+	const int kGeo = extendedGeoCount();
+	const int kDam = extendedDamCount();
+	const int total = kGeo + kDam;
+	ExtSur2Col32.clear();
+	if (total <= 0) {
+		return;
+	}
+	ExtSur2Col32.resize(static_cast<size_t>(total) * MAX_SURFACE_LIGHTING * 2);
+	const double Lum = 1.5;      // те же константы, что в convertPal2TableSurCol
+	const double Lum0 = 0.05;
+	const double dLum = (Lum - Lum0) / (double)MAX_SURFACE_LIGHTING;
+	for (int k = 0; k < total; ++k) {
+		const unsigned char* rgb =
+			(k < kGeo) ? &ExtGeoPal[static_cast<size_t>(k) * 3]
+			           : &ExtDamPal[static_cast<size_t>(k - kGeo) * 3];
+		const double R = rgb[0], G = rgb[1], B = rgb[2];
+		unsigned int* row = &ExtSur2Col32[static_cast<size_t>(k) * MAX_SURFACE_LIGHTING * 2];
+		for (int j = 0; j < MAX_SURFACE_LIGHTING; ++j) {
+			double cb = B * (Lum0 + dLum * (double)j); if (cb < 0) cb = 0; if (cb > 255) cb = 255;
+			double cg = G * (Lum0 + dLum * (double)j); if (cg < 0) cg = 0; if (cg > 255) cg = 255;
+			double cr = R * (Lum0 + dLum * (double)j); if (cr < 0) cr = 0; if (cr > 255) cr = 255;
+			const unsigned int col32 = (int)xm::round(cb) |
+				((int)xm::round(cg) << 8) |
+				((int)xm::round(cr) << 16);
+			// Обе половины столбцов (Geo 0..127 / Dam 128..255) — один цвет:
+			// расширенный индекс принадлежит одному слою, клетки другого слоя
+			// его не ссылаются (гейтинг кисти цвета), а ZP-ветка SurZP2Col32
+			// сознательно базовая.
+			row[j] = col32;
+			row[j + MAX_SURFACE_LIGHTING] = col32;
+		}
+	}
+}
+
+bool vrtMap::hasExtendedSurface(void)
+{
+	if (hasExtendedPalette()) {
+		return true;
+	}
+	if (!SurExtBuf) {
+		return false;
+	}
+	for (int i = 0; i < XS_Buf * YS_Buf; ++i) {
+		if (SurExtBuf[i]) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void vrtMap::loadExtendedSurface(void)
+{
+	ExtGeoPal.clear();
+	ExtDamPal.clear();
+	ExtSur2Col32.clear();
+	if (SurExtBuf) {
+		for (int i = 0; i < XS_Buf * YS_Buf; ++i) {
+			SurExtBuf[i] = 0;
+		}
+	}
+
+	// Optional file: plain open() with ErrH enabled aborts on absence — same
+	// as in newLoad (VMAP.cpp): probe quietly through XStream(0) first.
+	if (!XStream(0).open(GetTargetName(worldExtSurfFile), XS_IN)) {
+		return; // a vanilla (base) world — no sidecar
+	}
+	XStream ff;
+	ff.open(GetTargetName(worldExtSurfFile), XS_IN);
+	char id[4];
+	unsigned int version = 0, kGeo = 0, kDam = 0, runCount = 0;
+	ff.read(id, sizeof(id));
+	ff.read(&version, sizeof(version));
+	ff.read(&kGeo, sizeof(kGeo));
+	ff.read(&kDam, sizeof(kDam));
+	ff.read(&runCount, sizeof(runCount));
+	if (id[0] != 'E' || id[1] != 'S' || id[2] != 'U' || id[3] != 'R' ||
+	    version != 1 || kGeo > 0x10000 || kDam > 0x10000) {
+		ff.close();
+		ErrH.Abort("Broken extended palette (output.esur)", XERR_USER, -1,
+		           GetTargetName(worldExtSurfFile).c_str());
+		return;
+	}
+
+	ExtGeoPal.resize(static_cast<size_t>(kGeo) * 3);
+	if (kGeo) ff.read(&ExtGeoPal[0], static_cast<int>(ExtGeoPal.size()));
+	ExtDamPal.resize(static_cast<size_t>(kDam) * 3);
+	if (kDam) ff.read(&ExtDamPal[0], static_cast<int>(ExtDamPal.size()));
+	rebuildExtTables();
+
+	const int bufsz = XS_Buf * YS_Buf;
+	for (unsigned int r = 0; r < runCount && SurExtBuf; ++r) {
+		unsigned int cellOff = 0, runLen = 0;
+		unsigned short extIdx = 0;
+		ff.read(&cellOff, sizeof(cellOff));
+		ff.read(&runLen, sizeof(runLen));
+		ff.read(&extIdx, sizeof(extIdx));
+		if (extIdx < MAX_SURFACE_TYPE ||
+		    extIdx >= static_cast<unsigned int>(maxExtendedIndex()) ||
+		    cellOff > static_cast<unsigned int>(bufsz) ||
+		    runLen > static_cast<unsigned int>(bufsz) - cellOff) {
+			ff.close();
+			ErrH.Abort("Broken extended surface run", XERR_USER, -1,
+			           GetTargetName(worldExtSurfFile).c_str());
+			return;
+		}
+		for (unsigned int c = 0; c < runLen; ++c) {
+			SurExtBuf[cellOff + c] = extIdx;
+		}
+	}
+	ff.close();
+}
+
+void vrtMap::saveExtendedSurface(void)
+{
+	if (!hasExtendedSurface()) {
+		// Расширенных данных нет: если сайдкар остался от прежних правок,
+		// удаляем его, чтобы загрузка не воскрешала стёртые цвета.
+		const std::string name = GetTargetName(worldExtSurfFile);
+		std::remove(name.c_str());
+		return;
+	}
+
+	// Собираем RLE-роации по плоскому адресному пространству bufferа — то же
+	// пространство, по которому клетка рисуется и читается масштабированием.
+	std::vector<std::pair<std::pair<unsigned int, unsigned int>, unsigned short>> runs;
+	{
+		const int bufsz = XS_Buf * YS_Buf;
+		int runStart = -1;
+		unsigned short runIdx = 0;
+		for (int i = 0; i <= bufsz; ++i) {
+			const unsigned short v =
+				(i < bufsz) ? SurExtBuf[i] : static_cast<unsigned short>(0);
+			const bool extendable =
+				runStart >= 0 && v == runIdx && v != 0 &&
+				(i - runStart) < 0xFFFF;
+			if (extendable) {
+				continue; // продолжение текущей серии
+			}
+			if (runStart >= 0) {
+				runs.emplace_back(
+					std::make_pair(static_cast<unsigned int>(runStart),
+					               static_cast<unsigned int>(i - runStart)),
+					runIdx);
+			}
+			runStart = v ? i : -1;
+			runIdx = v;
+		}
+	}
+
+	XStream ff(GetTargetName(worldExtSurfFile), XS_OUT);
+	const unsigned int version = 1;
+	const unsigned int kGeo = static_cast<unsigned int>(extendedGeoCount());
+	const unsigned int kDam = static_cast<unsigned int>(extendedDamCount());
+	const unsigned int runCount = static_cast<unsigned int>(runs.size());
+	ff.write("ESUR", 4);
+	ff.write(&version, sizeof(version));
+	ff.write(&kGeo, sizeof(kGeo));
+	ff.write(&kDam, sizeof(kDam));
+	ff.write(&runCount, sizeof(runCount));
+	if (kGeo) ff.write(&ExtGeoPal[0], static_cast<int>(ExtGeoPal.size()));
+	if (kDam) ff.write(&ExtDamPal[0], static_cast<int>(ExtDamPal.size()));
+	for (const auto& run : runs) {
+		unsigned int off = run.first.first;
+		unsigned int len = run.first.second;
+		unsigned short idx = run.second;
+		ff.write(&off, sizeof(off));
+		ff.write(&len, sizeof(len));
+		ff.write(&idx, sizeof(idx));
+	}
+	ff.close();
 }
 
 void vrtMap::convertPal2TableTexCol()
@@ -1837,7 +2043,12 @@ void vrtMap::scaling32(int cx,int cy,int xc,int yc,int xside,int yside, unsigned
 							tmpC = Tex2Col[*(dataRnr + XCYCL(fx >> 16))][*(dataTex + ((fx >> 16)&LvdTex_clip_mask_x) )];//SurZPE2Col32[*(dataRnr + XCYCL(fx >> 16))][*(dataSur + XCYCL(fx >> 16))];
 					}
 					else{
-						tmpC = Sur2Col32[*(dataSur + XCYCL(fx >> 16))][*(dataRnr + XCYCL(fx >> 16))];
+						//T4.4 — расширенный индекс перекрывает чистую базовую таблицу
+						const unsigned short extV = SurExtBuf ?
+							SurExtBuf[YCYCL(fy >> 16)*XS_Buf + XCYCL(fx >> 16)] : 0;
+						tmpC = extV ?
+							extColor32(extV, *(dataRnr + XCYCL(fx >> 16))) :
+							Sur2Col32[*(dataSur + XCYCL(fx >> 16))][*(dataRnr + XCYCL(fx >> 16))];
 					}
 					(unsigned int&)(*vp)=tmpC;
 #ifdef _SURMAP_
@@ -2691,6 +2902,7 @@ int vrtMap::putTgaComplete2AllMap(void)
 				//	flag_err_ovewrflow=1; sur=255;
 				//}
 				SurBuf[off]=sur;
+				surClearExt(off);
 			//}//
 		}
 	}
@@ -2765,7 +2977,7 @@ void vrtMap::wrldShot(void)
 					col32 = 0;//SurZPE2Col32[RnrBuf[offb]][SurBuf[offb]];
 			}
 			else{
-				col32 = Sur2Col32[SurBuf[offb]][RnrBuf[offb]];
+				col32 = surfaceCol32(offb, RnrBuf[offb]); //T4.4 — учитывает расширенные клетки
 			}
 			*p++ = (unsigned char)(col32&0xFF) ;
 			*p++ = (unsigned char)((col32&0xFF00)>>8) ;
@@ -2952,6 +3164,7 @@ void vrtMap::FlipWorldH(void)
 			t=VxGBuf[off1]; VxGBuf[off1]=VxGBuf[off2]; VxGBuf[off2]=t;
 			t=VxDBuf[off1]; VxDBuf[off1]=VxDBuf[off2]; VxDBuf[off2]=t;
 			t=SurBuf[off1]; SurBuf[off1]=SurBuf[off2]; SurBuf[off2]=t;
+			swapSurExt(off1, off2);
 			t=AtrBuf[off1]; AtrBuf[off1]=AtrBuf[off2]; AtrBuf[off2]=t;
 		}
 	}
@@ -2971,6 +3184,7 @@ void vrtMap::FlipWorldV(void)
 			t=VxGBuf[off1]; VxGBuf[off1]=VxGBuf[off2]; VxGBuf[off2]=t;
 			t=VxDBuf[off1]; VxDBuf[off1]=VxDBuf[off2]; VxDBuf[off2]=t;
 			t=SurBuf[off1]; SurBuf[off1]=SurBuf[off2]; SurBuf[off2]=t;
+			swapSurExt(off1, off2);
 			t=AtrBuf[off1]; AtrBuf[off1]=AtrBuf[off2]; AtrBuf[off2]=t;
 		}
 	}
@@ -2999,6 +3213,9 @@ void vrtMap::RotateWorldP90(void)
 
 			t=SurBuf[off1]; SurBuf[off1]=SurBuf[off4]; 
 			SurBuf[off4]=SurBuf[off3]; SurBuf[off3]=SurBuf[off2]; SurBuf[off2]=t;
+			swapSurExt(off1, off4);
+			swapSurExt(off4, off3);
+			swapSurExt(off3, off2);
 
 			t=AtrBuf[off1]; AtrBuf[off1]=AtrBuf[off4]; 
 			AtrBuf[off4]=AtrBuf[off3]; AtrBuf[off3]=AtrBuf[off2]; AtrBuf[off2]=t;
@@ -3031,6 +3248,9 @@ void vrtMap::RotateWorldM90(void)
 
 			t=SurBuf[off1]; SurBuf[off1]=SurBuf[off2]; 
 			SurBuf[off2]=SurBuf[off3]; SurBuf[off3]=SurBuf[off4]; SurBuf[off4]=t;
+			swapSurExt(off1, off2);
+			swapSurExt(off2, off3);
+			swapSurExt(off3, off4);
 
 			t=AtrBuf[off1]; AtrBuf[off1]=AtrBuf[off2]; 
 			AtrBuf[off2]=AtrBuf[off3]; AtrBuf[off3]=AtrBuf[off4]; AtrBuf[off4]=t;

@@ -36,7 +36,8 @@ struct WorldInfo
     std::string dirKey; // key used by Terra's wTable (full content-path)
 };
 
-/// Snapshot of the four voxel buffers (VxG, VxD, Atr, Sur) over one rectangle.
+/// Snapshot of the voxel buffers (VxG, VxD, Atr, Sur + the T4.4 extended
+/// surface indices) over one rectangle.
 /// Made *before* the rectangle is edited; undo() swaps it back (mirrors Terra's
 /// sPreChangedArea, See docs/context.md — Terra's own recording is
 /// `_SURMAP_`-only and therefore unusable inside the editor).
@@ -50,6 +51,9 @@ struct UndoAreaSnapshot
     std::vector<unsigned char> dam;
     std::vector<unsigned char> atr;
     std::vector<unsigned char> sur;
+    /// T4.4 — extended (16-bit) surface indices; cells whose ext index is 0
+    /// (base palette) are kept as zeros so the swap stays symmetric.
+    std::vector<unsigned short> surExt;
 };
 
 /// Session manager for the map editor.  All public methods are safe to call
@@ -204,9 +208,11 @@ public:
     // color swatch). These avoid pulling terra.h into Qt translation units.
     // -----------------------------------------------------------------------
 
-    /// Read the SurBuf palette index at a map cell (0..255).
+    /// Read the surface palette index at a map cell. T4.4 — extended-aware:
+    /// returns the SurExtBuf value (>= 256) when the cell carries a custom
+    /// color, otherwise the SurBuf byte (0..255).
     /// Returns 0 when the world is not loaded or the cell is out of range.
-    unsigned char surBufAt(int x, int y) const;
+    unsigned int surBufAt(int x, int y) const;
 
     /// Palette of one material layer (T4.1). A SurBuf value indexes the
     /// palette of the cell's own layer directly — the render tables
@@ -222,7 +228,9 @@ public:
         Dam, ///< vrtMap::DamPal (inDam.act).
     };
 
-    /// Read RGB of one palette entry as 0x00RRGGBB.
+    /// Read RGB of one palette entry as 0x00RRGGBB. T4.4: entries >=256
+    /// resolve through the extended palette when the index belongs to the
+    /// layer's extended range.
     /// Returns 0 when the world is not loaded or the index is out of range.
     unsigned int paletteRgb(PaletteLayer layer, int paletteIndex) const;
 
@@ -235,7 +243,7 @@ public:
     // DamPal); the Qt UI reaches them only through these helpers.
     // -----------------------------------------------------------------------
 
-    /// Write RGB (0x00RRGGBB) into the palette entry of `layer` (0..255).
+    /// Read RGB (0x00RRGGBB) into the palette entry of `layer` (0..255).
     /// Only records the change — rebuild the surface color tables with
     /// applyPalettes() to make the viewport show it. Returns false when the
     /// world is not loaded or the index is out of range.
@@ -250,6 +258,40 @@ public:
     /// True when the palette was changed since the last load/save (palette
     /// edits are outside the undo history, so this is tracked separately).
     bool isPaletteModified() const { return paletteModified_; }
+
+    // -----------------------------------------------------------------------
+    // T4.4 — extended (>256) palette entries. An extended index is global:
+    // [256, 256+kGeo) are the extended Geo entries, [256+kGeo, ...) the
+    // extended Dam entries (the partition survives save/load inside the
+    // sidecar file). Everything is stored in the world sidecar — see
+    // vrtMap::saveExtendedSurface/loadExtendedSurface.
+    // -----------------------------------------------------------------------
+
+    int extendedPaletteSize(PaletteLayer layer) const;
+
+    /// Append a new custom (extended) color to `layer`; the entry index is
+    /// assigned automatically. Rebuilds the extended render tables and flags
+    /// the sidecar dirty (hasUnsavedChanges). Returns the global extended
+    /// index (>=256) or -1 (no world / the 16-bit index space is full).
+    int addPaletteColor(PaletteLayer layer, unsigned int rgb);
+
+    /// Rewrite the RGB of an existing custom entry (global index >=256).
+    /// Rebuilds the extended render tables. Returns false when the world is
+    /// not loaded or the index is outside the layer's extended range.
+    bool setExtendedPaletteRgb(PaletteLayer layer, int paletteIndex,
+                               unsigned int rgb);
+
+    /// True while extended data has unsaved in-memory changes (a painted
+    /// extended cell, an appended entry, an undo that touched them).
+    bool isExtendedDirty() const { return extendedDirty_; }
+
+    /// True when the loaded world currently carries extended surface data
+    /// (vrtMap::hasExtendedSurface — palette entries or painted cells).
+    bool isExtendedSurfaceUsed() const;
+
+    /// Anything (brush/undo) that changes SurExtBuf must call this so a
+    /// save knows the sidecar needs rewriting.
+    void markExtendedDirty() { extendedDirty_ = true; }
 
 private:
     /// Re-derive modified_ from the undo position vs. the position recorded at
@@ -269,6 +311,10 @@ private:
     /// T4.1 — the palette was edited since the last load/save (outside the
     /// undo history; synced to inGeo.act/inDam.act + geoPal.xml on save).
     bool paletteModified_ = false;
+    /// T4.4 — the extended palette/painted cells changed since the last
+    /// load/save (outside the undo history; synced to the output.esur
+    /// sidecar on save when the world carries extended data).
+    bool extendedDirty_ = false;
     SessionState state_ = SessionState::NoGame;
     std::string loadedWorldFolderName_;
 

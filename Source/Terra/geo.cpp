@@ -506,6 +506,7 @@ int CGeoInfluence::quant(int deltaTime)
                 vMap.AtrBuf[offset] &= ~VX_FRACTION_MASK;
                 vMap.AtrBuf[offset] |= V & VX_FRACTION_MASK;
 				vMap.SurBuf[offset]=vMap.GetGeoType(offset,V);
+				vMap.surClearExt(offset);
 			}
 			else { //если порода не прорезалась
 				int Vold =vMap.VxGBuf[offset]<<VX_FRACTION; ///
@@ -545,6 +546,7 @@ int CGeoInfluence::quant(int deltaTime)
 				if(vMap.VxDBuf[offset]!=0){
 					vMap.VxDBuf[offset]=0;
 					vMap.SurBuf[offset]=vMap.GetGeoType(offset,V);
+					vMap.surClearExt(offset);
 				}
 			}
 
@@ -2664,6 +2666,7 @@ int sTVolcano::quant()
 				if(vMap.VxDBuf[offset]!=0){
 					vMap.VxDBuf[offset]=0;
 					vMap.SurBuf[offset]=vMap.GetGeoType(offset,V);
+					vMap.surClearExt(offset);
 				}
 			}
 
@@ -2968,6 +2971,7 @@ int sTBubble::quant(void)
 				if(vMap.VxDBuf[offset]!=0){
 					vMap.VxDBuf[offset]=0;
 					vMap.SurBuf[offset]=vMap.GetGeoType(offset,V);
+					vMap.surClearExt(offset);
 				}
 			}
 

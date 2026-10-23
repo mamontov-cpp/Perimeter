@@ -192,6 +192,7 @@ struct vrtMap {
 	static const char* worldBuildScenarioFile;
 	static const char* worldGeoPalFile;
 	static const char* worldDamPalFile;
+	static const char* worldExtSurfFile;
 	static const char* worldLeveledTextureFile;
 	static const char* worldHardnessFile;
 
@@ -271,6 +272,12 @@ struct vrtMap {
 	unsigned char* WVxBuf; // текущий VxBuf (или VxGBuf или VxDBuf)
 	unsigned char* AtrBuf;
 	unsigned char* SurBuf;
+	//T4.4 — расширенный (16-битный) индекс поверхности. Нулевое значение
+	//означает обычную (базовую) палитру: цвет = SurBuf -> Sur2Col32. Ненулевое
+	//значение >= MAX_SURFACE_TYPE указывает на доп. запись палитры
+	//(ExtGeoPal/ExtDamPal, живущие в сайдкаре рядом с output.vmp). Miры без
+	//сайдкара и без расширенных клеток ведут себя точно как прежде.
+	unsigned short* SurExtBuf;
 	unsigned char* RnrBuf;
 
 	uint32_t* SupBuf;
@@ -320,6 +327,69 @@ struct vrtMap {
 
 	unsigned int Sur2Col32[MAX_SURFACE_TYPE][MAX_SURFACE_LIGHTING*2]; //2 это два слоя Dam и ZP
 	unsigned int SurZP2Col32[MAX_SURFACE_LIGHTING*2][MAX_SURFACE_TYPE];
+
+	//T4.4 — доп. записи палитр (RGB, 3 байта на запись). ExtSur2Col32 хранит
+	//цвета для расширенных индексов: строка k = индекс MAX_SURFACE_TYPE+k,
+	//столбец = этот же свет, что и в Sur2Col32. Обе половины столбцов (Geo 0..127,
+	//Dam 128..255) заполняются одним и тем же цветом — расширенный индекс
+	//принадлежит конкретному слою, клетки другого слоя его не ссылаются.
+	std::vector<unsigned char> ExtGeoPal;
+	std::vector<unsigned char> ExtDamPal;
+	std::vector<unsigned int> ExtSur2Col32;
+
+	//------------------------------T4.4---------------------------------
+	int extendedGeoCount() const { return int(ExtGeoPal.size() / 3); }
+	int extendedDamCount() const { return int(ExtDamPal.size() / 3); }
+	int maxExtendedIndex() const {
+		return MAX_SURFACE_TYPE + extendedGeoCount() + extendedDamCount();
+	}
+	bool hasExtendedPalette() const {
+		return !ExtGeoPal.empty() || !ExtDamPal.empty();
+	}
+	/// Ненулевой SurExtBuf в любой клетке или непустая доп. палитра —
+	/// признак «расширенного» мира при сохранении. Сканирует карту.
+	bool hasExtendedSurface(void);
+	/// Цвет расширенного индекса (>= MAX_SURFACE_TYPE) при данном свете.
+	/// Вне записи returns 0. То же гамма-уравнение света, что и в
+	/// convertPal2TableSurCol (VMAP.cpp).
+	unsigned int extColor32(int extIndex, unsigned char rnr) const {
+		const int row = extIndex - MAX_SURFACE_TYPE;
+		if (row < 0 || row >= extendedGeoCount() + extendedDamCount()) {
+			return 0;
+		}
+		return ExtSur2Col32[static_cast<size_t>(row) * (MAX_SURFACE_LIGHTING * 2) + rnr];
+	}
+	/// Цвет клетки при данном свете: расширенный индекс (если есть), иначе
+	/// базовая палитра Sur2Col32[SurBuf[off]]. Единая точка подмены для
+	/// getColor32/scaling32/экспорта.
+	unsigned int surfaceCol32(int off, unsigned char rnr) const {
+		const unsigned short ext = SurExtBuf ? SurExtBuf[off] : 0;
+		if (!ext) return Sur2Col32[SurBuf[off]][rnr];
+		const unsigned int col = extColor32(ext, rnr);
+		return col ? col : Sur2Col32[SurBuf[off]][rnr];
+	}
+	/// Запись покрытия перезаписывает SurBuf — расширение клетки стирается
+	/// (терраформа перекрашивает клетку в базовую палитру).
+	void surClearExt(int off) { if (SurExtBuf) SurExtBuf[off] = 0; }
+	/// Обмен значений расширенных индексов двух клеток (Flip/Rotate мира и
+	/// undo-свопы).
+	void swapSurExt(int off1, int off2) {
+		if (SurExtBuf) {
+			const unsigned short t = SurExtBuf[off1];
+			SurExtBuf[off1] = SurExtBuf[off2];
+			SurExtBuf[off2] = t;
+		}
+	}
+	/// Перестроение ExtSur2Col32 из текущих ExtGeoPal/ExtDamPal.
+	void rebuildExtTables(void);
+	/// Чтение доп. палитры/клеток из сайдкара (если файла нет — чистое
+	/// базовое состояние исходного мира).
+	void loadExtendedSurface(void);
+	/// Запись сайдкара. Вызывается только когда hasExtendedSurface(). Вызову
+	/// с пустыми данными он удаляет несвежий файл, чтобы загрузка не
+	/// воскрешала стёртые цвета.
+	void saveExtendedSurface(void);
+	//-----------------------------------------------------------------
 	//unsigned int SurZPE2Col32[MAX_SURFACE_LIGHTING*2][MAX_SURFACE_TYPE];
 	unsigned int Tex2Col32[MAX_SURFACE_LIGHTING*2][MAX_SURFACE_TYPE];
 	unsigned int TexZP2Col32[MAX_SURFACE_LIGHTING*2][MAX_SURFACE_TYPE];
@@ -660,11 +730,11 @@ struct vrtMap {
 			}
 			else{
 				col32=Tex2Col32[RnrBuf[off]][LvdTex[texOff]]; //col32 = SurZPE2Col32[RnrBuf[off]][SurBuf[off]];
-				col32= ( (col32&mask) + (Sur2Col32[SurBuf[off]][RnrBuf[off]]&mask) ) >> 1;
+				col32= ( (col32&mask) + (surfaceCol32(off, RnrBuf[off])&mask) ) >> 1;
 			}
 		}
 		else{
-			col32=Sur2Col32[SurBuf[off]][RnrBuf[off]];
+			col32=surfaceCol32(off, RnrBuf[off]);
 		}
 #ifdef PERIMETER_DEBUG
 		if(flag_ShowDbgInfo){
@@ -746,6 +816,7 @@ struct vrtMap {
 	////////////////////////////////////////
 	void SetTer(int offset, unsigned char newtype) {
 		SurBuf[offset] = newtype;
+		surClearExt(offset);
 	}
 	void SetTer(int x,int y, unsigned char newtype) {
 		SetTer(offsetBuf(x,y),newtype);

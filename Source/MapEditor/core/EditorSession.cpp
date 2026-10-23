@@ -240,6 +240,7 @@ bool EditorSession::loadWorld(size_t worldIndex)
     loadedWorldFolderName_ = wantedName;
     modified_ = false;
     paletteModified_ = false;
+    extendedDirty_ = false;
     vMap.worldChanged = false;
     state_ = SessionState::WorldLoaded;
 
@@ -275,6 +276,7 @@ void EditorSession::unloadWorld()
     loadedWorldFolderName_.clear();
     modified_ = false;
     paletteModified_ = false;
+    extendedDirty_ = false;
     if (isWorldLoaded() && vMap.VxGBuf) {
         // Just in case, clear flag if still set
         vMap.worldChanged = false;
@@ -411,6 +413,15 @@ bool EditorSession::saveWorld()
     }
 
     // ------------------------------------------------------------------
+    // 1c. Extended (>256) palette (T4.4) — the sidecar output.esur next to
+    // output.vmp. Its presence is what marks a converted world; a vanilla
+    // world with no extended data saves without it (and deletes a stale one,
+    // so erased cells cannot resurrect on the next load).
+    // ------------------------------------------------------------------
+    vMap.saveExtendedSurface();
+    extendedDirty_ = false;
+
+    // ------------------------------------------------------------------
     // 2. world.ini — size, zero-layer height and storage version.
     // ------------------------------------------------------------------
     // Map Power is authoritative for the map size the game allocates.
@@ -439,6 +450,7 @@ bool EditorSession::saveWorld()
     savedUndoPos_ = undoPos_;
     modified_ = false;
     paletteModified_ = false;
+    extendedDirty_ = false;
     vMap.worldChanged = false;
     printf("EditorSession: saved world '%s' to '%s'\n",
            currentWorldName().c_str(), worldDir.u8string().c_str());
@@ -468,6 +480,16 @@ bool EditorSession::saveWorldAs(const std::string& newWorldName)
         fprintf(stderr, "EditorSession::saveWorldAs: target world already exists: %s\n",
                 destDir.u8string().c_str());
         return false;
+    }
+
+    // ------------------------------------------------------------------
+    // T4.4 — flush the extended state into the source folder first: the
+    // directory copy below then carries the current sidecar into the copy,
+    // and the reload reads it. (The source world gets converted — desired.)
+    // ------------------------------------------------------------------
+    if (vMap.hasExtendedSurface() || extendedDirty_) {
+        vMap.saveExtendedSurface();
+        extendedDirty_ = false;
     }
 
     // Copy source world folder.
@@ -576,6 +598,10 @@ namespace {
 /// UNDO_REDO_BUFFER_SIZE accounting: 4096*4096 cells x 4 buffers).
 constexpr std::size_t kMaxUndoCells = 4096u * 4096u;
 
+/// Set when a swap touched a nonzero extended index (either side) — the
+/// session marks extendedDirty_ so the sidecar gets rewritten on save.
+bool dirtyExtended = false;
+
 /// Swap the snapshot bytes with the live buffers over the snapshot rectangle.
 /// After a call the snapshot holds whatever was in the buffers before — the
 /// caller decides whether that means "restore" (undo) or "re-apply" (redo).
@@ -583,7 +609,8 @@ void swapSnapshotWithBuffers(UndoAreaSnapshot& snap)
 {
     const std::size_t cells = static_cast<std::size_t>(snap.sx) * snap.sy;
     if (snap.geo.size() != cells || snap.dam.size() != cells ||
-        snap.atr.size() != cells || snap.sur.size() != cells) {
+        snap.atr.size() != cells || snap.sur.size() != cells ||
+        snap.surExt.size() != cells) {
         return;
     }
     const int H = vMap.H_SIZE;
@@ -597,6 +624,16 @@ void swapSnapshotWithBuffers(UndoAreaSnapshot& snap)
             t = vMap.VxDBuf[off]; vMap.VxDBuf[off] = snap.dam[cnt]; snap.dam[cnt] = t;
             t = vMap.AtrBuf[off]; vMap.AtrBuf[off] = snap.atr[cnt]; snap.atr[cnt] = t;
             t = vMap.SurBuf[off]; vMap.SurBuf[off] = snap.sur[cnt]; snap.sur[cnt] = t;
+            // T4.4 — the extended indices swap symmetrically; nonzero values
+            // on either side mean the sidecar data became dirty.
+            if (vMap.SurExtBuf) {
+                unsigned short te;
+                te = vMap.SurExtBuf[off]; vMap.SurExtBuf[off] = snap.surExt[cnt];
+                snap.surExt[cnt] = te;
+                if (snap.surExt[cnt] != 0) {
+                    dirtyExtended = true;
+                }
+            }
         }
     }
     vMap.regRender(snap.x, snap.y, snap.x + snap.sx, snap.y + snap.sy);
@@ -632,6 +669,7 @@ void EditorSession::recordUndoArea(int x, int y, int width, int height)
     snapshot.dam.resize(cells);
     snapshot.atr.resize(cells);
     snapshot.sur.resize(cells);
+    snapshot.surExt.resize(cells);
 
     std::size_t cnt = 0;
     for (int j = 0; j < sy; ++j) {
@@ -642,6 +680,7 @@ void EditorSession::recordUndoArea(int x, int y, int width, int height)
             snapshot.dam[cnt] = vMap.VxDBuf[off];
             snapshot.atr[cnt] = vMap.AtrBuf[off];
             snapshot.sur[cnt] = vMap.SurBuf[off];
+            snapshot.surExt[cnt] = vMap.SurExtBuf ? vMap.SurExtBuf[off] : 0;
         }
     }
 
@@ -685,6 +724,10 @@ bool EditorSession::undo()
         return false;
     }
     swapSnapshotWithBuffers(undoStack_[undoPos_ - 1]);
+    if (dirtyExtended) {
+        extendedDirty_ = true;
+        dirtyExtended = false;
+    }
     --undoPos_;
     markModifiedAgainstSavedState();
     printf("EditorSession: undo (stack position %zu/%zu)\n",
@@ -698,6 +741,10 @@ bool EditorSession::redo()
         return false;
     }
     swapSnapshotWithBuffers(undoStack_[undoPos_]);
+    if (dirtyExtended) {
+        extendedDirty_ = true;
+        dirtyExtended = false;
+    }
     ++undoPos_;
     markModifiedAgainstSavedState();
     printf("EditorSession: redo (stack position %zu/%zu)\n",
@@ -736,8 +783,10 @@ void EditorSession::markModifiedAgainstSavedState()
 bool EditorSession::hasUnsavedChanges() const
 {
     // Palette edits (T4.1) live outside the undo history that isModified()
-    // tracks, so they are reported separately.
-    return isModified() || (isWorldLoaded() && isPaletteModified());
+    // tracks, so they are reported separately. The T4.4 extended surface
+    // data (sidecar) is tracked the same way.
+    return isModified() || (isWorldLoaded() && isPaletteModified()) ||
+           extendedDirty_;
 }
 
 std::string EditorSession::getUnsavedChangesWarning() const
@@ -775,7 +824,7 @@ unsigned char* paletteBuffer(EditorSession::PaletteLayer layer)
 
 } // namespace
 
-unsigned char EditorSession::surBufAt(int x, int y) const
+unsigned int EditorSession::surBufAt(int x, int y) const
 {
     if (!isWorldLoaded()) {
         return 0;
@@ -786,13 +835,42 @@ unsigned char EditorSession::surBufAt(int x, int y) const
         return 0;
     }
     const int off = y * mapW + x;
+    // T4.4 — the extended index (>=256) wins over the base byte when set.
+    if (vMap.SurExtBuf) {
+        const unsigned short ext = vMap.SurExtBuf[off];
+        if (ext) {
+            return ext;
+        }
+    }
     return vMap.SurBuf[off];
 }
 
 unsigned int EditorSession::paletteRgb(PaletteLayer layer, int paletteIndex) const
 {
-    if (!isWorldLoaded() || paletteIndex < 0 || paletteIndex >= 256) {
+    if (!isWorldLoaded() || paletteIndex < 0) {
         return 0;
+    }
+    if (paletteIndex >= 256) {
+        // T4.4 — extended entry; the global index space is partitioned:
+        // [256, 256+kGeo) = Geo, [256+kGeo, ...) = Dam.
+        const int idx = paletteIndex - 256;
+        if (layer == PaletteLayer::Geo) {
+            if (idx >= (int)(vMap.ExtGeoPal.size() / 3)) {
+                return 0;
+            }
+            const unsigned char* pal = &vMap.ExtGeoPal[idx * 3];
+            return (static_cast<unsigned int>(pal[0]) << 16) |
+                   (static_cast<unsigned int>(pal[1]) << 8) |
+                   static_cast<unsigned int>(pal[2]);
+        }
+        const int damIdx = idx - vMap.extendedGeoCount();
+        if (damIdx < 0 || damIdx >= (int)(vMap.ExtDamPal.size() / 3)) {
+            return 0;
+        }
+        const unsigned char* pal = &vMap.ExtDamPal[damIdx * 3];
+        return (static_cast<unsigned int>(pal[0]) << 16) |
+               (static_cast<unsigned int>(pal[1]) << 8) |
+               static_cast<unsigned int>(pal[2]);
     }
     const unsigned char* pal = paletteBuffer(layer);
     const int off = paletteIndex * 3;
@@ -849,6 +927,87 @@ bool EditorSession::applyPalettes()
     vMap.convertPal2TableSurCol(vMap.GeoPal, vrtMap::Geologic);
     vMap.convertPal2TableSurCol(vMap.DamPal, vrtMap::Damming);
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// T4.4 — extended (>256) palette entries.
+// ---------------------------------------------------------------------------
+
+int EditorSession::extendedPaletteSize(PaletteLayer layer) const
+{
+    if (!isWorldLoaded()) {
+        return 0;
+    }
+    return layer == PaletteLayer::Geo ? vMap.extendedGeoCount()
+                                      : vMap.extendedDamCount();
+}
+
+bool EditorSession::setExtendedPaletteRgb(PaletteLayer layer,
+                                          int paletteIndex, unsigned int rgb)
+{
+    if (!isWorldLoaded() || paletteIndex < 256) {
+        return false;
+    }
+    const int idx = paletteIndex - 256;
+    const unsigned char r = static_cast<unsigned char>((rgb >> 16) & 0xFF);
+    const unsigned char g = static_cast<unsigned char>((rgb >> 8) & 0xFF);
+    const unsigned char b = static_cast<unsigned char>(rgb & 0xFF);
+    if (layer == PaletteLayer::Geo) {
+        if (idx >= static_cast<int>(vMap.ExtGeoPal.size() / 3)) {
+            return false;
+        }
+        unsigned char* pal = &vMap.ExtGeoPal[static_cast<size_t>(idx) * 3];
+        pal[0] = r;
+        pal[1] = g;
+        pal[2] = b;
+    } else {
+        const int damIdx = idx - vMap.extendedGeoCount();
+        if (damIdx < 0 ||
+            damIdx >= static_cast<int>(vMap.ExtDamPal.size() / 3)) {
+            return false;
+        }
+        unsigned char* pal = &vMap.ExtDamPal[static_cast<size_t>(damIdx) * 3];
+        pal[0] = r;
+        pal[1] = g;
+        pal[2] = b;
+    }
+    vMap.rebuildExtTables();
+    extendedDirty_ = true;
+    return true;
+}
+
+bool EditorSession::isExtendedSurfaceUsed() const
+{
+    return isWorldLoaded() && vMap.hasExtendedSurface();
+}
+
+int EditorSession::addPaletteColor(PaletteLayer layer, unsigned int rgb)
+{
+    if (!isWorldLoaded()) {
+        return -1;
+    }
+    // Keep the global extended index inside the 16-bit space SurExtBuf stores
+    // (0..65535) minus the 256 base entries.
+    if (vMap.hasExtendedPalette() &&
+        vMap.maxExtendedIndex() >= (1 << 16)) {
+        return -1;
+    }
+    std::vector<unsigned char>& pal = (layer == PaletteLayer::Geo)
+        ? vMap.ExtGeoPal
+        : vMap.ExtDamPal;
+    if (pal.size() / 3 >= 0x10000 - 256) {
+        return -1;
+    }
+    pal.push_back(static_cast<unsigned char>((rgb >> 16) & 0xFF));
+    pal.push_back(static_cast<unsigned char>((rgb >> 8) & 0xFF));
+    pal.push_back(static_cast<unsigned char>(rgb & 0xFF));
+    vMap.rebuildExtTables();
+    extendedDirty_ = true;
+    // Global extended index: Geo entries start at 256; Dam entries follow
+    // (n is the new size of THIS layer's extended palette).
+    const int n = static_cast<int>(pal.size() / 3);
+    return 256 + n - 1 +
+           (layer == PaletteLayer::Dam ? vMap.extendedGeoCount() : 0);
 }
 
 } // namespace MapEditor

@@ -327,7 +327,7 @@ signals:
     void editorModeChanged(MapEditor::ViewportWidget::EditorMode mode);
     /// Emitted when the eyedropper is triggered (T3.3/T4.2) — provides the
     /// map cell coordinates and the current SurBuf palette index at that cell.
-    void eyedropperPicked(int mapX, int mapY, unsigned char surIndex);
+    void eyedropperPicked(int mapX, int mapY, int surIndex);
 
 protected:
     void paintEvent(QPaintEvent *event) override;

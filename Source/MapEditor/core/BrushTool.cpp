@@ -222,7 +222,7 @@ bool BrushTool::effectSupported(BrushEffect effect)
     case BrushEffect::ChangeHeight: // T3.2 raise/lower
     case BrushEffect::Align4ZP:     // T3.2 level to zeroplast
     case BrushEffect::AlignVariableH: // T3.2 smooth/level to height
-    case BrushEffect::SetColor:     // T3.3 paint SurBuf with palette index
+    case BrushEffect::SetColor:     // T3.3 paint the surface index (T4.4: >=256 → SurExtBuf)
     case BrushEffect::PickColor:    // T4.2 eyedropper: sample SurBuf pixel
     case BrushEffect::PlotZeroplast:   // T3.4 level + mark zeroplast
     case BrushEffect::EraseZeroplast:  // T3.4 remove zeroplast flag
@@ -423,6 +423,7 @@ void geoHeightChange(int off, int dV)
         : MAX_VX_HEIGHT;
     const int clamped = std::clamp(v, MIN_VX_HEIGHT, ceiling);
     vMap.SurBuf[off] = vMap.GetGeoType(off, clamped);
+    vMap.surClearExt(off); // T4.4 — terrain rebuild repaints the base palette
     vMap.VxGBuf[off] = static_cast<unsigned char>(clamped >> VX_FRACTION);
     vMap.AtrBuf[off] = static_cast<unsigned char>(clamped & VX_FRACTION_MASK);
 }
@@ -452,6 +453,7 @@ void damHeightChange(int off, int dV)
         }
         vMap.VxDBuf[off] = static_cast<unsigned char>(seed);
         vMap.SurBuf[off] = vMap.veryLightDam;
+        vMap.surClearExt(off); // T4.4 — a new dam paints base veryLightDam
     }
     static individualToolzer<T2TE_CHANGING_TERRAIN_HEIGHT> heightToolzer;
     heightToolzer.tVoxSet(off, dV);
@@ -509,22 +511,38 @@ void BrushTool::applyEffectToCell(const BrushParams& params, int x, int y, unsig
         break;
     }
     case BrushEffect::SetColor: {
-        // T3.3/T4.3 — paint the surface buffer with the selected palette
+        // T3.3/T4.3/T4.4 — paint the surface with the selected palette
         // index, honouring the brush layer. SurBuf is a direct palette index
         // of the cell's layer (T4.1), and the renderer resolves the color
         // through the *layer's* palette (RnrBuf bit 7 is derived from
         // VxDBuf at render time, LAND.cpp:1461-1462), so painting a dam
         // index on a geo cell (or vice versa) would show an arbitrary color
-        // from the wrong palette. Layer selection therefore gates the paint:
-        //   Geo mode recolors geo cells only (VxDBuf == 0),
-        //   Dam mode recolors existing dam cells only (VxDBuf != 0) —
-        // the color brush never seeds or removes a dam; PlotZeroplast /
-        // VeryLightDam own dam creation. Height buffers stay untouched.
+        // from the wrong palette. Base indices (0..255) follow the brush
+        // mode — Geo mode recolors geo cells only (VxDBuf == 0), Dam mode
+        // recolors existing dam cells only (VxDBuf != 0). Extended indices
+        // (>= 256, T4.4) carry their own layer in the global index space
+        // ([256, 256+kGeo) Geo / [256+kGeo, ...) Dam) and gate the same way;
+        // they live in SurExtBuf, SurBuf keeps its previous byte as the
+        // vanilla fallback. The color brush never seeds or removes a dam;
+        // PlotZeroplast / VeryLightDam own dam creation. Height buffers stay
+        // untouched.
+        const int idx = params.colorIndex;
+        bool wantsDam;
+        if (idx < MAX_SURFACE_TYPE) {
+            wantsDam = params.mode == BrushMode::Dam;
+        } else {
+            wantsDam = idx >= MAX_SURFACE_TYPE + vMap.extendedGeoCount();
+        }
         const bool isDamCell = vMap.VxDBuf[off] != 0;
-        if ((params.mode == BrushMode::Dam) != isDamCell) {
+        if (wantsDam != isDamCell) {
             break; // wrong layer for this cell — skip, keep SurBuf as-is
         }
-        vMap.SetTer(x, y, static_cast<unsigned char>(params.colorIndex));
+        if (idx < MAX_SURFACE_TYPE) {
+            vMap.SetTer(x, y, static_cast<unsigned char>(idx)); // clears SurExtBuf
+        } else if (vMap.SurExtBuf) {
+            vMap.SurExtBuf[off] = static_cast<unsigned short>(idx);
+            session_.markExtendedDirty();
+        }
         break;
     }
     case BrushEffect::PlotZeroplast: {
@@ -537,6 +555,7 @@ void BrushTool::applyEffectToCell(const BrushParams& params, int x, int y, unsig
             const int seed = vMap.VxGBuf[off] ? vMap.VxGBuf[off] : 1;
             vMap.VxDBuf[off] = static_cast<unsigned char>(seed);
             vMap.SurBuf[off] = vMap.veryLightDam;
+            vMap.surClearExt(off); // T4.4 — a new dam paints base veryLightDam
         }
         {
             static individualToolzer<T2TE_ALIGNMENT_TERRAIN_4ZP> alignZPToolzer;
@@ -600,11 +619,13 @@ void BrushTool::applyEffectToCell(const BrushParams& params, int x, int y, unsig
 // ---------------------------------------------------------------------------
 // T4.2 — eyedropper brush type (PickColor).
 //
-// SurBuf carries the pixel the renderer shows: indices 0..127 are Geo palette
-// colors, 128..255 Dam palette colors (the same split the SetColor brush
-// paints with). The sampled index feeds params().colorIndex so the common
-// brush interface round-trips the pick: the click samples the Geo/Dam pixel
-// of the layer that is actually displayed at that cell.
+// SurBuf carries the pixel the renderer shows: index into the palette of the
+// cell's own layer (T4.1 — the same mapping the SetColor brush paints with).
+// T4.4 — a cell with an extended (>=256) SurExtBuf index samples that custom
+// entry instead, so picking round-trips custom colors too. The sampled index
+// feeds params().colorIndex so the common brush interface round-trips the
+// pick: the click samples the Geo/Dam pixel of the layer that is actually
+// displayed at that cell.
 // ---------------------------------------------------------------------------
 
 bool BrushTool::pickColorAt(int cx, int cy)
@@ -618,7 +639,10 @@ bool BrushTool::pickColorAt(int cx, int cy)
         return false; // sky / off-map pick — nothing to sample
     }
     const int off = cy * mapW + cx;
-    lastPickedColorIndex_ = vMap.SurBuf[off];
+    const unsigned short ext =
+        vMap.SurExtBuf ? vMap.SurExtBuf[off] : static_cast<unsigned short>(0);
+    lastPickedColorIndex_ = ext ? static_cast<int>(ext)
+                                : static_cast<int>(vMap.SurBuf[off]);
     hasPickedColor_ = true;
     // The pick result belongs to the color brush: keep it in the shared
     // parameters so switching the brush type back to SetColor paints the

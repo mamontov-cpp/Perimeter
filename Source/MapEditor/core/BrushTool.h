@@ -93,7 +93,7 @@ struct BrushParams
     int radius = 8;      ///< stamp half-size in map cells (clamped to the Terra radius tables).
     int strength = 30;   ///< 1..100: per-stamp delta in 1/32 m units *at full influence*.
     BrushMode mode = BrushMode::Geo;   ///< Geo/Dam target layer (rules per effect, T3.2).
-    int colorIndex = 0;                ///< palette index for SetColor (0..255), geosurface<128, dam>=128.
+    int colorIndex = 0;                ///< palette index for SetColor: 0..255 base entries, >=256 the T4.4 extended palette (global index space).
     BrushEffect effect = BrushEffect::ChangeHeight;
 
     /// Height effect direction: +1 raise, -1 lower, 0 — no height change.
@@ -210,7 +210,7 @@ public:
     /// entry. Returns true when a pixel was sampled.
     bool pickColorAt(int cx, int cy);
     /// The last index pickColorAt() sampled (valid after hasPickedColor()).
-    unsigned char lastPickedColorIndex() const { return lastPickedColorIndex_; }
+    int lastPickedColorIndex() const { return lastPickedColorIndex_; }
     /// Whether pickColorAt() has already sampled at least one pixel.
     bool hasPickedColor() const { return hasPickedColor_; }
 
@@ -262,7 +262,7 @@ private:
     BrushMask imageMask_;
 
     /// T4.2: the last index pickColorAt() sampled (SurBuf at the click cell).
-    unsigned char lastPickedColorIndex_ = 0;
+    int lastPickedColorIndex_ = 0;
     bool hasPickedColor_ = false;
 };
 

@@ -31,6 +31,8 @@ bool worldBuffersPresent()
 /// SurZP2Col32, At_LEVELED via the Tex2Col32/Sur2Col32 blend, plain terrain
 /// via Sur2Col32 — so the Geo filter can force the geo-palette half of the
 /// tables (Rnr & 0x7F) and show the layer that lies under a dam.
+/// T4.4: the surface lookups go through vrtMap::surfaceCol32(), so cells with
+/// an extended (>=256) index render their extended palette entry.
 unsigned int color32WithLighting(int off, unsigned int lighting)
 {
     const unsigned int atr = vMap.AtrBuf[off];
@@ -42,9 +44,9 @@ unsigned int color32WithLighting(int off, unsigned int lighting)
         texOff |= (off >> vMap.LvdTex_SPEC_SHIFT_X) & vMap.LvdTex_spec_clip_mask_y;
         const unsigned int mask = 0x00FEFEFF;
         const unsigned int tex = vMap.Tex2Col32[lighting][vMap.LvdTex[texOff]];
-        return ((tex & mask) + (vMap.Sur2Col32[vMap.SurBuf[off]][lighting] & mask)) >> 1;
+        return ((tex & mask) + (vMap.surfaceCol32(off, static_cast<unsigned char>(lighting)) & mask)) >> 1;
     }
-    return vMap.Sur2Col32[vMap.SurBuf[off]][lighting];
+    return vMap.surfaceCol32(off, static_cast<unsigned char>(lighting));
 }
 
 } // namespace

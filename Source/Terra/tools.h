@@ -233,6 +233,7 @@ public:
 						if(dV) {
 							if(vMap.VxDBuf[offB]==0) vMap.VxDBuf[offB]=vMap.VxGBuf[offB];
 							vMap.SurBuf[offB]=vMap.veryLightDam;
+							vMap.surClearExt(offB);
 						}
 					}
 					break;
@@ -538,6 +539,7 @@ public:
 				if(dV) {
 					if(vMap.VxDBuf[offB]==0) vMap.VxDBuf[offB]=vMap.VxGBuf[offB];
 					vMap.SurBuf[offB]=vMap.veryLightDam;
+					vMap.surClearExt(offB);
 				}
 			}
 			break;
@@ -550,6 +552,7 @@ public:
 					if(v>hAppr) v=hAppr;
 					if(VD==0){ //если был гео слой
 						vMap.SurBuf[offB]=vMap.GetGeoType(offB,v);
+						vMap.surClearExt(offB);
 						vMap.VxGBuf[offB]=v>>VX_FRACTION;
 						vMap.AtrBuf[offB]=v&VX_FRACTION_MASK;
 						//vMap.AtrBuf[offB]=(v&VX_FRACTION_MASK) | (vMap.AtrBuf[offB]& (~(VX_FRACTION_MASK|At_NOTPURESURFACE)));
@@ -569,6 +572,7 @@ public:
 					if(v <= VG){ //Если получился гео слой
 						//if(v<hAppr) v=hAppr;
 						vMap.SurBuf[offB]=vMap.GetGeoType(offB,v);
+						vMap.surClearExt(offB);
 						vMap.VxGBuf[offB]=v>>VX_FRACTION;
 						vMap.AtrBuf[offB]=v&VX_FRACTION_MASK;
 						//vMap.AtrBuf[offB]=(v&VX_FRACTION_MASK) | (vMap.AtrBuf[offB]& (~(VX_FRACTION_MASK|At_NOTPURESURFACE)));
@@ -594,6 +598,7 @@ public:
 					if(v>hAppr) v=hAppr;
 					if(VD==0){ //если был гео слой
 						vMap.SurBuf[offB]=vMap.GetGeoType(offB,v);
+						vMap.surClearExt(offB);
 						vMap.VxGBuf[offB]=v>>VX_FRACTION;
 						vMap.AtrBuf[offB]=v&VX_FRACTION_MASK;
 						//vMap.AtrBuf[offB]=(v&VX_FRACTION_MASK) | (vMap.AtrBuf[offB]& (~(VX_FRACTION_MASK|At_NOTPURESURFACE)));
@@ -613,6 +618,7 @@ public:
 					if(v <= VG){ //Если получился гео слой
 						//if(v<hAppr) v=hAppr;
 						vMap.SurBuf[offB]=vMap.GetGeoType(offB,v);
+						vMap.surClearExt(offB);
 						vMap.VxGBuf[offB]=v>>VX_FRACTION;
 						vMap.AtrBuf[offB]=v&VX_FRACTION_MASK;
 						//vMap.AtrBuf[offB]=(v&VX_FRACTION_MASK) | (vMap.AtrBuf[offB]& (~(VX_FRACTION_MASK|At_NOTPURESURFACE)));
@@ -638,6 +644,7 @@ public:
 				if(v>MAX_VX_HEIGHT) v=MAX_VX_HEIGHT;
 				if(VD==0){ //если был гео слой
 					vMap.SurBuf[offB]=vMap.GetGeoType(offB,v);
+					vMap.surClearExt(offB);
 					vMap.VxGBuf[offB]=v>>VX_FRACTION;
 					vMap.AtrBuf[offB]=v&VX_FRACTION_MASK;
 					//vMap.AtrBuf[offB]=(v&VX_FRACTION_MASK) | (vMap.AtrBuf[offB]& (~(VX_FRACTION_MASK|At_NOTPURESURFACE)));
@@ -654,6 +661,7 @@ public:
 				if(v <= VG){ //Если получился гео слой
 					if(v< MIN_VX_HEIGHT) v=MIN_VX_HEIGHT;
 					vMap.SurBuf[offB]=vMap.GetGeoType(offB,v);
+					vMap.surClearExt(offB);
 					vMap.VxGBuf[offB]=v>>VX_FRACTION;
 					vMap.AtrBuf[offB]=v&VX_FRACTION_MASK;
 					//vMap.AtrBuf[offB]=(v&VX_FRACTION_MASK) | (vMap.AtrBuf[offB]& (~(VX_FRACTION_MASK|At_NOTPURESURFACE)));
