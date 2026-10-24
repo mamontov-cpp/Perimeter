@@ -121,6 +121,33 @@ public:
     /// ViewportRenderer). Required for the smooth path to engage.
     void setColorSource(const ViewportRenderer *source) { colorSource_ = source; }
 
+    /// The in-game geo dimming for the CHUNKY path: the smooth style bakes
+    /// it into the mip pyramid, but chunky samples Terra's own 16-bit color
+    /// tables — render() then temporarily greys their geo (non-dam) halves
+    /// around the viewV2D call and restores the bytes afterwards.
+    void setGeoDimmed(bool dimmed) { geoDimmed_ = dimmed; }
+    bool geoDimmed() const { return geoDimmed_; }
+
+    /// --- Freeze dam layer (3D scroll) ------------------------------------
+    ///
+    /// The world repeats infinitely when the camera scrolls. With the dam
+    /// frozen, the repeats render through the geo-only pyramid of the color
+    /// source (geo colors + geo heights) while the one real map copy keeps
+    /// the composite look — only the geo layer scrolls, the dam stays in its
+    /// single original place. Smooth style only (the chunky viewV2D path
+    /// cannot see the wrap); no effect without a bound color source.
+    void setDamFrozen(bool frozen) { damFrozen_ = frozen; }
+    bool damFrozen() const { return damFrozen_; }
+
+    /// Draw a map-space grid into the last rendered frame: every frustum
+    /// sample whose wrapped cell coordinate is a multiple of the step marks
+    /// its pixel on a FLAT reference plane at the world's zeroplast height
+    /// (the grid shows OXY offsets — it never follows the geo/dam surface).
+    /// The marks chain into perspective grid lines overlaying the rendered
+    /// surface. Call after render() with the same camera; stepX/stepY are
+    /// in map cells (<= 1 disables).
+    void drawGridOverlay(int stepX, int stepY, unsigned short color);
+
     /// RGB565 pixels, row-major (QImage::Format_RGB16 layout), windowWidth()
     /// entries per row; null until the first resizeWindow().
     const unsigned short *pixels() const
@@ -137,17 +164,31 @@ public:
                         int &mapX, int &mapY) const;
 
 private:
-    /// The mip-filtered voxel renderer walking the same frustum math as
-    /// viewV2D (VMAP.cpp:2041) with pyramid sampling; render() dispatches
-    /// here when smooth() is on.
-    void renderSmooth(int cx, int cy);
+    /// The voxel renderer walking the corrected frustum (mirrored behind
+    /// the nadir, see the .cpp) with pyramid sampling; render() dispatches
+    /// here for BOTH styles: pointSample=false filters through the mip
+    /// levels (Smooth), pointSample=true pins the sampling to level 0
+    /// (Chunky — the classic hard-cells look over the same geometry).
+    /// Falls back to Terra's viewV2D (legacy geometry) when no pyramid
+    /// source is attached.
+    void renderSmooth(int cx, int cy, bool pointSample);
+    /// viewV2D with the geo-dimmed 16-bit color tables when geoDimmed() is
+    /// on (save → grey the geo halves → render → restore byte-exact).
+    /// Legacy-geometry fallback for renders without a color source.
+    void viewV2DChunky(int cx, int cy);
 
     std::vector<unsigned short> buffer_;
     int width_ = 0;
     int height_ = 0;
     View3DCamera camera_{};
     bool smooth_ = false;
+    bool damFrozen_ = false;
+    bool geoDimmed_ = false;
     const ViewportRenderer *colorSource_ = nullptr;
+    /// Centre the last render() call ran with (wrapped by viewV2D internally,
+    /// kept raw here for the grid overlay's identical projection walk).
+    int lastCx_ = 0;
+    int lastCy_ = 0;
 };
 
 } // namespace MapEditor

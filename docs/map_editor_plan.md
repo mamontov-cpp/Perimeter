@@ -80,6 +80,8 @@ cmake.exe включён в PATH, его можно вызвать просто 
 
 Документируй принятые архитектурные решение в docs/architecture.md, а найденные нетривиальные вещи идеи в docs/context.md
 
+Старайся избегать правок в исходные библиотеки игры - Terra, tx3d. Если без правки никак нельзя - запрашивай подтверждение.
+
 ## 3. Ключевые архитектурные решения
 
 1. **Отдельное приложение `map_editor` (Qt6 Widgets), не встроенное в игру.** Источники — `Source/MapEditor/`, опция CMake `OPTION_MAP_EDITOR` (по умолчанию OFF), `ADD_SUBDIRECTORY("MapEditor")` в `Source/CMakeLists.txt` под условием. Игровая сборка не меняется.
@@ -148,7 +150,7 @@ CMake: `OPTION(OPTION_MAP_EDITOR "Build map editor" OFF)`; `find_package(Qt6 COM
 - **T4.3** *выполнено.* Кисть цвета учитывает слой клетки: Geo-режим красит только не-дамбовые клетки, Dam-режим — только уже существующие дамбовые, без посева/снятия дамбы (docs/architecture.md §5.13, docs/context.md).
 
 ### T5 — Параметры мира и создание нового
-- **T5.1** Диалог параметров: `hZeroPlast`, размеры (только для новых карт: `createWorld(hSizePower, vSizePower)`), `GeoNet/Section/MinimalSquare`, `[Storage]` (сжатие S2T0/S2T1), `[3DF Parameters]` (`f3d.kmx/kmy/kmz/function`), цвет зеропласта (`TD/Color ZeroLayer` в `Perimeter.ini` читается в `analyzeINI`).
+- **T5.1** Диалог параметров: `hZeroPlast`, размеры (только для новых карт: `createWorld(hSizePower, vSizePower)`), `GeoNet/Section/MinimalSquare`, `[Storage]` (сжатие S2T0/S2T1), `[3DF Parameters]` (`f3d.kmx/kmy/kmz/function`), цвет зеропласта (`TD/Color ZeroLayer` в `Perimeter.ini` читается в `analyzeINI`). Ещё стоит запросить высоту geo-слоя и при создании залить его вокселями этой высоты.
 - **T5.2** Мастер нового мира: имя, размер (power X/Y), генерация (`buildWorld`) или плоская поверхность, копирование шаблона палитр/текстур/`up.tga`, начальные `hZeroPlast`/палитры.
 - *Готово, когда:* новый мир открывается в игре и в редакторе, размеры/высоты соответствуют заданным.
 

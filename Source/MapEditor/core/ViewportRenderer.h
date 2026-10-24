@@ -137,6 +137,14 @@ public:
     bool setLayerFilter(LayerFilter filter);
     LayerFilter layerFilter() const { return filter_; }
 
+    /// The in-game look toggle: cells without a dam render as darkened
+    /// shades of grey (the game dims the un-terraformed geo surface; the
+    /// dam areas keep their palette colors). Viewport-only — cache.tga /
+    /// map.tga generation is unaffected. Returns true when the state (and
+    /// thus the whole map + mip pyramid) changed.
+    bool setGeoDimmed(bool dimmed);
+    bool isGeoDimmed() const { return geoDimmed_; }
+
     /// Change the overlay set; returns true if it changed (whole map dirty).
     bool setOverlays(std::uint32_t overlays);
     std::uint32_t overlays() const { return overlays_; }
@@ -168,6 +176,18 @@ public:
     /// exactly the inputs vrtMap::viewV2D point-samples.
     const ColorMipmap &colorMipmap() const { return mips_; }
 
+    /// --- Geo-only pyramid (dam-frozen 3D scroll) -------------------------
+    ///
+    /// A second pyramid holding the geo layer only: colors resolved through
+    /// the geo half of the color tables (the palette under any dam) and the
+    /// geo voxel heights (VxGBuf, dam ignored). The "freeze dam" 3D mode
+    /// samples it for ground points outside the one real map copy, so the
+    /// world repeats with geo only while the dam stays in its single
+    /// original place (docs/architecture.md).
+    void ensureGeoMips() const;
+    bool hasGeoMips() const { return geoMipsBuilt_; }
+    const ColorMipmap &geoMipmap() const { return geoMips_; }
+
 private:
     /// True while vMap still holds the same, fully loaded world the cache
     /// was built for.
@@ -179,7 +199,7 @@ private:
     void refreshMipRegion(int x0, int y0, int x1, int y1) const;
     /// Composite base color + effective height of a cell — the mip source.
     /// Kept next to colorAt(): same inputs, just without the layer filters.
-    static std::uint32_t mipBaseColor(int x, int y);
+    std::uint32_t mipBaseColor(int x, int y) const;
     static unsigned char mipEffectiveHeight(int x, int y);
 
     std::vector<std::uint32_t> cache_;
@@ -188,8 +208,11 @@ private:
     bool fullInvalid_ = false;
     LayerFilter filter_ = LayerFilter::Composite;
     std::uint32_t overlays_ = OverlayNone;
+    bool geoDimmed_ = false;
     mutable ColorMipmap mips_;     ///< Built on demand (ensureMips), see above.
     mutable bool mipsBuilt_ = false;
+    mutable ColorMipmap geoMips_;  ///< Geo-only pyramid (ensureGeoMips).
+    mutable bool geoMipsBuilt_ = false;
 };
 
 } // namespace MapEditor

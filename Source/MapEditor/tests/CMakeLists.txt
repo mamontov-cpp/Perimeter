@@ -26,6 +26,7 @@ ADD_EXECUTABLE(map_editor_tests
         ColorMipmapTests.cpp
         View3DSmoothTests.cpp
         View3DRendererTests.cpp
+        ViewOptionsTests.cpp
         ShadowTrailTests.cpp)
 
 SET_TARGET_PROPERTIES(map_editor_tests PROPERTIES

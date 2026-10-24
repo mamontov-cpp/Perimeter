@@ -52,6 +52,19 @@ unsigned int color32WithLighting(int off, unsigned int lighting)
     return vMap.Sur2Col32[vMap.SurBuf[off]][lighting];
 }
 
+/// The in-game dimming of the un-terraformed surface: desaturate to
+/// luminance and halve it — "shades of grey and black" like the game shows
+/// the geo surface outside the terraformed (dam) areas.
+unsigned int dimGeoColor(unsigned int col)
+{
+    const unsigned int r = (col >> 16) & 0xFFu;
+    const unsigned int g = (col >> 8) & 0xFFu;
+    const unsigned int b = col & 0xFFu;
+    const unsigned int lum = (r * 76 + g * 150 + b * 29) >> 8;
+    const unsigned int grey = lum >> 1;
+    return (grey << 16) | (grey << 8) | grey;
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -87,10 +100,12 @@ void ViewportRenderer::unbindWorld()
     width_ = 0;
     height_ = 0;
     fullInvalid_ = false;
-    // World change/free — the pyramid holds raw vMap colors, so it must go
-    // too (rebuilt on demand by ensureMips()).
+    // World change/free — the pyramids hold raw vMap colors, so they must go
+    // too (rebuilt on demand by ensureMips()/ensureGeoMips()).
     mips_.clear();
     mipsBuilt_ = false;
+    geoMips_.clear();
+    geoMipsBuilt_ = false;
 }
 
 bool ViewportRenderer::isBound() const
@@ -116,6 +131,21 @@ bool ViewportRenderer::setLayerFilter(LayerFilter filter)
     }
     filter_ = filter;
     fullInvalid_ = true;
+    return true;
+}
+
+bool ViewportRenderer::setGeoDimmed(bool dimmed)
+{
+    if (geoDimmed_ == dimmed) {
+        return false;
+    }
+    geoDimmed_ = dimmed;
+    fullInvalid_ = true;
+    // Both pyramids bake the dimming into their base colors.
+    mips_.clear();
+    mipsBuilt_ = false;
+    geoMips_.clear();
+    geoMipsBuilt_ = false;
     return true;
 }
 
@@ -164,8 +194,15 @@ std::uint32_t ViewportRenderer::colorAt(int x, int y) const
         return vMap.VxDBuf[off] != 0 ? (kOpaque | col) : dimColor(col);
     }
     case LayerFilter::Composite:
-    default:
-        return kOpaque | color32WithLighting(off, vMap.RnrBuf[off]);
+    default: {
+        const unsigned int col = color32WithLighting(off, vMap.RnrBuf[off]);
+        // The in-game look: cells without a dam dim to grey shades (the dam
+        // areas keep their palette colors).
+        if (geoDimmed_ && vMap.VxDBuf[off] == 0) {
+            return kOpaque | dimGeoColor(col);
+        }
+        return kOpaque | col;
+    }
     }
 }
 
@@ -281,13 +318,17 @@ std::vector<DirtyRect> ViewportRenderer::update()
 // Color/height mip pyramid (post-T3.3, smooth 3D view)
 // ---------------------------------------------------------------------------
 
-std::uint32_t ViewportRenderer::mipBaseColor(int x, int y)
+std::uint32_t ViewportRenderer::mipBaseColor(int x, int y) const
 {
     // The 3D view always shows the composite look: identical input to the
     // LayerFilter::Composite branch of colorAt(), deliberately not filtered —
     // the pyramid is view data, not editor-layer data.
     const int off = vMap.offsetBuf(x, y);
-    return kOpaque | color32WithLighting(off, vMap.RnrBuf[off]);
+    const unsigned int col = color32WithLighting(off, vMap.RnrBuf[off]);
+    if (geoDimmed_ && vMap.VxDBuf[off] == 0) {
+        return kOpaque | dimGeoColor(col);
+    }
+    return kOpaque | col;
 }
 
 unsigned char ViewportRenderer::mipEffectiveHeight(int x, int y)
@@ -338,6 +379,42 @@ void ViewportRenderer::ensureMips() const
     }
     mips_.updateRegion(0, 0, width_, height_);
     mipsBuilt_ = true;
+}
+
+void ViewportRenderer::ensureGeoMips() const
+{
+    if (!worldAlive()) {
+        if (geoMipsBuilt_) {
+            geoMips_.clear();
+            geoMipsBuilt_ = false;
+        }
+        return;
+    }
+    if (geoMipsBuilt_) {
+        return;
+    }
+    geoMips_.build(width_, height_);
+    if (geoMips_.empty()) {
+        return;
+    }
+    // The geo layer only: colors through the geo half of the tables (the
+    // palette under any dam — the same trick the LayerFilter::Geo branch
+    // uses), heights from VxGBuf (the dam never lifts the surface). The
+    // dimming applies here too so frozen repeats read as the dimmed
+    // background of the bright single dam copy.
+    for (int y = 0; y < height_; ++y) {
+        for (int x = 0; x < width_; ++x) {
+            const int off = vMap.offsetBuf(x, y);
+            unsigned int col =
+                color32WithLighting(off, vMap.RnrBuf[off] & 0x7Fu);
+            if (geoDimmed_) {
+                col = dimGeoColor(col);
+            }
+            geoMips_.setBaseCell(x, y, kOpaque | col, vMap.VxGBuf[off]);
+        }
+    }
+    geoMips_.updateRegion(0, 0, width_, height_);
+    geoMipsBuilt_ = true;
 }
 
 } // namespace MapEditor

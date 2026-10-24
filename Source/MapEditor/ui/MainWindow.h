@@ -174,6 +174,10 @@ private:
 
     // View actions — shared between the View menu and the view toolbar.
     QAction *actGrid_ = nullptr;
+    // In-game look: un-dammed cells dim to grey shades (2D + smooth 3D).
+    QAction *actDimGeo_ = nullptr;
+    // Freeze-dam 3D scroll: repeats render geo-only, the dam stays in place.
+    QAction *actFreezeDam_ = nullptr;
     QAction *actZoomToFit_ = nullptr;
     QAction *actView3D_ = nullptr;
     // Renderer style toggle pair: pixel-exact vs bilinear (in-game look) —
@@ -249,6 +253,10 @@ private:
 
     // Toolbar readout of the current 3D camera.
     QLabel *viewReadout_ = nullptr;
+
+    // Editable grid cell size in map cells (the fine grid overlay).
+    QSpinBox *gridStepWSpin_ = nullptr;
+    QSpinBox *gridStepHSpin_ = nullptr;
 
     // T2.4 — minimap panel: dockable, shown by default, toggled from the
     // View menu.

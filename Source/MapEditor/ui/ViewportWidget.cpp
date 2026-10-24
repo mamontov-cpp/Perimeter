@@ -47,6 +47,7 @@ void ViewportWidget::setSession(EditorSession *session)
     if (session_ && session_->isWorldLoaded()) {
         renderer_ = new ViewportRenderer();
         if (renderer_->bindWorld()) {
+            applyViewportSettings();
             updateFitScale();
             zoomToFit();
             update();
@@ -72,12 +73,28 @@ void ViewportWidget::reloadWorld()
         delete renderer_;
         renderer_ = new ViewportRenderer();
         if (renderer_->bindWorld()) {
+            applyViewportSettings();
             updateFitScale();
             zoomToFit();
             needs3DRedraw_ = true;
             update();
         }
     }
+}
+
+/// Push the widget-level view settings into a freshly bound renderer: the
+/// geo dimming (the cache paints in bindWorld before the flag exists) and
+/// the 3D look-at centre — a new world opens with the camera at its centre,
+/// not at the (0,0) corner.
+void ViewportWidget::applyViewportSettings()
+{
+    if (!renderer_) {
+        return;
+    }
+    renderer_->setGeoDimmed(geoDimmed_);
+    obliqueCenter_ = QPointF(renderer_->width() / 2.0,
+                             renderer_->height() / 2.0);
+    needs3DRedraw_ = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -415,6 +432,41 @@ void ViewportWidget::setBrushPreviewVisible(bool visible)
 void ViewportWidget::setGridVisible(bool visible)
 {
     gridVisible_ = visible;
+    // The 3D overlay is baked into the cached RGB565 frame — force a fresh
+    // render so the toggle/step shows up in Oblique mode too (2D repaints
+    // through update() alone).
+    needs3DRedraw_ = true;
+    update();
+}
+
+void ViewportWidget::setGridStep(int cellsX, int cellsY)
+{
+    gridStepX_ = std::clamp(cellsX, 1, 1024);
+    gridStepY_ = std::clamp(cellsY, 1, 1024);
+    needs3DRedraw_ = true; // the 3D overlay is baked into the frame
+    update();
+}
+
+void ViewportWidget::setGeoDimmed(bool dimmed)
+{
+    if (geoDimmed_ == dimmed) {
+        return;
+    }
+    geoDimmed_ = dimmed;
+    if (renderer_) {
+        renderer_->setGeoDimmed(dimmed); // marks the whole cache + mips dirty
+    }
+    needs3DRedraw_ = true;
+    update();
+}
+
+void ViewportWidget::setDamFrozen(bool frozen)
+{
+    if (damFrozen_ == frozen) {
+        return;
+    }
+    damFrozen_ = frozen;
+    needs3DRedraw_ = true; // applied per-frame in draw3DRaster()
     update();
 }
 
@@ -691,20 +743,40 @@ void ViewportWidget::draw3DRaster(QPainter &painter)
     const QSize buffer = obliqueBufferSize();
     view3d_->resizeWindow(buffer.width(), buffer.height());
 
-    // Camera + look-at (map cell coordinates wrapped to the map size).
+    // Camera + look-at. The centre is passed UNWRAPPED (it may sit outside
+    // the map after a long scroll): viewV2D/renderSmooth wrap it themselves,
+    // and the freeze-dam mode needs the raw value to tell the one real map
+    // copy from its torus repeats.
     view3d_->setCamera(obliqueCamera_);
+    view3d_->setDamFrozen(damFrozen_);
+    // The chunky path greys Terra's 16-bit tables on the fly; the smooth
+    // path bakes the dimming into the mip pyramid (same widget flag).
+    view3d_->setGeoDimmed(geoDimmed_);
     // Post-T3.3: the smooth style filters the voxel view through the mip
     // pyramid kept by the 2D renderer; chunky keeps Terra's point-sampled
     // viewV2D output byte-for-byte.
     view3d_->setColorSource(renderer_);
     view3d_->setSmooth(renderStyle_ == RenderStyle::Smooth);
-    const int mapW = renderer_->width();
-    const int mapH = renderer_->height();
-    const int cx =
-        ((static_cast<int>(std::floor(obliqueCenter_.x())) % mapW) + mapW) % mapW;
-    const int cy =
-        ((static_cast<int>(std::floor(obliqueCenter_.y())) % mapH) + mapH) % mapH;
-    view3d_->render(cx, cy);
+    view3d_->render(static_cast<int>(std::floor(obliqueCenter_.x())),
+                    static_cast<int>(std::floor(obliqueCenter_.y())));
+
+    // The one grid overlays the 3D frame like the 2D raster's: a flat
+    // reference-plane grid at the zeroplast height (OXY offsets, independent
+    // of the terrain shape), white lines two pixels thick (enumerated line
+    // crossings — continuous, no sampling gaps toward the horizon), drawn
+    // once its lines resolve on screen.
+    if (gridVisible_) {
+        const QPointF pxPerCell = obliquePxPerCell();
+        const double bufferScaleX =
+            width() > 0 && buffer.width() > 0
+                ? buffer.width() / static_cast<double>(width()) : 1.0;
+        const double cellPx = qMin(pxPerCell.x(), pxPerCell.y()) *
+                              bufferScaleX;
+        if (gridStepX_ > 0 &&
+            gridStepX_ * cellPx >= kMinGridSpacingPx * 0.75) {
+            view3d_->drawGridOverlay(gridStepX_, gridStepY_, 0xFFFF);
+        }
+    }
 
     blit3DFrame(painter);
 }
@@ -746,37 +818,25 @@ void ViewportWidget::drawGrid(QPainter &painter)
     const int mapH = renderer_->height();
     const int mapW = renderer_->width();
 
-    // Fine grid (kmGrid = 4 cells). Draw only once lines are resolvable.
-    if (zoom_ * kFineGridCell >= kMinGridSpacingPx) {
+    // The one grid: the editable cell size (default Terra's kmGrid = 4),
+    // drawn once its lines resolve on screen. No second coarse reference
+    // frame — the step spinboxes control the single grid.
+    if (zoom_ * gridStepX_ >= kMinGridSpacingPx ||
+        zoom_ * gridStepY_ >= kMinGridSpacingPx) {
         painter.setPen(QColor(70, 70, 70, 90));
         // Align to the grid origin, not to the first visible cell.
-        const int x0f = (vis.x() / kFineGridCell) * kFineGridCell;
-        for (int x = x0f; x <= x1; x += kFineGridCell) {
+        const int x0f = (vis.x() / gridStepX_) * gridStepX_;
+        for (int x = x0f; x <= x1; x += gridStepX_) {
             QPointF p1 = mapToScreen(x, 0);
             QPointF p2 = mapToScreen(x, mapH);
             painter.drawLine(p1, p2);
         }
-        const int y0f = (vis.y() / kFineGridCell) * kFineGridCell;
-        for (int y = y0f; y <= y1; y += kFineGridCell) {
+        const int y0f = (vis.y() / gridStepY_) * gridStepY_;
+        for (int y = y0f; y <= y1; y += gridStepY_) {
             QPointF p1 = mapToScreen(0, y);
             QPointF p2 = mapToScreen(mapW, y);
             painter.drawLine(p1, p2);
         }
-    }
-
-    // Coarse grid (kmGridChA = 64 cells): the always-visible reference frame.
-    painter.setPen(QColor(110, 110, 110, 130));
-    const int x0c = (vis.x() / kCoarseGridCell) * kCoarseGridCell;
-    for (int x = x0c; x <= x1; x += kCoarseGridCell) {
-        QPointF p1 = mapToScreen(x, 0);
-        QPointF p2 = mapToScreen(x, mapH);
-        painter.drawLine(p1, p2);
-    }
-    const int y0c = (vis.y() / kCoarseGridCell) * kCoarseGridCell;
-    for (int y = y0c; y <= y1; y += kCoarseGridCell) {
-        QPointF p1 = mapToScreen(0, y);
-        QPointF p2 = mapToScreen(mapW, y);
-        painter.drawLine(p1, p2);
     }
 }
 

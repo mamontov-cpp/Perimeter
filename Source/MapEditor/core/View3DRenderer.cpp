@@ -104,6 +104,10 @@ void View3DRenderer::render(int cx, int cy)
     if (!isWorldAvailable() || buffer_.empty()) {
         return;
     }
+    // Kept raw (unwrapped) for the grid overlay's identical projection walk;
+    // viewV2D/renderSmooth wrap the centre themselves (XCYCL/YCYCL).
+    lastCx_ = cx;
+    lastCy_ = cy;
 
     // Push the camera into vrtMap's members (their only consumer is viewV2D;
     // the 2D modes do not read them, so aliasing is not a concern). The lean
@@ -148,11 +152,14 @@ void View3DRenderer::render(int cx, int cy)
         }
     }
 
-    if (smooth_) {
-        renderSmooth(cx, cy);
+    if (colorSource_ && colorSource_->isBound()) {
+        // Both styles share the corrected geometry: Smooth filters through
+        // the mip levels, Chunky point-samples level 0 over the same walk.
+        // Terra's viewV2D (legacy geometry) only serves as the no-source
+        // fallback below.
+        renderSmooth(cx, cy, !smooth_);
     } else {
-        vMap.viewV2D(cx, cy, width_ / 2, height_ / 2, width_ / 2, height_ / 2,
-                     buffer_.data(), width_, height_);
+        viewV2DChunky(cx, cy);
     }
 
     for (const ZpCell &cell : zeroplastCells) {
@@ -161,25 +168,81 @@ void View3DRenderer::render(int cx, int cy)
 }
 
 // ---------------------------------------------------------------------------
+// Chunky path — viewV2D with the in-game geo dimming
+// ---------------------------------------------------------------------------
+
+void View3DRenderer::viewV2DChunky(int cx, int cy)
+{
+    if (!geoDimmed_) {
+        vMap.viewV2D(cx, cy, width_ / 2, height_ / 2, width_ / 2, height_ / 2,
+                     buffer_.data(), width_, height_);
+        return;
+    }
+    // viewV2D samples Terra's own 16-bit tables (Sur2Col[sur][lighting],
+    // Tex2Col[lighting][tex] — the +128 rows are the dam layer,
+    // convertPal2TableSurCol VMAP.cpp:1370-1375). The dimmed game look
+    // greys the geo (non-dam) halves: save both tables, grey rows 0..127,
+    // render, restore byte-exact. Terra itself is never modified.
+    std::vector<unsigned short> surSave(
+        &vMap.Sur2Col[0][0],
+        &vMap.Sur2Col[0][0] + MAX_SURFACE_TYPE * (MAX_SURFACE_LIGHTING * 2));
+    std::vector<unsigned short> texSave(
+        &vMap.Tex2Col[0][0],
+        &vMap.Tex2Col[0][0] + (MAX_SURFACE_LIGHTING * 2) * MAX_SURFACE_TYPE);
+    const auto grey565 = [](unsigned short v) {
+        const int r8 = ((v >> 11) & 31) << 3;
+        const int g8 = ((v >> 5) & 63) << 2;
+        const int b8 = (v & 31) << 3;
+        const int lum = (r8 * 76 + g8 * 150 + b8 * 29) >> 8;
+        const int half = lum >> 1;
+        return static_cast<unsigned short>(
+            ((half >> 3) << 11) | (((half >> 2) & 63) << 5) | (half >> 3));
+    };
+    for (int i = 0; i < MAX_SURFACE_TYPE; ++i) {
+        for (int j = 0; j < MAX_SURFACE_LIGHTING; ++j) {
+            vMap.Sur2Col[i][j] = grey565(vMap.Sur2Col[i][j]);
+        }
+    }
+    for (int j = 0; j < MAX_SURFACE_LIGHTING; ++j) {
+        for (int i = 0; i < MAX_SURFACE_TYPE; ++i) {
+            vMap.Tex2Col[j][i] = grey565(vMap.Tex2Col[j][i]);
+        }
+    }
+    vMap.viewV2D(cx, cy, width_ / 2, height_ / 2, width_ / 2, height_ / 2,
+                 buffer_.data(), width_, height_);
+    std::copy(surSave.begin(), surSave.end(), &vMap.Sur2Col[0][0]);
+    std::copy(texSave.begin(), texSave.end(), &vMap.Tex2Col[0][0]);
+}
+
+// ---------------------------------------------------------------------------
 // Smooth (mip-filtered) oblique voxels — post-T3.3
 // ---------------------------------------------------------------------------
 
-void View3DRenderer::renderSmooth(int cx, int cy)
+void View3DRenderer::renderSmooth(int cx, int cy, bool pointSample)
 {
-    // Without a bound pyramid source the smooth style degrades to the exact
-    // chunky path — keeps viewV2D-based tests valid and the widget safe.
+    // Without a bound pyramid source there is nothing to sample — degrade
+    // to Terra's viewV2D (legacy geometry; the geo dimming of the chunky
+    // tables applies there as well).
     if (!colorSource_ || !colorSource_->isBound()) {
-        vMap.viewV2D(cx, cy, width_ / 2, height_ / 2, width_ / 2, height_ / 2,
-                     buffer_.data(), width_, height_);
+        viewV2DChunky(cx, cy);
         return;
     }
     colorSource_->ensureMips();
     if (!colorSource_->hasMips()) {
-        vMap.viewV2D(cx, cy, width_ / 2, height_ / 2, width_ / 2, height_ / 2,
-                     buffer_.data(), width_, height_);
+        viewV2DChunky(cx, cy);
         return;
     }
     const ColorMipmap &mips = colorSource_->colorMipmap();
+    // Freeze-dam mode: repeats of the torus render through the geo-only
+    // pyramid (built on demand) so only the geo layer scrolls; the one real
+    // map copy keeps the composite look with its single dam.
+    const ColorMipmap *geoMips = nullptr;
+    if (damFrozen_) {
+        colorSource_->ensureGeoMips();
+        if (colorSource_->hasGeoMips()) {
+            geoMips = &colorSource_->geoMipmap();
+        }
+    }
 
     short *vp = reinterpret_cast<short *>(buffer_.data());
     const int GB_MAXX = width_;
@@ -201,19 +264,53 @@ void View3DRenderer::renderSmooth(int cx, int cy)
     // instead of the lvD/lvG + Sur2Col point reads).
     const int x0 = vMap.XCYCL(cx) << 16;
     const int y0 = vMap.YCYCL(cy) << 16;
+    // Offset from the wrapped scan origin back to the caller's unwrapped
+    // camera position (a whole number of map sizes) — the freeze-dam test
+    // tells the one real map copy from its torus repeats with it.
+    const long long wrapOffX =
+        (static_cast<long long>(cx) << 16) - x0;
+    const long long wrapOffY =
+        (static_cast<long long>(cy) << 16) - y0;
+    const long long mapSpanX =
+        static_cast<long long>(vMap.H_SIZE) << 16;
+    const long long mapSpanY =
+        static_cast<long long>(vMap.V_SIZE) << 16;
+    const auto inRealMap = [&](int xx, int yy) {
+        if (!geoMips) {
+            return true; // no freeze — everything is the real copy
+        }
+        const long long ux = xx + wrapOffX;
+        const long long uy = yy + wrapOffY;
+        return ux >= 0 && ux < mapSpanX && uy >= 0 && uy < mapSpanY;
+    };
 
     const float tga = xm::tan(vMap.cameraAngleLean * 3.14 / 180);
     const int dh = xm::round(65536 *
         (xm::sin((vMap.cameraAngleLean - 90) * 3.14 / 180) * vMap.focusC /
          (vMap.focusC + vMap.cameraDZ)));
 
-    // Frustum-row ground distance in 16.16 cells (same float math viewV2D's
-    // DY keeps; needed per row and for the next row to size the footprint).
-    const auto rowDY = [tga](int d) -> int {
-        return xm::round(xm::sqrt(
-            xm::pow(d * (vMap.focusC + vMap.cameraDZ) / (d + tga * vMap.focusC), 2) +
-            xm::pow(tga * d * (vMap.focusC + vMap.cameraDZ) /
-                    (d + tga * vMap.focusC), 2)) * 65536);
+    // Frustum-row ground distance in 16.16 cells. AHEAD rows (d > 0) keep
+    // Terra's own perspective-correct mapping |near| = d(F+Z)/(d0-d).
+    // BEHIND rows (d < 0) deliberately deviate from viewV2D: the original
+    // maps them with a pole at near = F+Z, which inverts perspective on the
+    // whole below-nadir half (far-behind ground occupies MORE rows and a
+    // NARROWER lateral span — features spread apart toward the screen
+    // bottom). The editor mirrors the ahead side instead: the nadir is the
+    // screen centre, ground recedes symmetrically to the front horizon
+    // (+d0) and the rear horizon (-d0), so both halves compress with
+    // distance (docs/architecture.md §5.15).
+    const double horizonD = -tga * vMap.focusC; // d0 = |tga|*F > 0
+    const auto rowAbsNearOfD = [&](double d) -> double {
+        const double dd = d < 0.0 ? -d : d;
+        const double denom = horizonD - dd;
+        if (denom <= 1e-6) {
+            return 1e30; // at/beyond the horizon — no ground
+        }
+        return dd * (vMap.focusC + vMap.cameraDZ) / denom;
+    };
+    const auto rowDY = [&](int d) -> int {
+        const double n = rowAbsNearOfD(d);
+        return xm::round(xm::sqrt(n * n * (1.0 + tga * tga)) * 65536);
     };
 
     // Previous frustum-row's ground sample position per column: strips paint
@@ -226,15 +323,22 @@ void View3DRenderer::renderSmooth(int cx, int cy)
     bool havePrev = false;
 
     for (int d = -yside - 200; d < yside; ++d) {
+        // Beyond either horizon (|d| >= d0) no ground maps to this row.
+        if (std::fabs(static_cast<double>(d)) >= horizonD - 1.0) {
+            havePrev = false; // the ground gap breaks strip continuity
+            continue;
+        }
+        const double rowNearAbs = rowAbsNearOfD(d);
+        // Mirrored sign: near is negative on BOTH sides, so the lateral
+        // span (F+Z-near) grows with distance on both sides of the nadir.
+        const double nearSigned = -rowNearAbs;
         int DY = rowDY(d);
         if (d < 0) {
             DY = -DY;
         }
         const int DX = xm::round(
             65536 * (width_ / 2) *
-            (vMap.focusC + (vMap.cameraDZ -
-                (d * (vMap.focusC + vMap.cameraDZ) /
-                 (d + tga * vMap.focusC)))) / vMap.focusC);
+            (vMap.focusC + vMap.cameraDZ - nearSigned) / vMap.focusC);
 
         const int xxOr = x0 + static_cast<int>(
             (-DX) * xm::cos(vMap.turnAngleAroundZ) -
@@ -279,7 +383,7 @@ void View3DRenderer::renderSmooth(int cx, int cy)
         int k0 = 0;
         int k1 = 0;
         int fW = 0;  // 0..256 blend weight of the coarser level k1
-        if (foot > 1) {
+        if (!pointSample && foot > 1) {
             const float lFoot =
                 xm::log(static_cast<float>(foot)) * 1.4426950408889634f;
             k0 = std::min(std::max(static_cast<int>(lFoot), 0), maxLevel);
@@ -288,6 +392,8 @@ void View3DRenderer::renderSmooth(int cx, int cy)
                 fW = static_cast<int>((lFoot - static_cast<float>(k0)) * 255.0f);
             }
         }
+        // pointSample (Chunky style): k0 = k1 = 0, fW = 0 — pure level-0
+        // bilinear sampling over the same corrected geometry.
         // Depth advance below one cell: neighboring rows sample nearly the
         // same ground point, so the previous-row samples would be redundant.
         const bool subCellStep = footY == 0;
@@ -303,20 +409,24 @@ void View3DRenderer::renderSmooth(int cx, int cy)
             // distant silhouettes and terrain detail, the fractional blend
             // toward the next coarser level keeps the kernel growth
             // continuous with depth (discrete levels per row would paint
-            // level-jump rings around distant mountains).
-            const auto heightAt = [&mips, k0, k1, fW](int x, int yy) -> int {
-                const int v = mips.sampleHeight(k0, x, yy);
+            // level-jump rings around distant mountains). The pyramid is a
+            // parameter: freeze-dam mode samples the geo-only pyramid for
+            // anchors on torus repeats, the composite one for the real map.
+            const auto heightAt = [k0, k1, fW](const ColorMipmap &m,
+                                               int x, int yy) -> int {
+                const int v = m.sampleHeight(k0, x, yy);
                 return fW ? (v * (256 - fW) +
-                             mips.sampleHeight(k1, x, yy) * fW + 128) >> 8
+                             m.sampleHeight(k1, x, yy) * fW + 128) >> 8
                           : v;
             };
-            const auto colorAt =
-                [&mips, k0, k1, fW](int x, int yy) -> unsigned int {
-                const unsigned int v = mips.sampleColor(k0, x, yy);
+            const auto colorAt = [k0, k1,
+                                  fW](const ColorMipmap &m, int x,
+                                      int yy) -> unsigned int {
+                const unsigned int v = m.sampleColor(k0, x, yy);
                 if (!fW) {
                     return v;
                 }
-                const unsigned int w = mips.sampleColor(k1, x, yy);
+                const unsigned int w = m.sampleColor(k1, x, yy);
                 return (((v >> 16 & 0xFFu) * unsigned(256 - fW) +
                          (w >> 16 & 0xFFu) * unsigned(fW) + 128u) >> 8 << 16) |
                        (((v >> 8 & 0xFFu) * unsigned(256 - fW) +
@@ -327,8 +437,17 @@ void View3DRenderer::renderSmooth(int cx, int cy)
 
             // Heights are averaged between the two row anchors so the
             // silhouette edges follow the same depth filter as the colors.
-            const int hCur = heightAt(xx0, yy0);
-            const int hPrev = usePrev ? heightAt(xa, ya) : hCur;
+            // Each anchor samples the pyramid of its own map copy (composite
+            // for the real one, geo-only for a repeat when the dam is
+            // frozen — strips that straddle the wrap blend the transition).
+            const ColorMipmap &mipCur =
+                inRealMap(xx0, yy0) ? mips : *geoMips;
+            const ColorMipmap &mipPrev = (usePrev && geoMips &&
+                                          !inRealMap(xa, ya))
+                                             ? *geoMips
+                                             : mips;
+            const int hCur = heightAt(mipCur, xx0, yy0);
+            const int hPrev = usePrev ? heightAt(mipPrev, xa, ya) : hCur;
             const int h = (hCur + hPrev + 1) >> 1;
 
             // Strip colors: cFar anchors this row's ground position (the
@@ -338,8 +457,9 @@ void View3DRenderer::renderSmooth(int cx, int cy)
             // row back onto the ground between the two anchors — so the
             // depth profile is continuous across adjacent strips and the
             // far mountains lose their stacked "layers" look.
-            const unsigned int cFar = colorAt(xx0, yy0);
-            const unsigned int cNear = usePrev ? colorAt(xa, ya) : cFar;
+            const unsigned int cFar = colorAt(mipCur, xx0, yy0);
+            const unsigned int cNear =
+                usePrev ? colorAt(mipPrev, xa, ya) : cFar;
             const int rF = (cFar >> 16) & 0xFF, gF = (cFar >> 8) & 0xFF,
                       bF = cFar & 0xFF;
             const int rN = (cNear >> 16) & 0xFF, gN = (cNear >> 8) & 0xFF,
@@ -400,6 +520,241 @@ void View3DRenderer::renderSmooth(int cx, int cy)
 }
 
 // ---------------------------------------------------------------------------
+// Grid overlay (post-render pass, same projection walk as renderSmooth)
+// ---------------------------------------------------------------------------
+
+void View3DRenderer::drawGridOverlay(int stepX, int stepY,
+                                     unsigned short color)
+{
+    if (buffer_.empty() || width_ <= 0 || height_ <= 0 ||
+        stepX <= 0 || stepY <= 0 || !isWorldAvailable()) {
+        return;
+    }
+    const int xside = width_ / 2;
+    const int yside = height_ / 2;
+    const int GB_MAXX = width_;
+    const int GB_MAXY = height_;
+
+    // The same clamped camera values renderSmooth renders with.
+    const int focusC = clampFocus(camera_.focusC);
+    const int cameraDZ = clampCameraDZ(camera_.cameraDZ);
+    const double lean = stableLeanDeg(camera_.leanDeg, focusC, yside);
+    const double leanRad = lean * 3.14159265358979323846 / 180.0;
+    const double tga = std::tan(leanRad);
+    const double turnRad =
+        camera_.turnAngleDeg * 3.14159265358979323846 / 180.0;
+    const double cosT = std::cos(turnRad);
+    const double sinT = std::sin(turnRad);
+
+    // The grid is a transparent plane of lines overlaying the frame: every
+    // grid line is walked in map space and FORWARD-PROJECTED through the
+    // same camera the frame renders with. Unlike crossing enumeration over
+    // the scan rows (the previous attempt), this has no degenerate
+    // orientations — lines parallel to the scan direction (horizontal map
+    // lines at rotation 0, vertical at 90) rendered not at all there.
+    const double F = focusC;
+    const double Z = cameraDZ;
+    const double tgaF = tga * F;            // negative (lean in 100..170)
+    const double absCosLean = -std::cos(leanRad); // |cos| = 1/sqrt(1+tga^2)
+    const double planeH = static_cast<double>(vMap.hZeroPlast);
+    const int dh = static_cast<int>(xm::round(65536.0 *
+        (std::sin(leanRad - 3.14159265358979323846 / 2.0) * F /
+         (F + Z))));
+    const double planeRowOff = (dh * planeH) / 65536.0;
+    const double ccx = lastCx_;             // unwrapped camera look-at (cells)
+    const double ccy = lastCy_;
+
+    // Ground point of the reference plane (unwrapped map cells) -> screen
+    // pixel. Straight inversion of the renderer's row math, which is
+    // SYMMETRIC around the camera nadir (screen centre): a point at
+    // camera-basis distance |forward| has |near| = |forward|*|cos(lean)|,
+    // paints frustum row d = sign * |near|*d0/(F+Z+|near|) (d0 = |tga|*F,
+    // the horizon row; ground recedes to the front horizon above the nadir
+    // and to the rear horizon below it), and the column runs linearly
+    // across the row's lateral extent +/-halfSpan = xside*(F+Z+|near|)/F —
+    // exactly the anchors renderSmooth steps between.
+    const auto project = [&](double px, double py, double &col,
+                             double &row) {
+        const double dpx = px - ccx;
+        const double dpy = py - ccy;
+        const double lateral = dpx * cosT + dpy * sinT;
+        const double forward = -dpx * sinT + dpy * cosT;
+        const double aNear = std::fabs(forward) * absCosLean;
+        const double s = forward < 0.0 ? -1.0 : 1.0;
+        const double d = s * aNear * (-tgaF) / (F + Z + aNear);
+        row = yside - d - planeRowOff;
+        const double halfSpan = xside * (F + Z + aNear) / F;
+        col = halfSpan > 1e-6
+            ? (lateral + halfSpan) / (2.0 * halfSpan) * GB_MAXX
+            : GB_MAXX / 2.0; // at the horizon everything meets the centre
+        return true;
+    };
+
+    // 2x2-thick point plot (the "at least two pixels bold" requirement).
+    const auto plotPoint = [&](int x, int y) {
+        for (int yy = y; yy <= y + 1; ++yy) {
+            if (yy < 0 || yy >= GB_MAXY) {
+                continue;
+            }
+            for (int xx = x; xx <= x + 1; ++xx) {
+                if (xx >= 0 && xx < GB_MAXX) {
+                    buffer_[static_cast<std::size_t>(yy) * GB_MAXX + xx] =
+                        color;
+                }
+            }
+        }
+    };
+    // Straight segment between two projected points (Liang-Barsky clip to
+    // the frame, then Bresenham with 2x2 blocks).
+    const auto drawSeg = [&](double ax, double ay, double bx, double by) {
+        double t0 = 0.0;
+        double t1 = 1.0;
+        const double dx = bx - ax;
+        const double dy = by - ay;
+        // Clip window slightly inside the frame; the 2x2 blocks then stay
+        // whole pixels. Edges: x >= -1, x <= GB_MAXX, y >= -1, y <= GB_MAXY
+        // in the parametric form p = a + t*(b-a).
+        const double edges[4][2] = {
+            {-dx, ax + 1.0}, {dx, double(GB_MAXX) - ax},
+            {-dy, ay + 1.0}, {dy, double(GB_MAXY) - ay}};
+        for (const auto &edge : edges) {
+            const double denom = edge[0];
+            const double num = edge[1];
+            if (denom == 0.0) {
+                if (num < 0.0) {
+                    return; // parallel and outside
+                }
+                continue;
+            }
+            const double t = num / denom;
+            if (denom < 0.0) {
+                if (t > t1) {
+                    return;
+                }
+                if (t > t0) {
+                    t0 = t;
+                }
+            } else {
+                if (t < t0) {
+                    return;
+                }
+                if (t < t1) {
+                    t1 = t;
+                }
+            }
+        }
+        if (t1 <= t0) {
+            return;
+        }
+        int x0 = static_cast<int>(std::lround(ax + dx * t0));
+        int y0 = static_cast<int>(std::lround(ay + dy * t0));
+        const int x1 = static_cast<int>(std::lround(ax + dx * t1));
+        const int y1 = static_cast<int>(std::lround(ay + dy * t1));
+        const int sx = (x1 > x0) - (x1 < x0);
+        const int sy = (y1 > y0) - (y1 < y0);
+        const int dxAbs = std::abs(x1 - x0);
+        const int dyAbs = std::abs(y1 - y0);
+        int err = dxAbs - dyAbs;
+        for (;;) {
+            plotPoint(x0, y0);
+            if (x0 == x1 && y0 == y1) {
+                break;
+            }
+            const int e2 = 2 * err;
+            if (e2 > -dyAbs) {
+                err -= dyAbs;
+                x0 += sx;
+            }
+            if (e2 < dxAbs) {
+                err += dxAbs;
+                y0 += sy;
+            }
+        }
+    };
+
+    // The visible ground wedge in camera basis (the rows the frame scans),
+    // transformed to a map-space bounding box the line walks cover. The
+    // projection is symmetric around the nadir: both the far (front) and the
+    // near (rear) edges are capped just under their horizon rows — rows
+    // within ~3% of a horizon differ by <1px on screen, and the caps keep
+    // the walk bounded.
+    const double horizonD = -tgaF; // d0 = |tga|*F
+    const auto absNearOfD = [&](double d) {
+        const double dd = d < 0.0 ? -d : d;
+        const double denom = horizonD - dd;
+        return denom > 1e-6 ? dd * (F + Z) / denom : 1e30;
+    };
+    const auto rowAbsNear = [&](double n) {
+        return std::sqrt(n * n * (1.0 + tga * tga));
+    };
+    const double horizonCap = horizonD * 32.0 / 33.0;
+    const double dFar = std::min(yside - 1.0, horizonCap);
+    const double dNear = std::max(-(yside + 200.0), -horizonCap);
+    const double farNear = absNearOfD(dFar);
+    const double nearNear = absNearOfD(dNear);
+    // The near (behind-nadir) edge at negative, the far (ahead) edge at
+    // positive forward distance; the lateral half-span grows with distance
+    // symmetrically on both sides.
+    const auto spanAt = [&](double n) { return xside * (F + Z + n) / F; };
+    const double corners[4][2] = {
+        {spanAt(nearNear), -rowAbsNear(nearNear)},
+        {-spanAt(nearNear), -rowAbsNear(nearNear)},
+        {spanAt(farNear), rowAbsNear(farNear)},
+        {-spanAt(farNear), rowAbsNear(farNear)},
+    };
+    double minX = 1e30, maxX = -1e30, minY = 1e30, maxY = -1e30;
+    for (const auto &c : corners) {
+        const double mx = ccx + c[0] * cosT - c[1] * sinT;
+        const double my = ccy + c[1] * cosT + c[0] * sinT;
+        minX = std::min(minX, mx);
+        maxX = std::max(maxX, mx);
+        minY = std::min(minY, my);
+        maxY = std::max(maxY, my);
+    }
+
+    // Walk every grid line of both families across the bbox with adaptive
+    // stepping (aim a few screen px per segment); off-screen segments clip
+    // away inside drawSeg, on-screen ones draw as thick white runs.
+    const auto walkLine = [&](bool fixedX, double fixed, double lo,
+                              double hi) {
+        double t = lo;
+        double step = 4.0;
+        double colA = 0.0;
+        double rowA = 0.0;
+        bool hasA = fixedX ? project(fixed, t, colA, rowA)
+                           : project(t, fixed, colA, rowA);
+        while (t < hi) {
+            const double next = std::min(t + step, hi);
+            double colB = 0.0;
+            double rowB = 0.0;
+            const bool hasB = fixedX ? project(fixed, next, colB, rowB)
+                                     : project(next, fixed, colB, rowB);
+            if (hasA && hasB) {
+                drawSeg(colA, rowA, colB, rowB);
+            }
+            if (hasB) {
+                const double dist = std::hypot(colB - colA, rowB - rowA);
+                if (dist > 8.0) {
+                    step = std::max(0.25, step * 0.5);
+                } else if (dist < 3.0) {
+                    step = std::min(64.0, step * 2.0);
+                }
+            }
+            t = next;
+            colA = colB;
+            rowA = rowB;
+            hasA = hasB;
+        }
+    };
+    for (double kx = std::floor(minX / stepX); kx * stepX <= maxX; ++kx) {
+        walkLine(true, kx * stepX, minY, maxY);
+    }
+    for (double ky = std::floor(minY / stepY); ky * stepY <= maxY; ++ky) {
+        walkLine(false, ky * stepY, minX, maxX);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Ground pick (inverse projection for 3D brush painting)
 // ---------------------------------------------------------------------------
 
@@ -445,25 +800,35 @@ bool View3DRenderer::pickGroundCell(int cx, int cy, int col, int row,
     const unsigned char *lvG = vMap.VxGBuf;
     const unsigned char *lvD = vMap.VxDBuf;
 
-    // Walk the frustum rows near → far exactly like viewV2D (VMAP.cpp:2078)
-    // and return the first row whose ground strip covers `row`: nearer strips
+    // Walk the frustum rows near → far exactly like the renderer above
+    // (including the mirrored behind-nadir mapping — see renderSmooth) and
+    // return the first row whose ground strip covers `row`: nearer strips
     // paint lower on the screen and occlude the distant ones, which is what
     // the rendered frame shows.
-    for (int d = -yside - 200; d < yside; ++d) {
-        const double denom = d + tga * focusC;
-        if (std::fabs(denom) < 1e-6) {
-            continue; // projection singularity (excluded by stableLeanDeg)
+    const double horizonD = -tga * focusC; // d0 = |tga|*F > 0
+    const auto rowAbsNearOfD = [&](double d) -> double {
+        const double dd = d < 0.0 ? -d : d;
+        const double denom = horizonD - dd;
+        if (denom <= 1e-6) {
+            return -1.0; // at/beyond the horizon — no ground
         }
-
-        const double near = static_cast<double>(d) * (focusC + cameraDZ) / denom;
-        const double tanNear = static_cast<double>(tga) * near;
+        return dd * (focusC + cameraDZ) / denom;
+    };
+    for (int d = -yside - 200; d < yside; ++d) {
+        const double rowNearAbs = rowAbsNearOfD(d);
+        if (rowNearAbs < 0.0) {
+            continue; // beyond the (front or rear) horizon
+        }
+        const double nearSigned = -rowNearAbs;
+        const double tanNear = static_cast<double>(tga) * rowNearAbs;
         int DY = static_cast<int>(
-            xm::round(std::sqrt(near * near + tanNear * tanNear) * 65536.0));
+            xm::round(std::sqrt(rowNearAbs * rowNearAbs +
+                                tanNear * tanNear) * 65536.0));
         if (d < 0) {
             DY = -DY;
         }
         const int DX = static_cast<int>(xm::round(
-            65536.0 * xside * (focusC + (cameraDZ - near)) / focusC));
+            65536.0 * xside * (focusC + (cameraDZ - nearSigned)) / focusC));
 
         // The row endpoints on the ground, 16.16 cells (viewV2D:2096-2099).
         const int xxLeft = x0 + static_cast<int>(

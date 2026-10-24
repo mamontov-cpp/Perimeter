@@ -552,9 +552,22 @@ MainWindow::MainWindow(QWidget *parent)
 
     buildMenuBar();
     buildViewToolbar();
+    addToolBarBreak();
     buildBrushToolbar();
     buildStatusBar();
     buildViewport();
+
+    // The toggle/spinbox states were set before the viewport existed — push
+    // them now (they reach the renderer when a world is bound).
+    if (viewport_) {
+        if (actDimGeo_) {
+            viewport_->setGeoDimmed(actDimGeo_->isChecked());
+        }
+        if (gridStepWSpin_ && gridStepHSpin_) {
+            viewport_->setGridStep(gridStepWSpin_->value(),
+                                   gridStepHSpin_->value());
+        }
+    }
 
     // The viewport was built silently — no camera signal has fired yet, so
     // fill the readout with the actual 2D zoom state instead of leaving it
@@ -1066,11 +1079,29 @@ void MainWindow::buildViewMenu(QMenuBar *menuBar)
     actGrid_ = create();
     actGrid_->setText(tr("&Grid"));
     actGrid_->setCheckable(true);
-    actGrid_->setChecked(true);
+    actGrid_->setChecked(false);
     actGrid_->setShortcut(QKeySequence(Qt::Key_G));
     connect(actGrid_, &QAction::toggled, this, [this](bool checked) {
         if (viewport_) {
             viewport_->setGridVisible(checked);
+        }
+    });
+
+    // In-game look: the game dims the un-terraformed geo surface to shades
+    // of grey; the editor renders full palette colors by default. This
+    // toggle switches the composite view (2D raster + smooth 3D) to the
+    // dimmed game look and back.
+    actDimGeo_ = create();
+    actDimGeo_->setText(tr("Dim &Geo Layer (Game Look)"));
+    actDimGeo_->setToolTip(
+        tr("Render cells without a dam as darkened shades of grey, like the "
+           "game shows the un-terraformed surface (2D view and smooth 3D; "
+           "the dam areas keep their colors)."));
+    actDimGeo_->setCheckable(true);
+    actDimGeo_->setChecked(true);
+    connect(actDimGeo_, &QAction::toggled, this, [this](bool checked) {
+        if (viewport_) {
+            viewport_->setGeoDimmed(checked);
         }
     });
 
@@ -1094,6 +1125,24 @@ void MainWindow::buildViewMenu(QMenuBar *menuBar)
     actView3D_->setCheckable(true);
     actView3D_->setShortcut(QKeySequence(Qt::Key_F9));
     connect(actView3D_, &QAction::triggered, this, &MainWindow::onActionToggle3D);
+
+    // Freeze-dam 3D scroll: the world repeats infinitely, but with the dam
+    // frozen only the geo layer scrolls — the repeats render geo-only, so
+    // the dam stays in its single original place.
+    actFreezeDam_ = create();
+    actFreezeDam_->setText(tr("&Freeze Dam Layer (3D Scroll)"));
+    actFreezeDam_->setToolTip(
+        tr("The 3D world repeats infinitely when scrolling. With the dam "
+           "frozen, only the geo layer repeats — the dam stays in its one "
+           "original place, which makes the real map edge easy to spot. "
+           "Smooth renderer only."));
+    actFreezeDam_->setCheckable(true);
+    actFreezeDam_->setChecked(false);
+    connect(actFreezeDam_, &QAction::toggled, this, [this](bool checked) {
+        if (viewport_) {
+            viewport_->setDamFrozen(checked);
+        }
+    });
 
     // ------------------------------------------------------------------
     // Renderer style: chunky (pixel-exact) vs smooth (bilinear, the
@@ -1226,9 +1275,37 @@ void MainWindow::buildViewToolbar()
 
     bar->addSeparator();
     bar->addAction(actGrid_);
+    bar->addAction(actDimGeo_);
+    // Editable grid cell size (map cells): the steps of the grid overlay in
+    // the 2D lines and the 3D surface dots. Defaults to Terra's kmGrid (4).
+    gridStepWSpin_ = new QSpinBox(bar);
+    gridStepWSpin_->setRange(1, 1024);
+    gridStepWSpin_->setValue(128);
+    gridStepWSpin_->setSuffix(tr(" c"));
+    gridStepWSpin_->setToolTip(
+        tr("Grid cell width in map cells (the horizontal line spacing of "
+           "the grid overlay, 2D and 3D)."));
+    gridStepHSpin_ = new QSpinBox(bar);
+    gridStepHSpin_->setRange(1, 1024);
+    gridStepHSpin_->setValue(128);
+    gridStepHSpin_->setSuffix(tr(" c"));
+    gridStepHSpin_->setToolTip(
+        tr("Grid cell height in map cells (the vertical line spacing of "
+           "the grid overlay, 2D and 3D)."));
+    const auto pushGridStep = [this](int) {
+        if (viewport_) {
+            viewport_->setGridStep(gridStepWSpin_->value(),
+                                   gridStepHSpin_->value());
+        }
+    };
+    connect(gridStepWSpin_, &QSpinBox::valueChanged, this, pushGridStep);
+    connect(gridStepHSpin_, &QSpinBox::valueChanged, this, pushGridStep);
+    bar->addWidget(gridStepWSpin_);
+    bar->addWidget(gridStepHSpin_);
     bar->addAction(actZoomToFit_);
     bar->addSeparator();
     bar->addAction(actView3D_);
+    bar->addAction(actFreezeDam_);
     bar->addAction(actChunkyRender_);
     bar->addAction(actSmoothRender_);
     bar->addSeparator();
@@ -2250,13 +2327,21 @@ void MainWindow::updateActionStates()
         actClearUndoHistory_->setEnabled(worldLoaded);
     }
     // View actions make sense only when there is something to look at.
-    for (QAction *action : {actZoomToFit_, actView3D_, actRotateLeft_,
+    for (QAction *action : {actZoomToFit_, actView3D_, actDimGeo_,
+                            actFreezeDam_, actRotateLeft_,
                             actRotateRight_, actTiltUp_, actTiltDown_,
                             actLiftUp_, actLiftDown_, actZoomIn_,
                             actZoomOut_, actResetView_}) {
         if (action) {
             action->setEnabled(worldLoaded);
         }
+    }
+    // The grid cell size drives the grid overlay — needs a world too.
+    if (gridStepWSpin_) {
+        gridStepWSpin_->setEnabled(worldLoaded);
+    }
+    if (gridStepHSpin_) {
+        gridStepHSpin_->setEnabled(worldLoaded);
     }
     // T3.1/T4.2 — the editor interaction mode: navigation works everywhere,
     // painting and picking need a world.

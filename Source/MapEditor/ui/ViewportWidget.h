@@ -278,6 +278,25 @@ public:
     void setGridVisible(bool visible);
     bool isGridVisible() const { return gridVisible_; }
 
+    /// Grid cell size in map cells — the editable steps of the grid overlay
+    /// (both 2D lines and the 3D surface overlay draw them). Clamped to
+    /// [1, 1024]; the defaults are Terra's own kmGrid step (4).
+    void setGridStep(int cellsX, int cellsY);
+    int gridStepX() const { return gridStepX_; }
+    int gridStepY() const { return gridStepY_; }
+
+    /// The in-game look: cells without a dam are dimmed to grey shades in
+    /// the 2D raster and the smooth 3D pyramid (game-like contrast between
+    /// the terraformed dam areas and the raw geo). Viewport-only.
+    void setGeoDimmed(bool dimmed);
+    bool isGeoDimmed() const { return geoDimmed_; }
+
+    /// Freeze-dam 3D scroll: the torus repeats render geo-only, so only the
+    /// geo layer scrolls while the dam stays in its single original place
+    /// (see View3DRenderer::setDamFrozen). Smooth 3D style only.
+    void setDamFrozen(bool frozen);
+    bool isDamFrozen() const { return damFrozen_; }
+
     void setMarkers(const std::vector<MapMarker> &markers);
     const std::vector<MapMarker> &markers() const { return markers_; }
 
@@ -342,6 +361,10 @@ protected:
 private:
     void updateFitScale();
     void clampZoom();
+
+    /// Push geo dimming + the centred 3D look-at into a freshly bound
+    /// renderer (called from setSession/reloadWorld after bindWorld()).
+    void applyViewportSettings();
 
     void drawBaseRaster(QPainter &painter);
     void draw3DRaster(QPainter &painter);
@@ -440,7 +463,12 @@ private:
     BrushPreviewShape brushShape_ = BrushPreviewShape::Circle;
     int brushRadius_ = kFineGridCell;
     bool brushPreviewVisible_ = false;
-    bool gridVisible_ = true;
+    bool gridVisible_ = false;
+    /// Editable grid cell size in map cells (kFineGridCell = Terra's kmGrid).
+    int gridStepX_ = kFineGridCell;
+    int gridStepY_ = kFineGridCell;
+    bool geoDimmed_ = false;
+    bool damFrozen_ = false;
 
     QPoint cursorCell_{-1, -1};
     QPoint lastCursorCell_{-1, -1};
@@ -457,9 +485,8 @@ private:
     std::vector<MapMarker> markers_;
     std::vector<SpawnPoint> spawns_;
 
-    /// Grid steps in map cells: 1 << kmGrid and 1 << kmGridChA (VMAP.h:89,121).
+    /// Default grid step in map cells: 1 << kmGrid (VMAP.h:89).
     static constexpr int kFineGridCell = 4;
-    static constexpr int kCoarseGridCell = 64;
     /// Screen pixels a grid line must occupy before it is worth drawing.
     static constexpr double kMinGridSpacingPx = 4.0;
     /// Margin kept around the map when fitting.
