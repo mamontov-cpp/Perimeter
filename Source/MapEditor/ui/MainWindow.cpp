@@ -542,6 +542,10 @@ MainWindow::MainWindow(QWidget *parent)
     buildStatusBar();
     buildViewport();
 
+    // The viewport was built silently — no camera signal has fired yet, so
+    // fill the readout with the actual 2D zoom state instead of leaving it
+    // blank until the first pan/zoom.
+    updateViewReadout();
     updateStatusBar();
 }
 
@@ -754,10 +758,21 @@ void MainWindow::onWorldLoaded()
                                         : QRect());
     }
     // Rebuild the palette panel grids (T4.1) — the palette belongs to the
-    // newly loaded world.
+    // newly loaded world. setSession() resets the swatch selection, so push
+    // the brush state back in: the highlighted entry must keep showing the
+    // color the brush will paint.
     if (palettePanel_ && session_) {
         palettePanel_->setSession(session_);
+        const MapEditor::BrushParams &params = brushTool_->params();
+        palettePanel_->selectIndex(params.colorIndex,
+                                   params.mode == MapEditor::BrushMode::Dam);
     }
+    // The brush-dependent controls (color swatch, spinboxes, cursor preview)
+    // were only partially initialized before the world existed — re-read the
+    // tool state now that the palettes are available.
+    syncBrushControls();
+    // The camera readout has never fired its signal yet on a fresh session.
+    updateViewReadout();
     // The title carries the world name (also after "Save As", which
     // rebinds the session onto the renamed world and lands here).
     updateWindowTitle();
@@ -776,6 +791,9 @@ void MainWindow::onWorldUnload()
     if (palettePanel_ && session_) {
         palettePanel_->setSession(session_);
     }
+    // The brush controls lose their world-bound state (color swatch RGB,
+    // palette selection) — re-read the tool so nothing stale stays on screen.
+    syncBrushControls();
     updateWindowTitle();
     updateStatusBar();
 }
@@ -1642,8 +1660,6 @@ void MainWindow::syncBrushControls()
 
     if (brushLevelSpin_) {
         // "Level to Height" is the only consumer of the spinbox value.
-        brushLevelSpin_->setEnabled(
-            params.effect == MapEditor::BrushEffect::AlignVariableH);
         if (brushLevelSpin_->value() != params.heightLevel) {
             brushLevelSpin_->blockSignals(true);
             brushLevelSpin_->setValue(params.heightLevel);
@@ -1654,9 +1670,6 @@ void MainWindow::syncBrushControls()
     // T3.1 — the stamp form drives the cursor preview silhouette; T4.2 — the
     // eyedropper is a point operation, the radius then does not matter.
     if (brushRadiusSpin_) {
-        brushRadiusSpin_->setEnabled(
-            params.effect != MapEditor::BrushEffect::ImageBrush &&
-            params.effect != MapEditor::BrushEffect::PickColor);
         if (brushRadiusSpin_->value() != params.radius) {
             brushRadiusSpin_->blockSignals(true);
             brushRadiusSpin_->setValue(params.radius);
@@ -1672,9 +1685,6 @@ void MainWindow::syncBrushControls()
     // T3.3/T4.2 — the color index spinbox paints (SetColor) and displays the
     // last sampled pixel (PickColor).
     if (brushColorIndexSpin_) {
-        brushColorIndexSpin_->setEnabled(
-            params.effect == MapEditor::BrushEffect::SetColor ||
-            params.effect == MapEditor::BrushEffect::PickColor);
         if (brushColorIndexSpin_->value() != params.colorIndex) {
             brushColorIndexSpin_->blockSignals(true);
             brushColorIndexSpin_->setValue(params.colorIndex);
@@ -1704,6 +1714,19 @@ void MainWindow::syncBrushControls()
             previewRadius);
     }
 
+    // Enabled/disabled states depend on the effect AND on the session state
+    // (a world must be loaded) — updateActionStates() is the single source
+    // of truth for both.
+    updateActionStates();
+
+    // The palette panel highlight follows the brush: the entry the brush
+    // paints with, in the grid of the brush's current layer. (selectIndex
+    // only restyles swatches — no feedback loop into the brush.)
+    if (palettePanel_) {
+        palettePanel_->selectIndex(
+            params.colorIndex, params.mode == MapEditor::BrushMode::Dam);
+    }
+
     syncColorControls();
 }
 
@@ -1716,7 +1739,14 @@ void MainWindow::syncColorControls()
     // Build the color swatch from the palette via the session helper.
     // The colorIndex is a SurBuf value: it indexes the palette of the
     // brush's current layer (T4.1 model, docs/architecture.md §5.13).
-    if (session_ && session_->isWorldLoaded()) {
+    if (!session_ || !session_->isWorldLoaded()) {
+        // No palette to resolve the index through — drop any color left
+        // over from a previously loaded world instead of keeping it stale.
+        brushColorSwatch_->setStyleSheet(
+            QStringLiteral("QLabel { border: 1px solid #808080; }"));
+        return;
+    }
+    {
         const int idx = brushColorIndexSpin_->value();
         const bool dam = brushTool_->params().mode == MapEditor::BrushMode::Dam;
         const unsigned int rgb =
