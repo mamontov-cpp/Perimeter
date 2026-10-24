@@ -374,7 +374,11 @@ bool BrushTool::applyMask(const BrushMask& absoluteMask, const BrushParams& para
     const int x1 = std::min(mapW - 1, bxEnd + 1);
     const int y1 = std::min(mapH - 1, byEnd + 1);
     vMap.recalcArea2Grid(x0, y0, x1, y1);
-    vMap.regRender(x0, y0, x1, y1);
+    // The trail-aware wrapper (see EditorSession::regRenderWithShadowTrail):
+    // the newly created shadow west of a raised/lowered stamp is rendered by
+    // RenderStr beyond the dirty rect, so the rect grows over the shadow
+    // trail and the viewport cache repaints those cells in the same frame.
+    session_.regRenderWithShadowTrail(x0, y0, x1, y1);
 
     return true;
 }
@@ -411,20 +415,67 @@ int applyHardness(int off, int dV)
     return (dV * (hardness << hardness)) / 24;
 }
 
-/// ChangeHeight in Geo mode: VxGBuf only, dam-capped raise.
+/// ChangeHeight in Geo mode.
+///
+/// Dam-free cells drive VxGBuf only (Terra's geo-branch write order:
+/// SurBuf = GetGeoType, whole voxel into VxGBuf, fraction bits into AtrBuf).
+///
+/// Dam cells must never rewrite the dam layer's surface state while moving
+/// the geo under it:
+///   * SurBuf stays untouched — it is the material of the *top* layer (the
+///     dam); GetGeoType on a dam cell would repaint the dam in ground
+///     texture, which read like the raised geo was drawn on top of the dam.
+///   * AtrBuf stays untouched on a lower — the 3 fraction bits are shared
+///     between both layers and describe the top surface, so storing the
+///     lowered geo's remainder there visibly shifted the dam top.
+///   * A raise lifts the dam together with the geo ("dam >= geo" moves up
+///     as a unit): the geo part stays below the dam, the dam part rises by
+///     the same delta and the dam thickness is preserved. Because both
+///     layer tops share the same fraction, shifting both by the same dV
+///     keeps every remainder consistent.
+///   * A lower is the exact inverse: both layers shift down by dV, so a
+///     raise+lower pair with the same parameters restores the original
+///     state byte-exact (the dam thickness is preserved either way).
 void geoHeightChange(int off, int dV)
 {
     dV = applyHardness(off, dV);
-    const unsigned char fraction = vMap.AtrBuf[off] & VX_FRACTION_MASK;
-    const int v = (static_cast<int>(vMap.VxGBuf[off]) << VX_FRACTION) +
-                  fraction + dV;
-    const int ceiling = vMap.VxDBuf[off] != 0
-        ? (static_cast<int>(vMap.VxDBuf[off]) << VX_FRACTION) + fraction
-        : MAX_VX_HEIGHT;
-    const int clamped = std::clamp(v, MIN_VX_HEIGHT, ceiling);
-    vMap.SurBuf[off] = vMap.GetGeoType(off, clamped);
-    vMap.VxGBuf[off] = static_cast<unsigned char>(clamped >> VX_FRACTION);
-    vMap.AtrBuf[off] = static_cast<unsigned char>(clamped & VX_FRACTION_MASK);
+    const int fraction = vMap.AtrBuf[off] & VX_FRACTION_MASK;
+    const int geoTop = (static_cast<int>(vMap.VxGBuf[off]) << VX_FRACTION) +
+                       fraction;
+    const int damTop = (static_cast<int>(vMap.VxDBuf[off]) << VX_FRACTION) +
+                       fraction;
+
+    if (vMap.VxDBuf[off] == 0) {
+        // Dam-free cell: the geo is the surface — full precision write.
+        const int clamped = std::clamp(geoTop + dV, MIN_VX_HEIGHT, MAX_VX_HEIGHT);
+        vMap.SurBuf[off] = vMap.GetGeoType(off, clamped);
+        vMap.VxGBuf[off] = static_cast<unsigned char>(clamped >> VX_FRACTION);
+        vMap.AtrBuf[off] = static_cast<unsigned char>(clamped & VX_FRACTION_MASK);
+        return;
+    }
+
+    if (dV >= 0) {
+        // Raise: geo + dam slide up together, the dam stays on top. A
+        // pre-existing geo height above the dam (corrupt state) is capped.
+        const int newDam = std::min(damTop + dV, MAX_VX_HEIGHT);
+        const int newGeo = std::min(geoTop + dV, newDam);
+        vMap.VxDBuf[off] = static_cast<unsigned char>(newDam >> VX_FRACTION);
+        vMap.VxGBuf[off] = static_cast<unsigned char>(newGeo >> VX_FRACTION);
+        // Same dV shift on both tops keeps the shared fraction exact.
+        vMap.AtrBuf[off] = static_cast<unsigned char>(newDam & VX_FRACTION_MASK);
+    } else {
+        // Lower: the exact inverse of the raise — geo + dam slide down
+        // together, so a raise+lower pair with the same parameters
+        // restores the original state byte-exact and the dam stays on top
+        // (a pre-existing geo height above the dam is capped at the new
+        // dam top, like in the raise branch).
+        const int newDam = std::max(damTop + dV, MIN_VX_HEIGHT);
+        const int newGeo = std::min(std::max(geoTop + dV, MIN_VX_HEIGHT), newDam);
+        vMap.VxDBuf[off] = static_cast<unsigned char>(newDam >> VX_FRACTION);
+        vMap.VxGBuf[off] = static_cast<unsigned char>(newGeo >> VX_FRACTION);
+        // Same dV shift on both tops keeps the shared fraction exact.
+        vMap.AtrBuf[off] = static_cast<unsigned char>(newDam & VX_FRACTION_MASK);
+    }
 }
 
 /// ChangeHeight in Dam mode: seed the dam layer when needed, then let Terra's

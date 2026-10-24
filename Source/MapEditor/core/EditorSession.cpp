@@ -599,10 +599,41 @@ void swapSnapshotWithBuffers(UndoAreaSnapshot& snap)
             t = vMap.SurBuf[off]; vMap.SurBuf[off] = snap.sur[cnt]; snap.sur[cnt] = t;
         }
     }
-    vMap.regRender(snap.x, snap.y, snap.x + snap.sx, snap.y + snap.sy);
 }
 
 } // namespace
+
+void EditorSession::regRenderWithShadowTrail(int lowX, int lowY, int hiX, int hiY)
+{
+    if (!isWorldLoaded()) {
+        return;
+    }
+    const int mapW = static_cast<int>(vMap.H_SIZE);
+    const int mapH = static_cast<int>(vMap.V_SIZE);
+    const int yBeg = std::max(0, std::min(lowY, mapH - 1));
+    const int yEnd = std::max(0, std::min(hiY, mapH - 1));
+    const int xBeg = std::max(0, std::min(lowX, mapW - 1));
+
+    // Walk the At_SHADOW (== At_SHADOWV, 0x20) trail west of the rect, row
+    // by row: RenderStr flags every cell it rendered in shadow, so the trail
+    // marks exactly the cells the incremental lighting touched outside the
+    // previously rendered area (stale after the terrain dropped under them).
+    int trailX = xBeg;
+    for (int y = yBeg; y <= yEnd; ++y) {
+        const int rowBase = y * mapW;
+        for (int x = xBeg - 1; x >= 0; --x) {
+            if (!(vMap.AtrBuf[rowBase + x] & At_SHADOW)) {
+                // One unflagged cell past the trail is rendered too —
+                // RenderStr seeds its shading from the row ahead.
+                trailX = std::min(trailX, x);
+                break;
+            }
+            trailX = std::min(trailX, x);
+        }
+    }
+
+    vMap.regRender(trailX, lowY, hiX, hiY);
+}
 
 void EditorSession::recordUndoArea(int x, int y, int width, int height)
 {
@@ -686,6 +717,8 @@ bool EditorSession::undo()
     }
     swapSnapshotWithBuffers(undoStack_[undoPos_ - 1]);
     --undoPos_;
+    const UndoAreaSnapshot& snap = undoStack_[undoPos_];
+    regRenderWithShadowTrail(snap.x, snap.y, snap.x + snap.sx, snap.y + snap.sy);
     markModifiedAgainstSavedState();
     printf("EditorSession: undo (stack position %zu/%zu)\n",
            undoPos_, undoStack_.size());
@@ -698,7 +731,9 @@ bool EditorSession::redo()
         return false;
     }
     swapSnapshotWithBuffers(undoStack_[undoPos_]);
+    const UndoAreaSnapshot& snap = undoStack_[undoPos_];
     ++undoPos_;
+    regRenderWithShadowTrail(snap.x, snap.y, snap.x + snap.sx, snap.y + snap.sy);
     markModifiedAgainstSavedState();
     printf("EditorSession: redo (stack position %zu/%zu)\n",
            undoPos_, undoStack_.size());

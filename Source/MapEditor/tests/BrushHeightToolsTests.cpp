@@ -13,12 +13,15 @@
 //   * each align application is one undo entry (byte-exact restore).
 //
 // Test 60 (modes):
-//   * Geo mode raises VxGBuf only: VxDBuf stays 0, SurBuf re-derives via
-//     GetGeoType, AtrBuf carries the fraction bits;
+//   * Geo mode raises VxGBuf only on dam-free cells: VxDBuf stays 0, SurBuf
+//     re-derives via GetGeoType, AtrBuf carries the fraction bits;
 //   * Dam mode raises a dam-free cell by seeding VxDBuf = geo height and
 //     SurBuf = veryLightDam (the T2TE_PLOTTING_VERY_LIGHT_DAM writes) and
 //     removes the dam when the surface is lowered to the geo height;
-//   * Geo mode over an existing dam is capped by the dam height (dam >= geo);
+//   * Geo mode over an existing dam moves the column up as a unit: geo and
+//     dam rise by the same delta (geo stays below, the dam part rises) and
+//     the dam's top-layer state (VxDBuf fraction bits, SurBuf) keeps its
+//     bytes; a lower digs the geo only, the dam top keeps its height;
 //   * undo restores the stamp regions byte-exact (LIFO).
 //
 // Runs after the world round-trip (its temporary world copy is reused).
@@ -709,8 +712,11 @@ bool runBrushModeTests()
     }
 
     // ------------------------------------------------------------------
-    // 2.3: C — Geo mode over an existing (crafted) dam is capped by the
-    // dam height; the dam buffer itself is untouched.
+    // 2.3: C — Geo mode over an existing (crafted) dam moves the column up
+    // as a unit: geo and dam rise by the same delta, the geo stays below,
+    // the dam part rises, and the dam's top-layer state keeps its bytes
+    // (SurBuf and the fraction bits are dam-owned). A Geo lower digs the
+    // geo only: the dam top and its fraction stay byte-exact.
     // ------------------------------------------------------------------
     {
         params.mode = BrushMode::Geo;
@@ -720,7 +726,6 @@ bool runBrushModeTests()
 
         const int stampX = cx - 8;
         const int stampY = cy + 8;
-        const StampPre preC = StampPre::read(stampX, stampY, radius);
 
         // Craft a dam two voxels above the geo on every mask cell. The
         // crafting happens BEFORE the brush snapshot inside applyStamp, so
@@ -739,7 +744,7 @@ bool runBrushModeTests()
         const StampPre crafted = StampPre::read(stampX, stampY, radius);
 
         TEST_REQUIRE(brush.applyStamp(stampX, stampY, params),
-                     "the capped Geo raise stamp was refused.");
+                     "the Geo raise over the dam was refused.");
         for (int dy = -radius; dy <= radius; ++dy) {
             for (int dx = -radius; dx <= radius; ++dx) {
                 if (!maskCell(mask, dx, dy)) {
@@ -747,31 +752,65 @@ bool runBrushModeTests()
                 }
                 const int px = stampX + dx;
                 const int py = stampY + dy;
-                const CellState& pre = preC.at(dx, dy);
+                const CellState& pre = crafted.at(dx, dy);
                 const CellState post = CellState::read(px, py);
-                const int ceiling =
-                    ((static_cast<int>(pre.geo) + 2) << VX_FRACTION) |
-                    (pre.atr & VX_FRACTION_MASK);
-                TEST_REQUIRE(ceiling < pre.height + delta,
-                             "the crafted dam must be lower than the "
-                             "uncapped raise would go.");
-                TEST_REQUIRE(post.height == ceiling,
-                             "Geo raise over a dam must cap at the dam "
-                             "height: expected %d, got %d.", ceiling,
-                             post.height);
+                const int expected = pre.height + delta;
+                TEST_REQUIRE(post.height == expected,
+                             "Geo raise over a dam must lift the dam top "
+                             "with the geo: expected %d, got %d.",
+                             expected, post.height);
                 TEST_REQUIRE(post.dam ==
-                                 static_cast<unsigned char>(pre.geo + 2),
-                             "the dam buffer must stay untouched in Geo "
-                             "mode.");
-                TEST_REQUIRE(post.sur == vMap.GetGeoType(mapOffset(px, py),
-                                                        ceiling),
-                             "SurBuf must reflect the capped geo height.");
+                                 static_cast<unsigned char>(pre.dam + (delta >> VX_FRACTION)),
+                             "the dam layer must rise by the same delta as "
+                             "the geo.");
+                TEST_REQUIRE(post.geo ==
+                                 static_cast<unsigned char>(pre.geo + (delta >> VX_FRACTION)),
+                             "the geo must rise under the dam and stay "
+                             "below it.");
+                TEST_REQUIRE(post.height > (static_cast<int>(post.geo) << VX_FRACTION),
+                             "the dam must stay on top of the raised geo.");
+                TEST_REQUIRE(post.sur == pre.sur,
+                             "the dam surface (SurBuf) must keep its "
+                             "material — GetGeoType on a dam cell would "
+                             "repaint the dam in ground texture.");
+                TEST_REQUIRE(post.atr == pre.atr,
+                             "the fraction bits belong to the dam top and "
+                             "must stay byte-exact on a whole-voxel raise.");
             }
         }
-        std::printf("[PASS] Geo raise is capped by the dam height.\n");
+        std::printf("[PASS] Geo raise lifts geo+dam as one column, dam state intact.\n");
 
-        TEST_REQUIRE(session.undo(),
-                     "the capped stamp must be one undo entry.");
+        // 2.3b: lower with the SAME parameters must undo the raise in the
+        // data (not only via the undo stack): geo + dam shift down by the
+        // same delta and the crafted state returns byte-exact.
+        params.direction = -1;
+        TEST_REQUIRE(brush.applyStamp(stampX, stampY, params),
+                     "the Geo lower stamp over the dam was refused.");
+        for (int dy = -radius; dy <= radius; ++dy) {
+            for (int dx = -radius; dx <= radius; ++dx) {
+                if (!maskCell(mask, dx, dy)) {
+                    continue;
+                }
+                const CellState& pre = crafted.at(dx, dy);
+                const CellState post =
+                    CellState::read(stampX + dx, stampY + dy);
+                TEST_REQUIRE(post.equals(pre),
+                             "raise+lower with the same parameters must "
+                             "restore the dam cell byte-exact at stamp "
+                             "offset (%d,%d): want G=%d D=%d A=%02X S=%d "
+                             "h=%d | got G=%d D=%d A=%02X S=%d h=%d.",
+                             dx, dy,
+                             pre.geo, pre.dam, pre.atr, pre.sur, pre.height,
+                             post.geo, post.dam, post.atr, post.sur,
+                             post.height);
+            }
+        }
+        std::printf("[PASS] Geo raise+lower restores the dam column byte-exact.\n");
+
+        // Undo twice (LIFO): the lower entry first, then the raise entry —
+        // both must land back on the crafted state.
+        TEST_REQUIRE(session.undo() && session.undo(),
+                     "the raised/lowered stamps must be two undo entries.");
         TEST_REQUIRE(checkUndoRestores(crafted, stampX, stampY),
                      "undo must restore the crafted-dam state byte-exact.");
     }

@@ -199,6 +199,18 @@ public:
     /// Return true if there is at least one operation to redo.
     bool canRedo() const;
 
+    /// regRender() wrapper used for every world edit/restore in the editor:
+    /// Terra's RenderStr renders the shadow continuation westward beyond a
+    /// dirty rect on its own (while prevShadow persists, LAND.cpp:1469), but
+    /// those extra cells never enter changedAreas and are never re-rendered
+    /// when the terrain drops back — undoing a raise leaves stale dark
+    /// lighting (At_SHADOW-flagged) there, which shows as black stripes in
+    /// both 3D views (they read RnrBuf directly). This helper walks the same
+    /// At_SHADOW trail west of the rect per row and marks the trail region
+    /// for re-render as well, so the stale shadow cells get recomputed and
+    /// repainted together with the edited area.
+    void regRenderWithShadowTrail(int lowX, int lowY, int hiX, int hiY);
+
     // -----------------------------------------------------------------------
     // T3.3 — SurBuf / palette read helpers for the Qt UI (eyedropper,
     // color swatch). These avoid pulling terra.h into Qt translation units.
