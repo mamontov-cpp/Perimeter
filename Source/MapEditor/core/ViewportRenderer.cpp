@@ -27,17 +27,22 @@ bool worldBuffersPresent()
 }
 
 /// vrtMap::getColor32() (VMAP.h:648) with an explicit lighting index instead
-/// of reading RnrBuf directly. Same branches — At_ZEROPLAST via
-/// SurZP2Col32, At_LEVELED via the Tex2Col32/Sur2Col32 blend, plain terrain
-/// via Sur2Col32 — so the Geo filter can force the geo-palette half of the
-/// tables (Rnr & 0x7F) and show the layer that lies under a dam.
+/// of reading RnrBuf directly. Same branches — At_LEVELED (zeroplast
+/// included) via the Tex2Col32/Sur2Col32 blend, plain terrain via Sur2Col32
+/// — so the Geo filter can force the geo-palette half of the tables (Rnr &
+/// 0x7F) and show the layer that lies under a dam.
+///
+/// Deliberately NOT routing At_ZEROPLAST through SurZP2Col32 (the blue
+/// zero-layer tint): in the game that tint comes from the 3D scene's
+/// per-player zeroplast color (terMapPoint->SetZeroplastColor) and shows
+/// only inside a powered core's field. The editor has no cores, so the
+/// cells keep their own color with the leveledSurfaceTexture layered on
+/// top — the game's unpowered look (docs/context.md). The zeroplast marking
+/// itself stays visible through the zeroplast overlay.
 unsigned int color32WithLighting(int off, unsigned int lighting)
 {
     const unsigned int atr = vMap.AtrBuf[off];
     if (atr & At_LEVELED) {
-        if ((atr & At_ZPMASK) == At_ZEROPLAST) {
-            return vMap.SurZP2Col32[lighting][vMap.SurBuf[off]];
-        }
         unsigned int texOff = off & vMap.LvdTex_clip_mask_x;
         texOff |= (off >> vMap.LvdTex_SPEC_SHIFT_X) & vMap.LvdTex_spec_clip_mask_y;
         const unsigned int mask = 0x00FEFEFF;
@@ -154,12 +159,13 @@ std::uint32_t ViewportRenderer::colorAt(int x, int y) const
         // bit 7 recovers the exact geo color even under a dam.
         return kOpaque | color32WithLighting(off, vMap.RnrBuf[off] & 0x7Fu);
     case LayerFilter::Dam: {
-        const unsigned int col = vMap.getColor32(off);
+        const unsigned int col =
+            color32WithLighting(off, vMap.RnrBuf[off]);
         return vMap.VxDBuf[off] != 0 ? (kOpaque | col) : dimColor(col);
     }
     case LayerFilter::Composite:
     default:
-        return kOpaque | vMap.getColor32(off);
+        return kOpaque | color32WithLighting(off, vMap.RnrBuf[off]);
     }
 }
 
@@ -281,7 +287,7 @@ std::uint32_t ViewportRenderer::mipBaseColor(int x, int y)
     // LayerFilter::Composite branch of colorAt(), deliberately not filtered —
     // the pyramid is view data, not editor-layer data.
     const int off = vMap.offsetBuf(x, y);
-    return kOpaque | vMap.getColor32(off);
+    return kOpaque | color32WithLighting(off, vMap.RnrBuf[off]);
 }
 
 unsigned char ViewportRenderer::mipEffectiveHeight(int x, int y)

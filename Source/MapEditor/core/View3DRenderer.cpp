@@ -124,11 +124,39 @@ void View3DRenderer::render(int cx, int cy)
     // implementation — it fills GRAF_BUF from (0,0).
     // Post-T3.3: Smooth style drives the mip-filtered re-render of the same
     // projection instead of Terra's point-sampled loop.
+    //
+    // Zeroplast demotion: viewV2D paints At_ZEROPLAST cells with the blue
+    // SurZP2Col tint — in the game that tint belongs to the powered core's
+    // field (the 3D scene's SetZeroplastColor), which does not exist in the
+    // editor. The zero-plastic cells are therefore temporarily demoted to
+    // plain leveled for the viewV2D passes (chunky style and the smooth
+    // fallback), so they render like every other leveled cell — own color
+    // with the leveledSurfaceTexture on top (docs/context.md). The smooth
+    // path with a bound pyramid reads the already-corrected 2D cache instead.
+    struct ZpCell { int off; unsigned char atr; };
+    std::vector<ZpCell> zeroplastCells;
+    if (vMap.AtrBuf && vMap.H_SIZE > 0 && vMap.V_SIZE > 0) {
+        const std::size_t cells =
+            static_cast<std::size_t>(vMap.H_SIZE) * vMap.V_SIZE;
+        for (std::size_t off = 0; off < cells; ++off) {
+            if ((vMap.AtrBuf[off] & At_ZPMASK) == At_ZEROPLAST) {
+                zeroplastCells.push_back({static_cast<int>(off),
+                                          vMap.AtrBuf[off]});
+                vMap.AtrBuf[off] = static_cast<unsigned char>(
+                    (vMap.AtrBuf[off] & ~At_ZPMASK) | At_LEVELED);
+            }
+        }
+    }
+
     if (smooth_) {
         renderSmooth(cx, cy);
     } else {
         vMap.viewV2D(cx, cy, width_ / 2, height_ / 2, width_ / 2, height_ / 2,
                      buffer_.data(), width_, height_);
+    }
+
+    for (const ZpCell &cell : zeroplastCells) {
+        vMap.AtrBuf[cell.off] = cell.atr;
     }
 }
 

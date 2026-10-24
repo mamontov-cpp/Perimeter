@@ -2,6 +2,8 @@
 
 #include <QMainWindow>
 
+#include "BrushTool.h"
+
 class GameDirManager;
 class QCloseEvent;
 class QAction;
@@ -209,13 +211,14 @@ private:
     // member of the brush type group; while it is selected the Brush toolbar
     // acts on the surface pixels by sampling them (editor mode Eyedropper).
     QAction *actBrushPickColor_ = nullptr;
-    // T3.4 — zeroplast brush tools.
-    QAction *actBrushPlotZP_ = nullptr;
+    // T3.4/T5 — zeroplast brushes, offered in the Dam mode only (the
+    // zeroplast belongs to the dam domain).
     QAction *actBrushEraseZP_ = nullptr;
     QAction *actBrushSoot_ = nullptr;
     QAction *actBrushVeryLightDam_ = nullptr;
-    // T3.5 — image brush type + load-image action.
-    QAction *actBrushImage_ = nullptr;
+    // T3.5 — load-image action: the loaded image becomes the stamp mask of
+    // every terrain effect (BrushParams::useImageMask) until a stamp shape
+    // is picked explicitly.
     QAction *actLoadBrushImage_ = nullptr;
     // T3.1 — brush form (stamp shape) actions: filled circle/square, the two
     // outlines and the two-point line. Exclusive group, mirrored in the
@@ -236,6 +239,13 @@ private:
     QSpinBox *brushColorIndexSpin_ = nullptr;
     // T3.3 — color swatch label showing the current color preview.
     QLabel *brushColorSwatch_ = nullptr;
+
+    // T3.5 — the image-mask scale control (percent of the loaded image
+    // size) and the un-scaled original mask: the scaled mask is recomputed
+    // from the original on every change, so rescaling never accumulates
+    // interpolation blur.
+    QSpinBox *brushMaskScaleSpin_ = nullptr;
+    MapEditor::BrushMask brushMaskOriginal_;
 
     // Toolbar readout of the current 3D camera.
     QLabel *viewReadout_ = nullptr;

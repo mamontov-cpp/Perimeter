@@ -261,8 +261,13 @@ bool prepareBrushTestSession(const char* subdirName,
 bool checkAlignStamp(const MapEditor::BrushMask& mask, int stampX, int stampY,
                      int radius, int magnitude, int target,
                      const StampPre& pre,
-                     const std::function<bool(int, int)>& skip = nullptr)
+                     const std::function<bool(int, int)>& skip = nullptr,
+                     bool markZeroPlast = false)
 {
+    // markZeroPlast — the merged Align4ZP brush additionally marks every
+    // cell that sits at the target At_ZEROPLAST (Terra's plotCircleZL);
+    // the plain AlignVariableH leaves them At_LEVELED.
+    const unsigned char reachedMark = markZeroPlast ? At_ZEROPLAST : At_LEVELED;
     for (int dy = -radius; dy <= radius; ++dy) {
         for (int dx = -radius; dx <= radius; ++dx) {
             if (!maskCell(mask, dx, dy)) {
@@ -316,9 +321,10 @@ bool checkAlignStamp(const MapEditor::BrushMask& mask, int stampX, int stampY,
                                                         expected),
                              "align must re-derive SurBuf == GetGeoType().");
                 if (expected == target) {
-                    TEST_REQUIRE((post.atr & At_ZPMASK) == At_LEVELED,
+                    TEST_REQUIRE((post.atr & At_ZPMASK) == reachedMark,
                                  "cells that reach the target must be marked "
-                                 "At_LEVELED.");
+                                 "At_LEVELED (or At_ZEROPLAST for the merged "
+                                 "zeroplast brush).");
                 } else {
                     TEST_REQUIRE((post.atr & At_ZPMASK) == 0,
                                  "cells short of the target must lose the "
@@ -335,10 +341,12 @@ bool checkAlignStamp(const MapEditor::BrushMask& mask, int stampX, int stampY,
                              "layers.", dx, dy);
                 if (before.height == target) {
                     // tVoxSetAll marks v == hAppr with At_LEVELED even when
-                    // the height itself does not move.
-                    TEST_REQUIRE((post.atr & At_ZPMASK) == At_LEVELED,
+                    // the height itself does not move (the merged zeroplast
+                    // brush marks At_ZEROPLAST instead).
+                    TEST_REQUIRE((post.atr & At_ZPMASK) == reachedMark,
                                  "a cell already at the target must be "
-                                 "marked At_LEVELED.");
+                                 "marked At_LEVELED (or At_ZEROPLAST for the "
+                                 "merged zeroplast brush).");
                 }
             }
         }
@@ -463,7 +471,8 @@ bool runBrushAlignTests()
                          mask, cx, cy, radius, magnitude, targetZP, pre,
                          [&](int dx, int dy) {
                              return dx == radius && dy == 0;
-                         }),
+                         },
+                         /*markZeroPlast=*/true),
                      "Align4ZP cell-level math failed.");
 
         TEST_REQUIRE(session.undo(), "Align4ZP undo failed.");

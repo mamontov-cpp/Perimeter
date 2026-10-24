@@ -10,6 +10,7 @@
 #include <ViewportWidget.h>
 
 #include <algorithm>
+#include <cmath>
 
 #include <QAction>
 #include <QActionGroup>
@@ -387,32 +388,6 @@ QIcon makeEyedropperIcon()
     return QIcon(pm);
 }
 
-/// T3.5 — image brush icon: a small picture frame with a landscape.
-QIcon makeImageBrushIcon()
-{
-    QPixmap pm(22, 22);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing);
-    p.setPen(QPen(kInk, 1.8));
-    p.setBrush(Qt::NoBrush);
-    p.drawRect(QRectF(3.0, 4.0, 16.0, 14.0));
-    // Miniature mountain inside.
-    p.setPen(Qt::NoPen);
-    p.setBrush(QColor(60, 120, 60));
-    QPolygonF mtn;
-    mtn << QPointF(5.0, 16.0) << QPointF(10.0, 8.0) << QPointF(14.0, 16.0);
-    p.drawPolygon(mtn);
-    p.setBrush(QColor(100, 160, 100));
-    QPolygonF mtn2;
-    mtn2 << QPointF(12.0, 16.0) << QPointF(16.0, 10.0) << QPointF(18.0, 16.0);
-    p.drawPolygon(mtn2);
-    // Sun circle.
-    p.setBrush(QColor(220, 180, 50));
-    p.drawEllipse(QRectF(5.5, 5.5, 4.0, 4.0));
-    return QIcon(pm);
-}
-
 /// T3.5 — load-image action icon: folder with import arrow.
 QIcon makeLoadImageIcon()
 {
@@ -480,7 +455,11 @@ QIcon makeShapeIcon(MapEditor::BrushShape shape)
     return QIcon(pm);
 }
 
-/// T3.5: Convert a QImage to a BrushMask (pixel alpha/luminance → influence).
+/// T3.5: Convert a QImage to a BrushMask (pixel alpha → influence).
+/// Transparent pixels (alpha = 0) carry no effect; non-transparent ones
+/// influence the brush proportionally to their alpha (anti-aliased edges
+/// get a partial effect) — the color/luminance is deliberately ignored,
+/// the mask is about the shape, not the picture's brightness.
 MapEditor::BrushMask imageToBrushMask(const QImage &img)
 {
     MapEditor::BrushMask mask;
@@ -498,17 +477,52 @@ MapEditor::BrushMask imageToBrushMask(const QImage &img)
     for (int y = 0; y < h; ++y) {
         const QRgb *line = reinterpret_cast<const QRgb *>(fmt.constScanLine(y));
         for (int x = 0; x < w; ++x) {
-            const QRgb px = line[x];
-            const int a = qAlpha(px);
-            unsigned char inf = 0;
-            if (a > 0) {
-                const int lum = (qRed(px) * 76 + qGreen(px) * 150 + qBlue(px) * 29) / 256;
-                inf = static_cast<unsigned char>(std::min(255, (lum * a) / 255));
-            }
-            mask.influence[static_cast<std::size_t>(y) * w + x] = inf;
+            mask.influence[static_cast<std::size_t>(y) * w + x] =
+                static_cast<unsigned char>(qAlpha(line[x]));
         }
     }
     return mask;
+}
+
+/// T3.5 — scale a brush mask by `factor` (bilinear over the influence
+/// values). The result is re-centred on the stamp origin like a freshly
+/// converted image mask. Used by the mask scale control on the Brush
+/// toolbar; the source is always the un-scaled original mask, so repeated
+/// scale changes do not accumulate interpolation blur.
+MapEditor::BrushMask scaleBrushMask(const MapEditor::BrushMask &src, double factor)
+{
+    MapEditor::BrushMask dst;
+    if (src.empty() || factor <= 0.0) {
+        return dst;
+    }
+    const int w = std::max(1, static_cast<int>(std::lround(src.sx * factor)));
+    const int h = std::max(1, static_cast<int>(std::lround(src.sy * factor)));
+    dst.sx = w;
+    dst.sy = h;
+    dst.x = -(w / 2);
+    dst.y = -(h / 2);
+    dst.influence.assign(static_cast<std::size_t>(w) * h, 0);
+    for (int y = 0; y < h; ++y) {
+        // Source coordinate of the destination pixel centre (bilinear).
+        const double sy = (y + 0.5) / factor - 0.5;
+        const int y0 = std::clamp(static_cast<int>(std::floor(sy)), 0, src.sy - 1);
+        const int y1 = std::min(y0 + 1, src.sy - 1);
+        const double fy = std::clamp(sy - y0, 0.0, 1.0);
+        for (int x = 0; x < w; ++x) {
+            const double sx = (x + 0.5) / factor - 0.5;
+            const int x0 = std::clamp(static_cast<int>(std::floor(sx)), 0, src.sx - 1);
+            const int x1 = std::min(x0 + 1, src.sx - 1);
+            const double fx = std::clamp(sx - x0, 0.0, 1.0);
+            const double v =
+                src.at(x0, y0) * (1.0 - fx) * (1.0 - fy) +
+                src.at(x1, y0) * fx * (1.0 - fy) +
+                src.at(x0, y1) * (1.0 - fx) * fy +
+                src.at(x1, y1) * fx * fy;
+            dst.influence[static_cast<std::size_t>(y) * w + x] =
+                static_cast<unsigned char>(std::lround(v));
+        }
+    }
+    return dst;
 }
 
 } // namespace
@@ -983,11 +997,14 @@ void MainWindow::buildEditMenu(QMenuBar *menuBar)
 
     actUndo_ = editMenu->addAction(tr("&Undo"));
     actUndo_->setToolTip(tr("Undo the last terrain edit (Ctrl+Z)"));
+    actUndo_->setShortcut(QKeySequence::Undo);
     actUndo_->setEnabled(false);
     connect(actUndo_, &QAction::triggered, this, &MainWindow::onActionUndo);
 
     actRedo_ = editMenu->addAction(tr("&Redo"));
-    actRedo_->setToolTip(tr("Redo the last undone terrain edit (Ctrl+Y)"));
+    actRedo_->setToolTip(tr("Redo the last undone terrain edit (Ctrl+R or Ctrl+Y)"));
+    actRedo_->setShortcuts({QKeySequence(Qt::CTRL | Qt::Key_R),
+                            QKeySequence::Redo});
     actRedo_->setEnabled(false);
     connect(actRedo_, &QAction::triggered, this, &MainWindow::onActionRedo);
 
@@ -1023,12 +1040,10 @@ void MainWindow::buildEditMenu(QMenuBar *menuBar)
     brushMenu->addAction(actBrushColor_);
     brushMenu->addAction(actBrushPickColor_);
     brushMenu->addSeparator();
-    brushMenu->addAction(actBrushPlotZP_);
     brushMenu->addAction(actBrushEraseZP_);
     brushMenu->addAction(actBrushSoot_);
     brushMenu->addAction(actBrushVeryLightDam_);
     brushMenu->addSeparator();
-    brushMenu->addAction(actBrushImage_);
     brushMenu->addAction(actLoadBrushImage_);
     brushMenu->addSeparator();
     // T3.1 — the stamp form, same actions as on the Brush toolbar.
@@ -1299,9 +1314,9 @@ void MainWindow::createBrushActions()
     actBrushLevelZP_ = addType(
         makeGroundLetterIcon(QStringLiteral("Z"), kInk),
         tr("Level to Zeroplast"),
-        tr("The brush levels the terrain to the world zeroplast height. "
-           "Zeroplast-marked cells are not touched; cells reaching the "
-           "level are marked as leveled."),
+        tr("The brush levels the terrain to the world zeroplast height and "
+           "marks the reached cells as zeroplast (Dam mode only — the "
+           "zeroplast belongs to the dam domain)."),
         MapEditor::BrushEffect::Align4ZP, 1);
     actBrushLevelHeight_ = addType(
         makeGroundLetterIcon(QStringLiteral("H"), kInk),
@@ -1330,22 +1345,13 @@ void MainWindow::createBrushActions()
            "mode \"Eyedropper\" (E) as the switch."),
         MapEditor::BrushEffect::PickColor, 0);
 
-    // T3.4 — zeroplast: level to hZeroPlast + mark At_ZEROPLAST.
-    actBrushPlotZP_ = addType(
-        makeGroundLetterIcon(QStringLiteral("Z"), kAccent),
-        tr("Plot Zeroplast"),
-        tr("The brush sets the terrain height to the world zeroplast level "
-           "(hZeroPlast) and marks the cells as zeroplast. In Geo mode only "
-           "the geo layer is levelled; in Dam mode a dam layer is seeded if "
-           "needed before levelling."),
-        MapEditor::BrushEffect::PlotZeroplast, 1);
-
-    // T3.4 — erase zeroplast: remove At_ZEROPLAST / At_SOOT flags.
+    // T3.4 — erase zeroplast: remove At_ZEROPLAST / At_SOOT flags. Offered
+    // in the Dam mode only, like the zeroplast brush itself.
     actBrushEraseZP_ = addType(
         makeGroundLetterIcon(QStringLiteral("E"), kInk),
         tr("Erase Zeroplast"),
         tr("The brush removes the zeroplast and soot marks from the cells "
-           "under it, restoring them to the leveled state."),
+           "under it, restoring them to the leveled state (Dam mode only)."),
         MapEditor::BrushEffect::EraseZeroplast, 0);
 
     // T3.4 — plot soot (burn marks on the terrain).
@@ -1365,21 +1371,16 @@ void MainWindow::createBrushActions()
            "Equivalent to the game's initial dam deployment."),
          MapEditor::BrushEffect::VeryLightDam, 0);
 
-    // T3.5 — image brush: terrain editing driven by a loaded image mask.
-    actBrushImage_ = addType(
-        makeImageBrushIcon(), tr("Image Brush"),
-        tr("The brush applies a loaded image as the terrain-edit mask. "
-           "Each pixel's brightness (0..255) controls the per-cell strength "
-           "of the height change. Load an image with the \"Load Image\" "
-           "button below."),
-        MapEditor::BrushEffect::ImageBrush, 1);
-
-    // T3.5 — load brush image from file.
+    // T3.5 — load brush image from file. The loaded image becomes the stamp
+    // mask of the CURRENT brush type (raise/lower/level/... — the image
+    // pixel value is the per-cell influence) until a stamp shape is picked
+    // explicitly.
     actLoadBrushImage_ = new QAction(makeLoadImageIcon(), tr("&Load Image..."),
                                       this);
     actLoadBrushImage_->setToolTip(
-        tr("Load a TGA/PNG/BMP image as the brush mask for the Image Brush. "
-           "Pixel brightness (0..255) controls per-cell influence."));
+        tr("Load a TGA/PNG/BMP image as the brush stamp mask: the pixel "
+           "brightness (0..255) controls the per-cell influence of the "
+           "current brush type. Picking a stamp shape switches back to it."));
     connect(actLoadBrushImage_, &QAction::triggered,
             this, &MainWindow::onLoadBrushImage);
 
@@ -1395,6 +1396,16 @@ void MainWindow::createBrushActions()
         connect(action, &QAction::triggered, this, [this, mode] {
             MapEditor::BrushParams params = brushTool_->params();
             params.mode = mode;
+            // The zeroplast brushes are a Dam-mode tool (the zeroplast
+            // belongs to the dam domain) — the UI keeps them disabled in the
+            // Geo mode, so a type left active by the switch falls back to a
+            // plain raise.
+            if (mode == MapEditor::BrushMode::Geo &&
+                (params.effect == MapEditor::BrushEffect::Align4ZP ||
+                 params.effect == MapEditor::BrushEffect::EraseZeroplast)) {
+                params.effect = MapEditor::BrushEffect::ChangeHeight;
+                params.direction = 1;
+            }
             brushTool_->setParams(params);
             syncBrushControls();
         });
@@ -1415,6 +1426,8 @@ void MainWindow::createBrushActions()
         MapEditor::BrushMode::Dam);
 
     // --- Form: the stamp silhouette (T3.1 BrushShape) -----------------
+    // T3.5 — picking a shape switches the stamp geometry back from a loaded
+    // image mask to the generated shape mask (useImageMask = false).
     QActionGroup *shapeGroup = new QActionGroup(this);
     const auto addShape = [this, shapeGroup](MapEditor::BrushShape shape,
                                              const QString &text,
@@ -1426,6 +1439,7 @@ void MainWindow::createBrushActions()
         connect(action, &QAction::triggered, this, [this, shape] {
             MapEditor::BrushParams params = brushTool_->params();
             params.shape = shape;
+            params.useImageMask = false;
             brushTool_->setParams(params);
             syncBrushControls();
         });
@@ -1560,17 +1574,20 @@ void MainWindow::buildBrushToolbar()
     bar->addAction(actBrushLevelZP_);
     bar->addAction(actBrushLevelHeight_);
 
-    // Target height of "Level to Height" — whole voxels (0..255, the domain
-    // BrushTool::clampHeightLevel enforces too).
+    // The height value of the height tools — whole voxels (0..255). One
+    // control, meaning per type: the raise/lower step (per stamp at full
+    // influence) for Raise/Lower Terrain, the target height for "Level to
+    // Height" (the domain BrushTool::clampHeightLevel enforces too).
     brushLevelSpin_ = new QSpinBox(bar);
     brushLevelSpin_->setRange(0, 255);
     brushLevelSpin_->setSuffix(tr(" vox"));
-    brushLevelSpin_->setToolTip(
-        tr("Target height of the \"Level to Height\" brush (whole voxels; "
-           "1 voxel = 1/32 m)."));
     connect(brushLevelSpin_, &QSpinBox::valueChanged, this, [this](int value) {
         MapEditor::BrushParams params = brushTool_->params();
-        params.heightLevel = value;
+        if (params.effect == MapEditor::BrushEffect::AlignVariableH) {
+            params.heightLevel = value;
+        } else {
+            params.strength = MapEditor::BrushTool::clampStrength(value);
+        }
         brushTool_->setParams(params);
     });
     bar->addWidget(brushLevelSpin_);
@@ -1583,13 +1600,13 @@ void MainWindow::buildBrushToolbar()
 
     bar->addSeparator();
 
-    // T3.3 — color palette index spinbox (0..255): 0..127 for geo, 128..255
-    // for dam surface.
+    // T3.3/T4.3 — color palette index spinbox (0..255): the index into the
+    // palette of the brush's current layer (T4.1 model).
     brushColorIndexSpin_ = new QSpinBox(bar);
     brushColorIndexSpin_->setRange(0, 255);
     brushColorIndexSpin_->setToolTip(
-        tr("Palette index for the \"Paint Color\" brush (0..127 = geo, "
-           "128..255 = dam)."));
+        tr("Palette index for the \"Paint Color\" brush — an entry of the "
+           "palette of the brush's current layer (Geo or Dam)."));
     connect(brushColorIndexSpin_, &QSpinBox::valueChanged, this, [this](int value) {
         MapEditor::BrushParams params = brushTool_->params();
         params.colorIndex = value;
@@ -1609,19 +1626,43 @@ void MainWindow::buildBrushToolbar()
         tr("Current color index preview."));
     bar->addWidget(brushColorSwatch_);
 
+    // T3.3/T4.2 — the paint/pick color types next to their color controls
+    // (the same actions the Edit menu carries).
+    bar->addAction(actBrushColor_);
+    bar->addAction(actBrushPickColor_);
+
     bar->addSeparator();
 
-    // T3.4 — zeroplast/soot/very-light-dam buttons.
-    bar->addAction(actBrushPlotZP_);
+    // T3.4 — zeroplast/soot/very-light-dam buttons (the zeroplast brushes
+    // are enabled in the Dam mode only, see updateActionStates).
     bar->addAction(actBrushEraseZP_);
     bar->addAction(actBrushSoot_);
     bar->addAction(actBrushVeryLightDam_);
 
     bar->addSeparator();
 
-    // T3.5 — image brush type + load-image button.
-    bar->addAction(actBrushImage_);
+    // T3.5 — load-image button: the image becomes the stamp mask of the
+    // current brush type.
     bar->addAction(actLoadBrushImage_);
+
+    // T3.5 — the image mask scale (percent of the loaded image size). The
+    // scaled mask is recomputed from the stored original on every change.
+    brushMaskScaleSpin_ = new QSpinBox(bar);
+    brushMaskScaleSpin_->setRange(10, 800);
+    brushMaskScaleSpin_->setValue(100);
+    brushMaskScaleSpin_->setSuffix(tr(" %"));
+    brushMaskScaleSpin_->setToolTip(
+        tr("Scale of the loaded brush image relative to its original pixel "
+           "size (the mask stays centred under the cursor)."));
+    connect(brushMaskScaleSpin_, &QSpinBox::valueChanged, this, [this](int value) {
+        if (!brushTool_ || brushMaskOriginal_.empty()) {
+            return;
+        }
+        brushTool_->setImageMask(scaleBrushMask(
+            brushMaskOriginal_, value / 100.0));
+        syncBrushControls();
+    });
+    bar->addWidget(brushMaskScaleSpin_);
 
     syncBrushControls();
     syncColorControls();
@@ -1649,26 +1690,38 @@ void MainWindow::syncBrushControls()
     syncType(actBrushColor_, params.effect == MapEditor::BrushEffect::SetColor);
     syncType(actBrushPickColor_,
              params.effect == MapEditor::BrushEffect::PickColor);
-    syncType(actBrushPlotZP_,
-             params.effect == MapEditor::BrushEffect::PlotZeroplast);
     syncType(actBrushEraseZP_,
              params.effect == MapEditor::BrushEffect::EraseZeroplast);
     syncType(actBrushSoot_, params.effect == MapEditor::BrushEffect::PlotSoot);
     syncType(actBrushVeryLightDam_,
              params.effect == MapEditor::BrushEffect::VeryLightDam);
-    syncType(actBrushImage_, params.effect == MapEditor::BrushEffect::ImageBrush);
 
     if (brushLevelSpin_) {
-        // "Level to Height" is the only consumer of the spinbox value.
-        if (brushLevelSpin_->value() != params.heightLevel) {
+        // One height control for the height tools: the raise/lower step for
+        // ChangeHeight, the target height for AlignVariableH (every other
+        // type does not consume it — the value display keeps the last
+        // choice of the height tools).
+        const int shown = params.effect == MapEditor::BrushEffect::AlignVariableH
+            ? params.heightLevel
+            : params.strength;
+        brushLevelSpin_->setToolTip(
+            params.effect == MapEditor::BrushEffect::AlignVariableH
+                ? tr("Target height of the \"Level to Height\" brush "
+                     "(whole voxels; 1 voxel = 1/32 m).")
+                : tr("Height change per stamp of the Raise/Lower Terrain "
+                     "brush, at full mask influence (whole voxels; "
+                     "1 voxel = 1/32 m)."));
+        if (brushLevelSpin_->value() != shown) {
             brushLevelSpin_->blockSignals(true);
-            brushLevelSpin_->setValue(params.heightLevel);
+            brushLevelSpin_->setValue(shown);
             brushLevelSpin_->blockSignals(false);
         }
     }
 
-    // T3.1 — the stamp form drives the cursor preview silhouette; T4.2 — the
-    // eyedropper is a point operation, the radius then does not matter.
+    // T3.1 — the stamp form drives the cursor preview silhouette; T3.5 — a
+    // loaded image mask replaces the shapes (no shape button is checked
+    // then); T4.2 — the eyedropper is a point operation, the radius then
+    // does not matter.
     if (brushRadiusSpin_) {
         if (brushRadiusSpin_->value() != params.radius) {
             brushRadiusSpin_->blockSignals(true);
@@ -1676,11 +1729,17 @@ void MainWindow::syncBrushControls()
             brushRadiusSpin_->blockSignals(false);
         }
     }
-    if (actShapeCircle_) actShapeCircle_->setChecked(params.shape == MapEditor::BrushShape::FilledCircle);
-    if (actShapeSquare_) actShapeSquare_->setChecked(params.shape == MapEditor::BrushShape::FilledSquare);
-    if (actShapeCircleOutline_) actShapeCircleOutline_->setChecked(params.shape == MapEditor::BrushShape::CircleOutline);
-    if (actShapeSquareOutline_) actShapeSquareOutline_->setChecked(params.shape == MapEditor::BrushShape::SquareOutline);
-    if (actShapeLine_) actShapeLine_->setChecked(params.shape == MapEditor::BrushShape::Line);
+    const bool imageMaskActive = params.useImageMask && brushTool_->hasImageMask();
+    if (actShapeCircle_) actShapeCircle_->setChecked(!imageMaskActive &&
+        params.shape == MapEditor::BrushShape::FilledCircle);
+    if (actShapeSquare_) actShapeSquare_->setChecked(!imageMaskActive &&
+        params.shape == MapEditor::BrushShape::FilledSquare);
+    if (actShapeCircleOutline_) actShapeCircleOutline_->setChecked(!imageMaskActive &&
+        params.shape == MapEditor::BrushShape::CircleOutline);
+    if (actShapeSquareOutline_) actShapeSquareOutline_->setChecked(!imageMaskActive &&
+        params.shape == MapEditor::BrushShape::SquareOutline);
+    if (actShapeLine_) actShapeLine_->setChecked(!imageMaskActive &&
+        params.shape == MapEditor::BrushShape::Line);
 
     // T3.3/T4.2 — the color index spinbox paints (SetColor) and displays the
     // last sampled pixel (PickColor).
@@ -1694,17 +1753,15 @@ void MainWindow::syncBrushControls()
 
     // Mirror the tool into the viewport cursor preview: the square silhouette
     // for the square forms and for the image mask (a rectangle), the circle
-    // otherwise; the radius is the mask half-size for the image brush. The
+    // otherwise; the radius is the mask half-size for the image mask. The
     // preview only follows the brush — the View/Eyedropper modes hide it in
     // the viewport (drawBrushPreview) anyway.
     if (viewport_) {
-        const bool squarePreview =
+        const bool squarePreview = imageMaskActive ||
             params.shape == MapEditor::BrushShape::FilledSquare ||
-            params.shape == MapEditor::BrushShape::SquareOutline ||
-            params.effect == MapEditor::BrushEffect::ImageBrush;
+            params.shape == MapEditor::BrushShape::SquareOutline;
         int previewRadius = params.radius;
-        if (params.effect == MapEditor::BrushEffect::ImageBrush &&
-            brushTool_->hasImageMask()) {
+        if (imageMaskActive) {
             previewRadius = std::max(brushTool_->imageMask().sx,
                                      brushTool_->imageMask().sy) / 2;
         }
@@ -2056,16 +2113,37 @@ void MainWindow::onLoadBrushImage()
         return;
     }
 
+    // Keep the un-scaled original: the scale control recomputes the mask
+    // from it, so repeated scale changes never blur the source.
+    brushMaskOriginal_ = mask;
     brushTool_->setImageMask(mask);
+    if (brushMaskScaleSpin_) {
+        brushMaskScaleSpin_->blockSignals(true);
+        brushMaskScaleSpin_->setValue(100);
+        brushMaskScaleSpin_->blockSignals(false);
+    }
 
-    // Switch to ImageBrush effect so the user can start painting immediately.
+    // The image becomes the stamp mask of the current brush type (T3.5
+    // rework): raise/lower/level/... keep working, only the stamp geometry
+    // switches from the shape to the image. The eyedropper is a point
+    // operation — fall back to a raise so the mask has an immediate effect,
+    // and make sure the editor mode actually paints (a Load Image from the
+    // View mode would otherwise do nothing on click).
     MapEditor::BrushParams params = brushTool_->params();
-    params.effect = MapEditor::BrushEffect::ImageBrush;
+    params.useImageMask = true;
+    if (params.effect == MapEditor::BrushEffect::PickColor ||
+        params.effect == MapEditor::BrushEffect::None) {
+        params.effect = MapEditor::BrushEffect::ChangeHeight;
+        params.direction = 1;
+    }
     brushTool_->setParams(params);
+    if (viewport_) {
+        viewport_->setEditorMode(MapEditor::ViewportWidget::EditorMode::Brush);
+    }
     syncBrushControls();
 
     statusBar()->showMessage(
-        tr("Brush image loaded: %1 (%2x3)")
+        tr("Brush image loaded: %1 (%2x%3)")
             .arg(QFileInfo(filePath).fileName())
             .arg(mask.sx)
             .arg(mask.sy),
@@ -2191,19 +2269,27 @@ void MainWindow::updateActionStates()
     if (actModeEyedropper_) {
         actModeEyedropper_->setEnabled(worldLoaded);
     }
-    // T3.2 — the brush type/mode buttons follow the same rule.
+    // T3.2 — the brush type/mode buttons follow the same rule. The
+    // zeroplast brushes are a Dam-mode tool (the zeroplast belongs to the
+    // dam domain) — not accessible in the Geo mode.
+    const bool damMode = brushTool_ &&
+        brushTool_->params().mode == MapEditor::BrushMode::Dam;
     for (QAction *action : {actBrushRaise_, actBrushLower_, actBrushLevelZP_,
                             actBrushLevelHeight_, actBrushColor_,
                             actBrushPickColor_,
                             actBrushGeo_, actBrushDam_,
-                            actBrushPlotZP_, actBrushEraseZP_,
                             actBrushSoot_, actBrushVeryLightDam_,
-                            actBrushImage_, actLoadBrushImage_,
+                            actLoadBrushImage_,
                             actShapeCircle_, actShapeSquare_,
                             actShapeCircleOutline_, actShapeSquareOutline_,
                             actShapeLine_}) {
         if (action) {
             action->setEnabled(worldLoaded);
+        }
+    }
+    for (QAction *action : {actBrushLevelZP_, actBrushEraseZP_}) {
+        if (action) {
+            action->setEnabled(worldLoaded && damMode);
         }
     }
     // T3.1 — the stamp radius applies to every form except the image mask
@@ -2212,8 +2298,15 @@ void MainWindow::updateActionStates()
     if (brushRadiusSpin_) {
         brushRadiusSpin_->setEnabled(
             worldLoaded && brushTool_ &&
-            brushTool_->params().effect != MapEditor::BrushEffect::ImageBrush &&
+            !brushTool_->params().useImageMask &&
             brushTool_->params().effect != MapEditor::BrushEffect::PickColor);
+    }
+    // T3.5 — the image-mask scale applies only while the image mask is the
+    // active stamp geometry.
+    if (brushMaskScaleSpin_) {
+        brushMaskScaleSpin_->setEnabled(
+            worldLoaded && brushTool_ && brushTool_->params().useImageMask &&
+            brushTool_->hasImageMask());
     }
     // T3.3/T4.2 — color spinbox: painting and pick readout.
     if (brushColorIndexSpin_) {
@@ -2225,12 +2318,16 @@ void MainWindow::updateActionStates()
             (effect == MapEditor::BrushEffect::SetColor ||
              effect == MapEditor::BrushEffect::PickColor));
     }
+    // T3.2 — the single height control serves the raise/lower step and the
+    // "Level to Height" target.
     if (brushLevelSpin_) {
+        const MapEditor::BrushEffect effect =
+            brushTool_ ? brushTool_->params().effect
+                       : MapEditor::BrushEffect::None;
         brushLevelSpin_->setEnabled(
             worldLoaded &&
-            brushTool_ &&
-            brushTool_->params().effect ==
-                MapEditor::BrushEffect::AlignVariableH);
+            (effect == MapEditor::BrushEffect::ChangeHeight ||
+             effect == MapEditor::BrushEffect::AlignVariableH));
     }
 }
 

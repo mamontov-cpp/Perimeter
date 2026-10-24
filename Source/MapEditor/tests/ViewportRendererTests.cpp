@@ -216,12 +216,23 @@ bool runViewportRendererTests()
                      "leveled cell (%d,%d) must render via the Tex2Col32 blend.", lx, ly);
 
         const int offZ = offBuf(zx, zy);
+        // The editor renders zeroplast cells like leveled ones — own color
+        // with the leveledSurfaceTexture layered on top (the blue zero-layer
+        // tint in the game comes from the powered core's field, which does
+        // not exist in the editor; docs/context.md).
+        const unsigned rnrZ = vMap.RnrBuf[offZ];
+        unsigned texOffZ = offZ & vMap.LvdTex_clip_mask_x;
+        texOffZ |= (offZ >> vMap.LvdTex_SPEC_SHIFT_X) & vMap.LvdTex_spec_clip_mask_y;
+        const std::uint32_t texZ = vMap.Tex2Col32[rnrZ][vMap.LvdTex[texOffZ]];
+        const std::uint32_t surZ = vMap.Sur2Col32[vMap.SurBuf[offZ]][rnrZ];
         const std::uint32_t wantZ =
-            kOpaque | vMap.SurZP2Col32[vMap.RnrBuf[offZ]][vMap.SurBuf[offZ]];
+            kOpaque | (((texZ & 0x00FEFEFFu) + (surZ & 0x00FEFEFFu)) >> 1);
         TEST_REQUIRE(renderer.pixels()[zy * ctx.mapWidth + zx] == wantZ,
-                     "zeroplast cell (%d,%d) must render via SurZP2Col32.", zx, zy);
+                     "zeroplast cell (%d,%d) must render as leveled (own "
+                     "color + leveledSurfaceTexture), not the blue tint.",
+                     zx, zy);
     }
-    std::printf("[PASS] forged leveled/zeroplast cells render via getColor32 branches.\n");
+    std::printf("[PASS] forged leveled/zeroplast cells render via the leveled blend.\n");
 
     // --- Step 5: layer filters. --------------------------------------------
     // Region survey of COMPASS (docs/context.md): the geo layer's whole

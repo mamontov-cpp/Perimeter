@@ -66,8 +66,11 @@ enum class BrushEffect
     ChangeHeight,   ///< Raise/lower through T2TE_CHANGING_TERRAIN_HEIGHT (T3.2);
                     ///< the per-layer Geo/Dam handling of the T3.2 modes happens
                     ///< around Terra's own toolzer (see BrushMode).
-    Align4ZP,       ///< T3.2: level to the world zeroplast height — Terra's
-                    ///< T2TE_ALIGNMENT_TERRAIN_4ZP (target = vMap.hZeroPlast).
+    Align4ZP,       ///< T3.4 (merged): level to the world zeroplast height AND
+                    ///< mark the cells that reached it At_ZEROPLAST — the
+                    ///< former Align4ZP and PlotZeroplast brushes in one tool
+                    ///< (Terra's T2TE_ALIGNMENT_TERRAIN_4ZP +
+                    ///< T2TE_PLOTTING_ZEROPLAST per cell).
     AlignVariableH, ///< T3.2: smooth/level to an arbitrary height — Terra's
                     ///< T2TE_ALIGNMENT_TERRAIN_VARIABLE_H (target =
                     ///< params.heightLevel).
@@ -77,12 +80,9 @@ enum class BrushEffect
     PickColor,      ///< T4.2: eyedropper — sample the Geo/Dam surface pixel
                     ///< (SurBuf index) at the stamp centre into the color
                     ///< brush; no buffer is written.
-    PlotZeroplast,  ///< T3.4: height=zeroPlast + At_ZEROPLAST.
     EraseZeroplast, ///< T3.4: T2TE_ERASE_ZEROPLAST.
     PlotSoot,       ///< T3.4: T2TE_PLOTTING_SOOT.
     VeryLightDam,   ///< T3.4: T2TE_PLOTTING_VERY_LIGHT_DAM.
-    ImageBrush,     ///< T3.5: terrain editing driven by a loaded image mask
-                    ///< (pixel value = influence 0..255).
 };
 
 /// Full brush configuration (plan §5 T3.1: shape/radius/strength/mode/
@@ -105,12 +105,22 @@ struct BrushParams
     /// = 1/32 m). Level-to-zeroplast (Align4ZP) reads vMap.hZeroPlast instead.
     int heightLevel = 32;
 
+    /// T3.5 (reworked): when true, the loaded image mask (BrushTool::
+    /// setImageMask) replaces the shape/radius stamp as the brush geometry
+    /// for every terrain effect — the image pixel value is the per-cell
+    /// influence. Selecting a shape (FilledCircle..Line) clears the flag, so
+    /// the mask source only changes when the user explicitly picks a shape
+    /// or loads a new image.
+    bool useImageMask = false;
+
     bool operator==(const BrushParams& other) const
     {
         return shape == other.shape && radius == other.radius &&
                strength == other.strength && mode == other.mode &&
                colorIndex == other.colorIndex && effect == other.effect &&
-               direction == other.direction && heightLevel == other.heightLevel;
+               direction == other.direction &&
+               heightLevel == other.heightLevel &&
+               useImageMask == other.useImageMask;
     }
 };
 
@@ -226,9 +236,11 @@ public:
     bool applyMask(const BrushMask& absoluteMask, const BrushParams& params);
 
     // --- T3.5: image brush mask --------------------------------------------
-    /// Set the image mask used when effect == ImageBrush. The mask carries
-    /// per-cell influence in 0..255 (pixel brightness or alpha-derived).
-    /// The Qt UI layer converts TGA/PNG/BMP → BrushMask and calls this.
+    /// Set the image mask used when params.useImageMask is set. The mask
+    /// carries per-cell influence in 0..255 (pixel brightness or
+    /// alpha-derived) and replaces the shape stamp as the brush geometry for
+    /// every effect. The Qt UI layer converts TGA/PNG/BMP → BrushMask and
+    /// calls this.
     void setImageMask(const BrushMask& mask);
     /// The current image mask (empty when no image loaded).
     const BrushMask& imageMask() const { return imageMask_; }
