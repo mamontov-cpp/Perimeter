@@ -156,6 +156,9 @@ private:
     /// Shared report dialog with the "Go To" jump wired to the viewport.
     void showValidationReport(const QString &title,
                               const MapEditor::ValidationReport &report);
+    // Help menu (F1 — the manual from data/map_editor_help.md).
+    void buildHelpMenu();
+    void onActionHelp();
 
     // T8 — battle map helpers: panel/overlay/action refresh, the world the
     // .spg refers to, and the spawn overlay contents.

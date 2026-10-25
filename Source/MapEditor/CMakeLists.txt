@@ -102,6 +102,8 @@ SET(MAP_EDITOR_APP_SRCS
         ui/BattleMapPanel.cpp
         ui/BattleMapPanel.h
         ui/ValidationDialog.cpp
+        ui/HelpWindow.cpp
+        ui/HelpWindow.h
         ui/ValidationDialog.h
         ui/MainWindow.h
         ui/GameDirManager.cpp
@@ -147,6 +149,14 @@ TARGET_LINK_LIBRARIES(map_editor PRIVATE
         ${MAP_EDITOR_QT_LIBS}
 )
 
+# The help manual (Help menu / F1) is a standalone Markdown file deployed
+# next to the executable.
+ADD_CUSTOM_COMMAND(TARGET map_editor POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_CURRENT_SOURCE_DIR}/data/map_editor_help.md"
+                $<TARGET_FILE_DIR:map_editor>
+        COMMENT "Deploying map_editor_help.md")
+
 # Deploy the used Qt runtime next to the executable so the editor starts from the build tree.
 IF(PERIMETER_WINDOWS)
     FIND_PROGRAM(MAP_EDITOR_WINDEPLOYQT
@@ -186,3 +196,4 @@ ADD_SUBDIRECTORY(tests)
 # ---------------------------------------------------------------------------
 INSTALL(TARGETS map_editor
         RUNTIME DESTINATION .)
+INSTALL(FILES data/map_editor_help.md DESTINATION .)

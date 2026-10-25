@@ -5,6 +5,7 @@
 #include <EditorSession.h>
 #include <GameDirManager.h>
 #include <BattleMapPanel.h>
+#include <HelpWindow.h>
 #include <MinimapWidget.h>
 #include <NewWorldWizard.h>
 #include <MarkerPanel.h>
@@ -1184,6 +1185,7 @@ void MainWindow::buildMenuBar()
     buildEditMenu(menuBar());
     buildViewMenu(menuBar());
     buildToolsMenu();
+    buildHelpMenu();
 }
 
 void MainWindow::buildEditMenu(QMenuBar *menuBar)
@@ -2734,6 +2736,25 @@ void MainWindow::onActionRegenerateImages()
         ok ? tr("cache.tga / map.tga regenerated.")
            : tr("Image regeneration failed."),
         5000);
+}
+
+// ---------------------------------------------------------------------------
+// Help
+// ---------------------------------------------------------------------------
+
+void MainWindow::buildHelpMenu()
+{
+    QMenu *helpMenu = menuBar()->addMenu(tr("&Help"));
+    QAction *actHelp = helpMenu->addAction(tr("Map Editor &Help..."));
+    actHelp->setToolTip(tr("The editor manual (create a skirmish map, brushes, view, images...)"));
+    actHelp->setShortcut(QKeySequence(Qt::Key_F1));
+    connect(actHelp, &QAction::triggered, this, &MainWindow::onActionHelp);
+}
+
+void MainWindow::onActionHelp()
+{
+    // Non-modal: the manual stays open while the editor is being used.
+    MapEditor::HelpWindow::openHelp(this);
 }
 
 void MainWindow::onActionUndo()
