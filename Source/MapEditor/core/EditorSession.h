@@ -1,6 +1,7 @@
 #pragma once
 
 #include "WorldFiles.h"
+#include "WorldParams.h"
 
 #include <optional>
 #include <string>
@@ -135,6 +136,25 @@ public:
     /// Return the name of the currently loaded world (empty if none).
     const std::string& currentWorldName() const;
 
+    /// Map dimensions of the loaded world (0 when none is loaded).
+    unsigned mapWidth() const;
+    unsigned mapHeight() const;
+
+    /// T6.4 — reload leveledSurfaceTexture.tga into the loaded world after
+    /// the file was replaced (delLeveledTexture + loadLeveledTexture).
+    /// Returns true when the texture is back in memory.
+    bool reloadLeveledTextureLive();
+
+    /// T8.3 — visible surface height at a map cell (SGetAlt >> VX_FRACTION,
+    /// whole voxels, dam priority) for the .spg spawn z-correction.
+    /// Returns -1 when no world is loaded or the cell is out of range.
+    int terrainHeightAt(int x, int y) const;
+
+    /// T8.4 — the loaded world's zero-layer height (vMap.hZeroPlast), used
+    /// as the initial manualData.zeroLayerHeight of a new battle map.
+    /// Returns -1 when no world is loaded.
+    int zeroLayerHeight() const;
+
     /// Return the current session state.
     SessionState state() const;
 
@@ -212,6 +232,61 @@ public:
     void regRenderWithShadowTrail(int lowX, int lowY, int hiX, int hiY);
 
     // -----------------------------------------------------------------------
+    // T5.1 — world parameters (WorldParams / WorldSettingsDialog)
+    // -----------------------------------------------------------------------
+
+    /// Snapshot of the current parameters of the loaded world: live values
+    /// (hZeroPlast from vMap, f3d scaling/function) mixed with the file state
+    /// (generation powers, storage compression from the output.vmp header,
+    /// zeroplast color from Perimeter.ini). std::nullopt when no world is
+    /// loaded or world.ini is unreadable.
+    std::optional<WorldParams> currentWorldParams() const;
+
+    /// Apply the parameters the World Settings dialog changed:
+    ///   hZeroPlast  -> vMap (live, marks the world modified; saveWorld
+    ///                  persists it into world.ini)
+    ///   3DF params  -> f3d.setKM/setFunction live + f3d.saveVariable()
+    ///                  (world.ini via Terra's own writer)
+    ///   powers      -> world.ini only: the loaded buffers keep their sizes,
+    ///                  new values take effect on reload / terrain generation
+    ///   compression -> session target: output.vmp is converted immediately
+    ///                  and every save re-applies the format after save3Buf()
+    ///   ZP color    -> Perimeter.ini [TD] Color ZeroLayer (game-wide) plus
+    ///                  vMap.colZeroPlast; outside the world save pipeline
+    /// Returns false when no world is loaded or a file write failed.
+    bool applyWorldSettings(const WorldParams& params);
+
+    /// Target output.vmp compression (0 = S2T0, 1 = S2T1) that saveWorld()
+    /// re-applies after Terra writes the buffers as S2T0.
+    int vmpCompressionTarget() const { return vmpCompressionTarget_; }
+
+    // -----------------------------------------------------------------------
+    // T6.3 — surface image import. The image is sampled nearest per map cell
+    // (scale it to the map size in the UI beforehand for smooth results);
+    // every cell receives the nearest palette entry of its own layer
+    // (GeoPal for geo cells / DamPal for dam cells — the T4.3 gating).
+    // The whole map is recorded as one undo step before the change.
+    // -----------------------------------------------------------------------
+
+    struct SurfaceImportOptions
+    {
+        bool geoCells = true; ///< paint cells without dams.
+        bool damCells = true; ///< paint dam cells.
+    };
+
+    /// 24-bit BGR source (top-left origin, imgWidth x imgHeight): every
+    /// pixel maps to the nearest palette index of the cell's layer.
+    bool importSurfaceImageRgb(unsigned imgWidth, unsigned imgHeight,
+                               const std::vector<unsigned char>& bgr,
+                               const SurfaceImportOptions& options);
+
+    /// Indexed source (imgWidth x imgHeight palette indices): indices are
+    /// written into SurBuf as-is.
+    bool importSurfaceImageIndexed(unsigned imgWidth, unsigned imgHeight,
+                                   const std::vector<unsigned char>& indices,
+                                   const SurfaceImportOptions& options);
+
+    // -----------------------------------------------------------------------
     // T3.3 — SurBuf / palette read helpers for the Qt UI (eyedropper,
     // color swatch). These avoid pulling terra.h into Qt translation units.
     // -----------------------------------------------------------------------
@@ -281,6 +356,9 @@ private:
     /// T4.1 — the palette was edited since the last load/save (outside the
     /// undo history; synced to inGeo.act/inDam.act + geoPal.xml on save).
     bool paletteModified_ = false;
+    /// T5.1 — output.vmp compression to (re)apply on save (0 = S2T0,
+    /// 1 = S2T1); initialised from the loaded world's file header.
+    int vmpCompressionTarget_ = 0;
     SessionState state_ = SessionState::NoGame;
     std::string loadedWorldFolderName_;
 

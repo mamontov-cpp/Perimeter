@@ -89,8 +89,10 @@ class BrushTool;
 struct MapMarker
 {
     QString label;
+    QString type = QStringLiteral("point"); // point | zone | unit | building
     int mapX = 0;
     int mapY = 0;
+    int radius = 0; // zone radius in map cells (0 = plain dot)
     QColor color{Qt::yellow};
 };
 

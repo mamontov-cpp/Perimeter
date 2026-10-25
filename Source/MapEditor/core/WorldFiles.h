@@ -142,6 +142,7 @@ class WorldFiles
 {
 public:
     static constexpr const char* IniFileName         = "world.ini";
+    static constexpr const char* OutputVmpFile       = "output.vmp"; // voxel buffers (S2T0/S2T1, WorldParams T5.1)
     static constexpr const char* GeoPalFile          = "inGeo.act";
     static constexpr const char* DamPalFile          = "inDam.act";
     static constexpr const char* HardnessFile        = "hardness.bin";

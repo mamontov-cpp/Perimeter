@@ -61,4 +61,37 @@ bool generateCacheTga(const std::filesystem::path& worldDir);
 /// on each axis.
 bool generateMapTga(const std::filesystem::path& worldDir);
 
+// ---------------------------------------------------------------------------
+// T6 — user image import/export.
+// ---------------------------------------------------------------------------
+
+/// Side of the square up.tga every shipped world carries (24-bit
+/// uncompressed, top-left origin; not read by the game code).
+inline constexpr unsigned kUpTgaSize = 512;
+
+/// up.tga — `bgr` must hold kUpTgaSize x kUpTgaSize x 3 bytes (the caller
+/// scales/converts the user image, the core only writes the game format).
+bool writeUpTga(const std::filesystem::path& worldDir,
+                const std::vector<unsigned char>& bgr);
+
+/// 8-bit uncompressed grayscale TGA (image type 3, top-left origin) — the
+/// format of the exported heightmap.
+bool writeTga8Gray(const std::filesystem::path& path, unsigned width,
+                   unsigned height, const std::vector<unsigned char>& gray);
+
+/// Heightmap export: one grayscale byte per cell, SGetAlt() >> 5 (whole
+/// voxels, dams included — they are the visible surface).
+bool exportHeightmapTga(const std::filesystem::path& path);
+
+/// "Top view" export: the same raster the viewport/cache.tga show.
+bool exportTopViewTga(const std::filesystem::path& path);
+
+/// Uncompressed color-mapped (indexed) TGA reader (image type 1): the raw
+/// palette indices plus the 768-byte RGB color map. RLE (type 9) and other
+/// exotic files are rejected — the indexed-import path is for maps saved by
+/// this editor or SurMap.
+bool readIndexedTga(const std::filesystem::path& path, unsigned& width,
+                    unsigned& height, std::vector<unsigned char>& indices,
+                    std::vector<unsigned char>& paletteBgr);
+
 } // namespace MapEditor::WorldImages

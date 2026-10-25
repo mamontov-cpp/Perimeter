@@ -37,6 +37,12 @@ ADD_LIBRARY(MapEditorCore STATIC
         core/preflight.cpp
         core/IniDocument.cpp
         core/WorldFiles.cpp
+        core/WorldParams.cpp
+        core/WorldCreation.cpp
+        core/MarkerStore.cpp
+        core/spg/XPrmDocument.cpp
+        core/spg/SpgFile.cpp
+        core/Validation.cpp
         core/WorldImages.cpp
         core/EditorSession.cpp
         core/BrushTool.cpp
@@ -92,6 +98,11 @@ TARGET_LINK_LIBRARIES(MapEditorSupport PUBLIC
 SET(MAP_EDITOR_APP_SRCS
         ui/main.cpp
         ui/MainWindow.cpp
+        ui/MainWindowBattleMap.cpp
+        ui/BattleMapPanel.cpp
+        ui/BattleMapPanel.h
+        ui/ValidationDialog.cpp
+        ui/ValidationDialog.h
         ui/MainWindow.h
         ui/GameDirManager.cpp
         ui/GameDirManager.h
@@ -101,6 +112,12 @@ SET(MAP_EDITOR_APP_SRCS
         ui/MinimapWidget.h
         ui/PalettePanel.cpp
         ui/PalettePanel.h
+        ui/WorldSettingsDialog.cpp
+        ui/WorldSettingsDialog.h
+        ui/NewWorldWizard.cpp
+        ui/NewWorldWizard.h
+        ui/MarkerPanel.cpp
+        ui/MarkerPanel.h
 )
 
 ADD_EXECUTABLE(map_editor ${MAP_EDITOR_APP_SRCS})
@@ -156,3 +173,16 @@ ENDIF()
 # map_editor_tests — headless round-trip test
 # ---------------------------------------------------------------------------
 ADD_SUBDIRECTORY(tests)
+
+# ---------------------------------------------------------------------------
+# Install rules (T10.2) — only the editor target is installed, into the game
+# root next to RESOURCE/ (the default CMAKE_INSTALL_PREFIX). Qt runtime is
+# deployed next to the binary by windeployqt at build time; run it over the
+# installed exe once if installing to a clean location:
+#   windeployqt --no-translations <prefix>/map_editor.exe
+# The game's vcpkg manifest is intentionally NOT extended with qtbase — Qt
+# comes from MAP_EDITOR_QT_PREFIX / CMAKE_PREFIX_PATH and stays a build-time
+# dependency of the editor target only.
+# ---------------------------------------------------------------------------
+INSTALL(TARGETS map_editor
+        RUNTIME DESTINATION .)

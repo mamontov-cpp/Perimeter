@@ -4,20 +4,34 @@
 #include <BrushTool.h>
 #include <EditorSession.h>
 #include <GameDirManager.h>
+#include <BattleMapPanel.h>
 #include <MinimapWidget.h>
+#include <NewWorldWizard.h>
+#include <MarkerPanel.h>
 #include <PalettePanel.h>
 #include <ViewportRenderer.h>
 #include <ViewportWidget.h>
+#include <WorldFiles.h>
+#include <WorldImages.h>
+#include <WorldSettingsDialog.h>
+#include <ValidationDialog.h>
 
+#include <filesystem>
 #include <algorithm>
 #include <cmath>
+
+namespace fs = std::filesystem;
 
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
+#include <QCheckBox>
 #include <QCloseEvent>
+#include <QDialog>
 #include <QDockWidget>
+#include <QFile>
 #include <QFileDialog>
+#include <QFormLayout>
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QImage>
@@ -665,6 +679,98 @@ void MainWindow::buildViewport()
     buildMinimapDock();
     // T4.1 — the palette panel takes its place below the minimap dock.
     buildPaletteDock();
+    // T7.2 — the marker panel dock.
+    buildMarkerDock();
+    // T8 — the battle map panel dock.
+    buildBattleMapDock();
+}
+
+void MainWindow::buildMarkerDock()
+{
+    markerPanel_ = new MapEditor::MarkerPanel(markerStore_, this);
+
+    markerDock_ = new QDockWidget(tr("Markers"), this);
+    markerDock_->setObjectName(QStringLiteral("MarkerDock"));
+    markerDock_->setWidget(markerPanel_);
+    markerDock_->setAllowedAreas(Qt::LeftDockWidgetArea |
+                                 Qt::RightDockWidgetArea |
+                                 Qt::TopDockWidgetArea |
+                                 Qt::BottomDockWidgetArea);
+    markerDock_->setFeatures(QDockWidget::DockWidgetClosable |
+                             QDockWidget::DockWidgetMovable |
+                             QDockWidget::DockWidgetFloatable);
+    addDockWidget(Qt::RightDockWidgetArea, markerDock_);
+
+    if (viewMenu_) {
+        viewMenu_->addSeparator();
+        QAction *toggleAction = markerDock_->toggleViewAction();
+        toggleAction->setText(tr("&Markers"));
+        toggleAction->setToolTip(tr("Show or hide the marker panel (K)"));
+        toggleAction->setShortcut(QKeySequence(Qt::Key_K));
+        viewMenu_->addAction(toggleAction);
+    }
+
+    // Any panel mutation: autosave the sidecar and refresh the overlay.
+    connect(markerPanel_, &MapEditor::MarkerPanel::markersChanged, this, [this] {
+        saveMarkerSidecar();
+        syncMarkerOverlay();
+    });
+    connect(markerPanel_, &MapEditor::MarkerPanel::goToMarker, this,
+            [this](int mapX, int mapY) {
+                if (viewport_ && session_ && session_->isWorldLoaded()) {
+                    viewport_->centerOnCell(QPoint(mapX, mapY));
+                    viewport_->update();
+                }
+            });
+}
+
+void MainWindow::loadMarkerSidecar()
+{
+    markerStore_.clear();
+    const auto files = session_ ? session_->currentWorldFiles() : std::nullopt;
+    if (files && session_->isWorldLoaded()) {
+        markerStore_.load(MapEditor::MarkerStore::sidecarPathFor(
+            files->worldDir()));
+    }
+    if (markerPanel_) {
+        markerPanel_->refresh();
+    }
+    syncMarkerOverlay();
+}
+
+void MainWindow::saveMarkerSidecar()
+{
+    const auto files = session_ ? session_->currentWorldFiles() : std::nullopt;
+    if (!files || !session_->isWorldLoaded()) {
+        return;
+    }
+    if (!markerStore_.save(
+            MapEditor::MarkerStore::sidecarPathFor(files->worldDir()),
+            session_->currentWorldName())) {
+        statusBar()->showMessage(tr("Failed to save the marker sidecar."), 5000);
+    }
+}
+
+void MainWindow::syncMarkerOverlay()
+{
+    if (!viewport_) {
+        return;
+    }
+    std::vector<MapEditor::MapMarker> overlay;
+    overlay.reserve(markerStore_.markers().size());
+    for (const MapEditor::MapMarkerData &marker : markerStore_.markers()) {
+        MapEditor::MapMarker ui;
+        ui.label = QString::fromStdString(marker.label);
+        ui.type = QString::fromStdString(marker.type);
+        ui.mapX = marker.x;
+        ui.mapY = marker.y;
+        ui.radius = marker.radius;
+        ui.color = QColor(static_cast<int>((marker.colorRgb >> 16) & 0xFF),
+                          static_cast<int>((marker.colorRgb >> 8) & 0xFF),
+                          static_cast<int>(marker.colorRgb & 0xFF));
+        overlay.push_back(std::move(ui));
+    }
+    viewport_->setMarkers(overlay);
 }
 
 void MainWindow::buildMinimapDock()
@@ -699,6 +805,15 @@ void MainWindow::buildMinimapDock()
     // ViewportWidget::viewRectChanged after the next repaint.
     connect(viewport_, &MapEditor::ViewportWidget::viewRectChanged,
             minimap_, &MapEditor::MinimapWidget::setViewRect);
+
+    // T7 — the "Add" marker default position follows the view centre.
+    connect(viewport_, &MapEditor::ViewportWidget::viewRectChanged, this,
+            [this](const QRect &rect) {
+                if (markerPanel_) {
+                    markerPanel_->setDefaultPosition(rect.center().x(),
+                                                     rect.center().y());
+                }
+            });
 
     // Clicking the minimap navigates there instead.
     connect(minimap_, &MapEditor::MinimapWidget::cellClicked,
@@ -794,6 +909,8 @@ void MainWindow::onWorldLoaded()
         palettePanel_->selectIndex(params.colorIndex,
                                    params.mode == MapEditor::BrushMode::Dam);
     }
+    // T7 — markers of the new world: sidecar + overlay.
+    loadMarkerSidecar();
     // The brush-dependent controls (color swatch, spinboxes, cursor preview)
     // were only partially initialized before the world existed — re-read the
     // tool state now that the palettes are available.
@@ -818,6 +935,12 @@ void MainWindow::onWorldUnload()
     if (palettePanel_ && session_) {
         palettePanel_->setSession(session_);
     }
+    // T7 — no world, no markers (the sidecar belongs to the world folder).
+    markerStore_.clear();
+    if (markerPanel_) {
+        markerPanel_->refresh();
+    }
+    syncMarkerOverlay();
     // The brush controls lose their world-bound state (color swatch RGB,
     // palette selection) — re-read the tool so nothing stale stays on screen.
     syncBrushControls();
@@ -972,6 +1095,10 @@ void MainWindow::buildMenuBar()
     actScan->setShortcut(QKeySequence(Qt::Key_F5));
     connect(actScan, &QAction::triggered, this, &MainWindow::onActionScanWorlds);
 
+    QAction *actNewWorld = fileMenu->addAction(tr("New &World..."));
+    actNewWorld->setToolTip(tr("Create a new world folder (flat or generated terrain)"));
+    connect(actNewWorld, &QAction::triggered, this, &MainWindow::onActionNewWorld);
+
     QAction *actLoad = fileMenu->addAction(tr("&Load World..."));
     actLoad->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_O));
     connect(actLoad, &QAction::triggered, this, &MainWindow::onActionLoadWorld);
@@ -994,14 +1121,69 @@ void MainWindow::buildMenuBar()
     actSaveAs_->setEnabled(false);
     connect(actSaveAs_, &QAction::triggered, this, &MainWindow::onActionSaveAs);
 
+    actWorldParams_ = fileMenu->addAction(tr("World &Parameters..."));
+    actWorldParams_->setToolTip(tr("Zero-layer height, generation powers, storage compression, geo noise and the zeroplast color"));
+    actWorldParams_->setEnabled(false);
+    connect(actWorldParams_, &QAction::triggered, this, &MainWindow::onActionWorldParams);
+
+    QMenu *imageMenu = fileMenu->addMenu(tr("&Images"));
+    QAction *actImportMapImage = imageMenu->addAction(tr("Import Image onto &Map..."));
+    actImportMapImage->setToolTip(tr("Paint the surface colors from an image (RGB -> nearest palette index, indexed TGA -> indices as-is)"));
+    actImportMapImage->setEnabled(false);
+    connect(actImportMapImage, &QAction::triggered, this, &MainWindow::onActionImportMapImage);
+    importMapImageAction_ = actImportMapImage;
+
+    QAction *actImportUpTga = imageMenu->addAction(tr("Import &up.tga (cover image)..."));
+    actImportUpTga->setToolTip(tr("Scale any image to 512x512 and store it as the world's up.tga"));
+    actImportUpTga->setEnabled(false);
+    connect(actImportUpTga, &QAction::triggered, this, &MainWindow::onActionImportUpTga);
+    importUpTgaAction_ = actImportUpTga;
+
+    QAction *actImportLeveled = imageMenu->addAction(tr("Import &leveledSurfaceTexture.tga..."));
+    actImportLeveled->setToolTip(tr("Replace the leveled-zones texture (validated: indexed TGA, power of two, <= map size)"));
+    actImportLeveled->setEnabled(false);
+    connect(actImportLeveled, &QAction::triggered, this, &MainWindow::onActionImportLeveledTexture);
+    importLeveledAction_ = actImportLeveled;
+
+    imageMenu->addSeparator();
+    QAction *actExportHeightmap = imageMenu->addAction(tr("&Export Heightmap (TGA)..."));
+    actExportHeightmap->setToolTip(tr("8-bit grayscale heightmap (SGetAlt >> 5, dams included)"));
+    actExportHeightmap->setEnabled(false);
+    connect(actExportHeightmap, &QAction::triggered, this, &MainWindow::onActionExportHeightmap);
+    exportHeightmapAction_ = actExportHeightmap;
+
+    QAction *actExportTopView = imageMenu->addAction(tr("Export &Top View (TGA)..."));
+    actExportTopView->setToolTip(tr("The surface raster exactly as the viewport and cache.tga show it"));
+    actExportTopView->setEnabled(false);
+    connect(actExportTopView, &QAction::triggered, this, &MainWindow::onActionExportTopView);
+    exportTopViewAction_ = actExportTopView;
+
     fileMenu->addSeparator();
 
+    QAction *actOpenBattleMap = fileMenu->addAction(tr("Open Battle &Map (.spg)..."));
+    actOpenBattleMap->setToolTip(tr("Load a battle map (RESOURCE/Battle, RESOURCE/Worlds, SCENARIO, SURVIVAL) and its world"));
+    actOpenBattleMap->setEnabled(false);
+    connect(actOpenBattleMap, &QAction::triggered, this, &MainWindow::onActionOpenBattleMap);
+    actOpenBattleMap_ = actOpenBattleMap;
+
+    QAction *actSaveBattleMap = fileMenu->addAction(tr("Save Battle &Map"));
+    actSaveBattleMap->setToolTip(tr("Write the loaded battle map back to its .spg"));
+    actSaveBattleMap->setEnabled(false);
+    connect(actSaveBattleMap, &QAction::triggered, this, &MainWindow::onActionSaveBattleMap);
+    actSaveBattleMap_ = actSaveBattleMap;
+
+    QAction *actSaveBattleMapAs = fileMenu->addAction(tr("Save Battle Map &As..."));
+    actSaveBattleMapAs->setToolTip(tr("Write the battle map under a new name (RESOURCE/Battle or RESOURCE/Worlds)"));
+    actSaveBattleMapAs->setEnabled(false);
+    connect(actSaveBattleMapAs, &QAction::triggered, this, &MainWindow::onActionSaveBattleMapAs);
+    actSaveBattleMapAs_ = actSaveBattleMapAs;
     QAction *actQuit = fileMenu->addAction(tr("E&xit"));
     actQuit->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Q));
     connect(actQuit, &QAction::triggered, this, &QApplication::quit);
 
     buildEditMenu(menuBar());
     buildViewMenu(menuBar());
+    buildToolsMenu();
 }
 
 void MainWindow::buildEditMenu(QMenuBar *menuBar)
@@ -2129,6 +2311,431 @@ void MainWindow::onActionSaveAs()
     onWorldLoaded();
 }
 
+void MainWindow::onActionNewWorld()
+{
+    if (!session_->hasGameDir() || session_->worldCount() == 0) {
+        QMessageBox::warning(this, tr("New World"),
+                             tr("Select a game directory with at least one "
+                                "world first (it donates the palettes and "
+                                "textures for the new world)."));
+        return;
+    }
+    if (!confirmDiscardUnsavedChanges()) {
+        return;
+    }
+    NewWorldWizard wizard(this, session_->getWorldList(),
+                          session_->getGameDir());
+    if (wizard.exec() != QDialog::Accepted) {
+        return;
+    }
+    const MapEditor::WorldCreateResult result = MapEditor::createNewWorld(
+        *session_, wizard.wizardParams(),
+        wizard.templateWorldName().toStdString());
+    if (!result.ok) {
+        QMessageBox::critical(this, tr("New World"),
+                              tr("Failed to create the world:\n%1")
+                                  .arg(QString::fromStdString(result.error)));
+        return;
+    }
+    // createNewWorld loaded and saved the new world — rebind the viewport.
+    onWorldLoaded();
+}
+
+void MainWindow::onActionWorldParams()
+{
+    if (!session_->isWorldLoaded()) {
+        return;
+    }
+    const std::optional<MapEditor::WorldParams> current =
+        session_->currentWorldParams();
+    if (!current) {
+        QMessageBox::warning(this, tr("World Parameters"),
+                             tr("Cannot read the parameters of the loaded world."));
+        return;
+    }
+    WorldSettingsDialog dialog(this, WorldSettingsPanel::Mode::ExistingWorld,
+                               *current);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+    if (!session_->applyWorldSettings(dialog.params())) {
+        QMessageBox::warning(this, tr("World Parameters"),
+                             tr("Some parameters could not be written "
+                                "(see the log for details)."));
+    }
+    // hZeroPlast drives the 3D grid reference plane; the 2D raster is
+    // unaffected (palette colors did not change).
+    if (viewport_) {
+        viewport_->setNeeds3DRedraw();
+        viewport_->update();
+    }
+    updateStatusBar();
+}
+
+// ---------------------------------------------------------------------------
+// T6 — image import/export.
+// ---------------------------------------------------------------------------
+
+void MainWindow::onActionImportMapImage()
+{
+    if (!session_->isWorldLoaded()) {
+        return;
+    }
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("Import Image onto Map"), QString(),
+        tr("Images (*.png *.jpg *.jpeg *.bmp *.tga);;All files (*)"));
+    if (path.isEmpty()) {
+        return;
+    }
+
+    // Options: which layers take the paint.
+    QDialog optionsDialog(this);
+    optionsDialog.setWindowTitle(tr("Import Options"));
+    auto *form = new QFormLayout(&optionsDialog);
+    auto *geoBox = new QCheckBox(tr("Paint geo cells (no dam)"), &optionsDialog);
+    auto *damBox = new QCheckBox(tr("Paint dam cells"), &optionsDialog);
+    geoBox->setChecked(true);
+    damBox->setChecked(true);
+    form->addRow(geoBox);
+    form->addRow(damBox);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok |
+                                         QDialogButtonBox::Cancel,
+                                         &optionsDialog);
+    connect(buttons, &QDialogButtonBox::accepted, &optionsDialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &optionsDialog, &QDialog::reject);
+    form->addRow(buttons);
+    if (optionsDialog.exec() != QDialog::Accepted) {
+        return;
+    }
+    MapEditor::EditorSession::SurfaceImportOptions options;
+    options.geoCells = geoBox->isChecked();
+    options.damCells = damBox->isChecked();
+    if (!options.geoCells && !options.damCells) {
+        return;
+    }
+
+    bool ok = false;
+    // Indexed TGA: the indices go into SurBuf as-is (any size — the core
+    // samples nearest). Everything else: RGB -> nearest palette entry.
+    if (path.endsWith(QStringLiteral(".tga"), Qt::CaseInsensitive)) {
+        unsigned width = 0;
+        unsigned height = 0;
+        std::vector<unsigned char> indices;
+        std::vector<unsigned char> palette;
+        if (MapEditor::WorldImages::readIndexedTga(
+                path.toStdWString(), width, height, indices, palette)) {
+            ok = session_->importSurfaceImageIndexed(width, height, indices,
+                                                     options);
+        }
+    }
+    if (!ok) {
+        QImage image(path);
+        if (image.isNull()) {
+            QMessageBox::warning(this, tr("Import Image onto Map"),
+                                 tr("Cannot read the image file."));
+            return;
+        }
+        image = image.convertToFormat(QImage::Format_RGB888)
+                    .scaled(static_cast<int>(session_->mapWidth()),
+                            static_cast<int>(session_->mapHeight()),
+                            Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+        const int w = image.width();
+        const int h = image.height();
+        std::vector<unsigned char> bgr(static_cast<size_t>(w) * h * 3);
+        for (int y = 0; y < h; ++y) {
+            const uchar *line = image.constScanLine(y);
+            for (int x = 0; x < w; ++x) {
+                // RGB888 -> BGR (the game/TGA byte order).
+                bgr[(static_cast<size_t>(y) * w + x) * 3 + 0] = line[x * 3 + 2];
+                bgr[(static_cast<size_t>(y) * w + x) * 3 + 1] = line[x * 3 + 1];
+                bgr[(static_cast<size_t>(y) * w + x) * 3 + 2] = line[x * 3 + 0];
+            }
+        }
+        ok = session_->importSurfaceImageRgb(static_cast<unsigned>(w),
+                                             static_cast<unsigned>(h), bgr,
+                                             options);
+    }
+    if (!ok) {
+        QMessageBox::warning(this, tr("Import Image onto Map"),
+                             tr("The image could not be applied to the map."));
+        return;
+    }
+    if (viewport_) {
+        viewport_->setNeeds3DRedraw();
+        viewport_->update();
+    }
+    updateStatusBar();
+}
+
+void MainWindow::onActionImportUpTga()
+{
+    if (!session_->isWorldLoaded()) {
+        return;
+    }
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("Import up.tga (Cover Image)"), QString(),
+        tr("Images (*.png *.jpg *.jpeg *.bmp *.tga);;All files (*)"));
+    if (path.isEmpty()) {
+        return;
+    }
+    QImage image(path);
+    if (image.isNull()) {
+        QMessageBox::warning(this, tr("Import up.tga"),
+                             tr("Cannot read the image file."));
+        return;
+    }
+    image = image.convertToFormat(QImage::Format_RGB888)
+                .scaled(static_cast<int>(MapEditor::WorldImages::kUpTgaSize),
+                        static_cast<int>(MapEditor::WorldImages::kUpTgaSize),
+                        Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    std::vector<unsigned char> bgr(static_cast<size_t>(
+        MapEditor::WorldImages::kUpTgaSize *
+        MapEditor::WorldImages::kUpTgaSize * 3));
+    for (int y = 0; y < image.height(); ++y) {
+        const uchar *line = image.constScanLine(y);
+        for (int x = 0; x < image.width(); ++x) {
+            bgr[(static_cast<size_t>(y) * image.width() + x) * 3 + 0] =
+                line[x * 3 + 2];
+            bgr[(static_cast<size_t>(y) * image.width() + x) * 3 + 1] =
+                line[x * 3 + 1];
+            bgr[(static_cast<size_t>(y) * image.width() + x) * 3 + 2] =
+                line[x * 3 + 0];
+        }
+    }
+    const auto files = session_->currentWorldFiles();
+    if (!files || !MapEditor::WorldImages::writeUpTga(files->worldDir(), bgr)) {
+        QMessageBox::warning(this, tr("Import up.tga"),
+                             tr("Failed to write up.tga."));
+        return;
+    }
+    statusBar()->showMessage(tr("up.tga imported (512x512, 24-bit)."), 5000);
+}
+
+void MainWindow::onActionImportLeveledTexture()
+{
+    if (!session_->isWorldLoaded()) {
+        return;
+    }
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("Import leveledSurfaceTexture.tga"), QString(),
+        tr("TGA images (*.tga);;All files (*)"));
+    if (path.isEmpty()) {
+        return;
+    }
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        QMessageBox::warning(this, tr("Import leveledSurfaceTexture"),
+                             tr("Cannot read the file."));
+        return;
+    }
+    const QByteArray bytes = file.readAll();
+    const auto files = session_->currentWorldFiles();
+    if (!files) {
+        return;
+    }
+    const std::vector<std::string> errors =
+        MapEditor::WorldFiles::validateLeveledTexture(
+            std::vector<unsigned char>(bytes.constData(),
+                                       bytes.constData() + bytes.size()),
+            static_cast<int>(session_->mapWidth()),
+            static_cast<int>(session_->mapHeight()));
+    if (!errors.empty()) {
+        QString message = tr("The texture is not valid:\n");
+        for (const std::string &error : errors) {
+            message += QStringLiteral("\n- ") + QString::fromStdString(error);
+        }
+        QMessageBox::warning(this, tr("Import leveledSurfaceTexture"), message);
+        return;
+    }
+    if (!files->writeLeveledTexture(
+            std::vector<unsigned char>(bytes.constData(),
+                                       bytes.constData() + bytes.size()),
+            static_cast<int>(session_->mapWidth()),
+            static_cast<int>(session_->mapHeight()))) {
+        QMessageBox::warning(this, tr("Import leveledSurfaceTexture"),
+                             tr("Failed to write the texture."));
+        return;
+    }
+    // Reload the texture into the running world so the viewport shows it.
+    if (session_->reloadLeveledTextureLive()) {
+        statusBar()->showMessage(
+            tr("leveledSurfaceTexture.tga imported and reloaded."), 5000);
+    } else {
+        statusBar()->showMessage(
+            tr("leveledSurfaceTexture.tga imported (reload the world to see "
+               "it)."), 5000);
+    }
+    if (viewport_) {
+        viewport_->setNeeds3DRedraw();
+        viewport_->update();
+    }
+}
+
+void MainWindow::onActionExportHeightmap()
+{
+    if (!session_->isWorldLoaded()) {
+        return;
+    }
+    const QString path = QFileDialog::getSaveFileName(
+        this, tr("Export Heightmap"), QStringLiteral("heightmap.tga"),
+        tr("TGA images (*.tga)"));
+    if (path.isEmpty()) {
+        return;
+    }
+    if (MapEditor::WorldImages::exportHeightmapTga(path.toStdWString())) {
+        statusBar()->showMessage(tr("Heightmap exported to %1.").arg(path), 5000);
+    } else {
+        QMessageBox::warning(this, tr("Export Heightmap"),
+                             tr("Failed to write the heightmap."));
+    }
+}
+
+void MainWindow::onActionExportTopView()
+{
+    if (!session_->isWorldLoaded()) {
+        return;
+    }
+    const QString path = QFileDialog::getSaveFileName(
+        this, tr("Export Top View"), QStringLiteral("topview.tga"),
+        tr("TGA images (*.tga)"));
+    if (path.isEmpty()) {
+        return;
+    }
+    if (MapEditor::WorldImages::exportTopViewTga(path.toStdWString())) {
+        statusBar()->showMessage(tr("Top view exported to %1.").arg(path), 5000);
+    } else {
+        QMessageBox::warning(this, tr("Export Top View"),
+                             tr("Failed to write the top view."));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// T9 — validation + autofixes.
+// ---------------------------------------------------------------------------
+
+void MainWindow::buildToolsMenu()
+{
+    QMenu *toolsMenu = menuBar()->addMenu(tr("&Tools"));
+
+    QAction *actValidateWorld = toolsMenu->addAction(tr("&Validate World..."));
+    actValidateWorld->setToolTip(tr("Files, sizes, palettes, textures and the volume balance of the loaded world"));
+    actValidateWorld->setEnabled(false);
+    connect(actValidateWorld, &QAction::triggered, this, &MainWindow::onActionValidateWorld);
+    actValidateWorld_ = actValidateWorld;
+
+    QAction *actValidateMap = toolsMenu->addAction(tr("Validate &Battle Map..."));
+    actValidateMap->setToolTip(tr("World reference, spawn bounds, cameras, shuffling indices of the loaded battle map"));
+    actValidateMap->setEnabled(false);
+    connect(actValidateMap, &QAction::triggered, this, &MainWindow::onActionValidateBattleMap);
+    actValidateBattleMap_ = actValidateMap;
+
+    toolsMenu->addSeparator();
+
+    QAction *actFixShuffling = toolsMenu->addAction(tr("Autofix: &Normalize Shuffling Indices"));
+    actFixShuffling->setEnabled(false);
+    connect(actFixShuffling, &QAction::triggered, this, &MainWindow::onActionAutofixShuffling);
+    actFixShuffling_ = actFixShuffling;
+
+    QAction *actFixZP = toolsMenu->addAction(tr("Autofix: Set zeroLayerHeight from &World"));
+    actFixZP->setEnabled(false);
+    connect(actFixZP, &QAction::triggered, this, &MainWindow::onActionAutofixZeroLayerHeight);
+    actFixZeroLayer_ = actFixZP;
+
+    QAction *actRegenImages = toolsMenu->addAction(tr("Autofix: &Regenerate cache.tga / map.tga"));
+    actRegenImages->setEnabled(false);
+    connect(actRegenImages, &QAction::triggered, this, &MainWindow::onActionRegenerateImages);
+    actRegenerateImages_ = actRegenImages;
+}
+
+void MainWindow::showValidationReport(const QString &title,
+                                      const MapEditor::ValidationReport &report)
+{
+    MapEditor::ValidationDialog dialog(this, title, report);
+    if (dialog.exec() == QDialog::Accepted) {
+        int x = -1;
+        int y = -1;
+        dialog.currentIssueCell(x, y);
+        if (x >= 0 && y >= 0 && viewport_) {
+            viewport_->centerOnCell(QPoint(x, y));
+            viewport_->update();
+        }
+    }
+}
+
+void MainWindow::onActionValidateWorld()
+{
+    const auto files = session_ ? session_->currentWorldFiles() : std::nullopt;
+    if (!files || !session_->isWorldLoaded()) {
+        return;
+    }
+    MapEditor::ValidationReport report =
+        MapEditor::validateWorldFiles(*files);
+    long long fill = 0;
+    long long dig = 0;
+    report.issues.push_back(
+        MapEditor::validateVolumeBalance(MapEditor::VolumeBalanceOptions{},
+                                         fill, dig));
+    showValidationReport(
+        tr("World Validation: %1")
+            .arg(QString::fromStdString(session_->currentWorldName())),
+        report);
+}
+
+void MainWindow::onActionValidateBattleMap()
+{
+    if (!battleMap_.loaded() || !session_ || !session_->hasGameDir()) {
+        return;
+    }
+    const fs::path worldsRoot =
+        fs::u8path(session_->getGameDir()) / "RESOURCE" / "Worlds";
+    showValidationReport(
+        tr("Battle Map Validation"),
+        MapEditor::validateBattleMap(battleMap_, worldsRoot));
+}
+
+void MainWindow::onActionAutofixShuffling()
+{
+    if (!battleMap_.loaded()) {
+        return;
+    }
+    if (MapEditor::autofixShufflingIndices(battleMap_)) {
+        refreshBattleMapUI();
+        statusBar()->showMessage(
+            tr("playersShufflingIndices normalized."), 5000);
+    }
+}
+
+void MainWindow::onActionAutofixZeroLayerHeight()
+{
+    if (!battleMap_.loaded() || !session_->isWorldLoaded()) {
+        return;
+    }
+    if (MapEditor::autofixZeroLayerHeight(battleMap_,
+                                          session_->zeroLayerHeight())) {
+        refreshBattleMapUI();
+        statusBar()->showMessage(
+            tr("zeroLayerHeight set to the world hZeroPlast (%1).")
+                .arg(session_->zeroLayerHeight()),
+            5000);
+    }
+}
+
+void MainWindow::onActionRegenerateImages()
+{
+    const auto files = session_ ? session_->currentWorldFiles() : std::nullopt;
+    if (!files || !session_->isWorldLoaded()) {
+        return;
+    }
+    const bool ok = MapEditor::WorldImages::generateCacheTga(
+                        files->worldDir()) &&
+                    MapEditor::WorldImages::generateMapTga(
+                        files->worldDir());
+    statusBar()->showMessage(
+        ok ? tr("cache.tga / map.tga regenerated.")
+           : tr("Image regeneration failed."),
+        5000);
+}
+
 void MainWindow::onActionUndo()
 {
     if (session_->undo()) {
@@ -2316,6 +2923,46 @@ void MainWindow::updateActionStates()
     }
     if (actSaveAs_) {
         actSaveAs_->setEnabled(worldLoaded);
+    }
+    if (actWorldParams_) {
+        actWorldParams_->setEnabled(worldLoaded);
+    }
+    // T8/T9 — battle map and validation actions: opening a battle map needs
+    // a game directory only (its world may be loaded later or not at all);
+    // the battle-map tools need a loaded .spg, the world-dependent ones both.
+    const bool gameDirSet = session_ != nullptr && session_->hasGameDir();
+    const bool battleMapLoaded = battleMap_.loaded();
+    if (actOpenBattleMap_) {
+        actOpenBattleMap_->setEnabled(gameDirSet);
+    }
+    if (actSaveBattleMap_) {
+        actSaveBattleMap_->setEnabled(battleMapLoaded &&
+                                      !battleMapPath_.isEmpty());
+    }
+    if (actSaveBattleMapAs_) {
+        actSaveBattleMapAs_->setEnabled(battleMapLoaded);
+    }
+    if (actValidateBattleMap_) {
+        actValidateBattleMap_->setEnabled(battleMapLoaded);
+    }
+    if (actFixShuffling_) {
+        actFixShuffling_->setEnabled(battleMapLoaded);
+    }
+    if (actValidateWorld_) {
+        actValidateWorld_->setEnabled(worldLoaded);
+    }
+    if (actRegenerateImages_) {
+        actRegenerateImages_->setEnabled(worldLoaded);
+    }
+    if (actFixZeroLayer_) {
+        actFixZeroLayer_->setEnabled(battleMapLoaded && worldLoaded);
+    }
+    for (QAction *action : {importMapImageAction_, importUpTgaAction_,
+                            importLeveledAction_, exportHeightmapAction_,
+                            exportTopViewAction_}) {
+        if (action) {
+            action->setEnabled(worldLoaded);
+        }
     }
     if (actUndo_) {
         actUndo_->setEnabled(worldLoaded && session_->canUndo());

@@ -752,6 +752,163 @@ drawGridOverlay (проекция сетки). Terra viewV2D остаётся т
 1.00 при rot 45; остаточные 0.85 при rot 60 — корректное ракурсное сжатие
 оси глубины против боковой (как у реальной камеры).
 
+## 5.17. Параметры мира — `WorldParams` + `WorldSettingsDialog` (T5.1)
+
+`core/WorldParams.{h,cpp}` (без Qt) — снапшот параметров мира, разбросанных
+по трём местам:
+
+- `world.ini [Global Parameters]` — `hZeroPlast` и степени генерации
+  (GeoNet/Section/MinimalSquare). Для загруженного мира степени пишутся
+  **только в ini**: буферы выделены под размеры, действующие на момент
+  загрузки; новые значения вступают в силу при перезагрузке мира или при
+  генерации рельефа. `hZeroPlast`, наоборот, применяется в живую
+  (`vMap.hZeroPlast`, пометка modified) — от него зависят зеропластовые
+  кисти и опорная плоскость 3D-сетки. Найденный квирк Terra (не чиним,
+  см. docs/context.md): `analyzeINI` читает `Minimal Square Power` в
+  `MINSQUARE`, но `setupGeneralVariable()` затирает его из
+  `MINSQUARE_POWER`, который из ini никогда не читается.
+- `[Storage]` / заголовок `output.vmp` — сжатие S2T0/S2T1. Игра определяет
+  формат по 4-байтовому id в заголовке файла, ключ в ini — документация.
+  `save3Buf()` всегда пишет S2T0, поэтому сессия хранит целевой формат
+  (`vmpCompressionTarget_`, инициализируется с заголовка файла при
+  загрузке) и после каждого `save3Buf()` конвертирует файл заново
+  (`EditorSession::saveWorld`). Конвертация — `convertVmpCompression()`,
+  однозаголовочная копия `vrtMap::compressWorlds` на тех же
+  `XBuffer::compress/uncompress` (та делает это для всех миров сразу и
+  завершается через `ErrH.Abort`). `currentWorldParams()` берёт формат
+  из реального заголовка файла.
+- `[3DF Parameters]` — масштаб гео-шума kmx/kmy/kmz и легаси-индекс
+  функции. Применяются в живую (`f3d.setKM`/`setFunction`) и пишутся
+  Terra'овским же `f3d.saveVariable()` (текущий мир, content root).
+- `Perimeter.ini [TD] Color ZeroLayer` — общая для всей установки игры
+  окраска зеропласта; отсутствующий ключ = встроенные значения игры
+  (1 11 51 70). Пишется в файл игры сразу при применении
+  (`writeZeroLayerColor`, IniDocument — с сохранением байтов остального
+  файла) плюс в `vMap.colZeroPlast`; вне конвейера сохранения мира.
+
+Размер карты в диалоге для загруженного мира read-only (буферы уже
+выделены); режим `Mode::NewWorld` с редактируемыми степенями и высотой
+гео-слоя (< hZeroPlast, заливается вокселями при создании) переиспользует
+мастер нового мира (T5.2). Диалог включён в File-меню
+(«World Parameters...»), активен при загруженном мире.
+
+## 5.18. Мастер нового мира — `WorldCreation` + `NewWorldWizard` (T5.2)
+
+`core/WorldCreation.{h,cpp}` — `createNewWorld(session, params, template)`:
+- **Шаблон** — существующий мир той же установки: из него копируются
+  обязательные `inGeo.act`/`inDam.act`/`geoPal.xml`/`geoTx.xml`/
+  `leveledSurfaceTexture.tga` и опциональные `geoLattice.bin`/`map.tga`/
+  `up.tga`; `world.ini` копируется целиком и переписывается значениями
+  мастера (Global Parameters, Storage, 3DF) — секции рендера шаблона
+  (`[Rendering Parameters]`, `[Dynamic Palette]`, …) выживают нетронутыми.
+- **Плоский режим** — редактор сам пишет S2T0 `output.vmp` (VxG = высота
+  гео-слоя везде, VxD/Atr/Sur = 0, заголовок с нулями в NX/NY), после
+  загрузки поверхность перекрашивается `f3d.recalcWorld()` (SurBuf из
+  гео-шума; indexedTexture уже загружен fullLoad) и мир перерендеривается
+  `WorldRender()`. **Генерация** — папка остаётся без `output.vmp`, и
+  загрузчик сам вызывает `vrtMap::buildWorld()` (путь `selectUsedWorld`;
+  `LoadVPR` отсутствие `output.vpr` обрабатывает, `output.vsc` не нужен —
+  в COMPASS его тоже нет).
+- После создания мир загружается сессией и один раз сохраняется —
+  `cache.tga`/`map.tga` существуют с рождения; целевое сжатие применяется
+  через `applyWorldSettings`. Ошибки (имя, существование, нехватка файлов
+  шаблона) возвращают `WorldCreateResult.error` и подчищают папку.
+- UI — `ui/NewWorldWizard.{h,cpp}` (QWizard: имя+шаблон → рельеф →
+  параметры); страница параметров переиспользует `WorldSettingsPanel`
+  (вынесен из диалога T5.1) в режиме `NewWorld`; дефолт значений берётся
+  из шаблонного мира.
+
+## 5.19. Изображения — импорт/экспорт (T6)
+
+`cache.tga`/`map.tga` генерируются при каждом сохранении с T1.3
+(`WorldImages::generateCacheTga/generateMapTga` через общий `renderToBgr`,
+так что файлы и вьюпорт пиксельно совпадают). Новое в T6:
+
+- **up.tga** (T6.1) — эталонный формат shipped-миров: 24-бит несжатый
+  TGA 512×512, top-left (`WorldImages::kUpTgaSize`). Игровым кодом не
+  читается. UI (`MainWindow::onActionImportUpTga`) грузит любой
+  QImage-формат, скейлит Qt-smooth до 512², переводит RGB888→BGR и пишет
+  `WorldImages::writeUpTga`; при сохранении не трогается.
+- **Экспорт** (T6.2) — `exportHeightmapTga` (8-бит серый TGA, тип 3,
+  `SGetAlt >> VX_FRACTION` — дамба приоритетна, как на видимой
+  поверхности) и `exportTopViewTga` (растр вьюпорта в 24-бит TGA).
+- **Импорт на карту** (T6.3) — `EditorSession::importSurfaceImageRgb`/
+  `importSurfaceImageIndexed`: картинка сэмплится nearest в клетки карты
+  (UI скейлит QImage заранее — smooth), каждая клетка получает индекс
+  палитры СВОЕГО слоя (GeoPal/DamPal, гейт T4.3); чекбоксы «красить
+  гео/дамбу» в диалоге опций. Indexed TGA (тип 1, несжатый — читатель
+  `WorldImages::readIndexedTga`, палитра ре-базится на CMapStart) пишет
+  индексы в SurBuf как есть. Вся карта — один undo-шаг
+  (`recordUndoArea(0,0,H,V)`), затем `regRenderWithShadowTrail` по всей
+  карте. Фильтры SurMap по высоте/цвету не переносились (гео/дамба-гейт
+  покрывает редакторские сценарии).
+- **leveledSurfaceTexture.tga** (T6.4) — UI читает TGA в байты, валидирует
+  `WorldFiles::validateLeveledTexture` (правила `loadLeveledTexture`),
+  пишет `writeLeveledTexture` и живо перегружает текстуру в загруженный
+  мир (`EditorSession::reloadLeveledTextureLive` = del+load), после чего
+  3D-перерисовка показывает её без перезагрузки мира.
+
+## 5.20. Маркеры — сайдкар `.medit.json` + панель (T7)
+
+- **`core/MarkerStore.{h,cpp}`** — Qt-free хранилище
+  (`MapMarkerData`: id/type/note/label/color/x/y/radius) и JSON-сайдкар
+  `RESOURCE/Worlds/<мир>.medit.json` (РЯДОМ с папкой мира — в саму папку
+  мира, которую читает игра, ничего не пишется; в `.spg` маркеры не
+  экспортируются). JSON парсится/пишется встроенным мини-парсером
+  (recursive descent, ~200 строк) — без Qt/сторонних зависимостей в core;
+  схема: `{version, world, nextId, markers:[{id,type,label,note,color:"#RRGGBB",x,y,radius}]}`.
+  Типы: point/zone/unit/building; radius>0 — зона. Чтение лояльное
+  (неизвестный тип → point), id продолжаются после максимума из файла.
+- **Оверлей** — `ViewportWidget::drawMarkers` (существовавшая точка
+  расширения; маркеры приходят через `setMarkers`, TopDown-only);
+  zone рисуется кругом с радиусом в клетках (`radius * zoom`).
+- **Панель** — `ui/MarkerPanel` (namespace MapEditor, как PalettePanel):
+  список, Add (в центре текущего вида — дефолтная позиция следует за
+  `viewRectChanged`), Edit/Delete, Go To (двойной клик) →
+  `viewport_->centerOnCell`. Каждое изменение панели автосохраняет
+  сайдкар (`MainWindow::saveMarkerSidecar`) и обновляет оверлей;
+  сайдкар грузится на `onWorldLoaded`, сбрасывается на unload.
+  Док включается из View-меню (клавиша K).
+
+
+## 5.21. Боевые карты `.spg` — XPrmDocument/SpgFile + панель (T8)
+
+- **`core/spg/XPrmDocument`** — байт-сохраняющий DOM XPrm-текста
+  (решение против зеркальных структур — см. docs/context.md): каждый узел
+  хранит исходный слайс + терминаторы + промежутки; незатронутый файл
+  воспроизводится байт-в-байт (тест 70 это доказывает на COMPASS.spg),
+  редактируется только изменённое значение. Поля-потомки при редактировании
+  пересчитывают цепочку `hasEdits()` до корня блока.
+- **`core/spg/SpgFile`** — схемный слой: worldName/playersData/
+  playersShufflingIndices/zeroLayerHeight; группы спавна игрока (frame +
+  squad + stablePosition + frameSlots + камеры) двигаются вместе
+  (`setPlayerAnchor`), dz передаёт вызывающий (дельта высот рельефа —
+  `EditorSession::terrainHeightAt`); `setPlayerCount` клонирует/удаляет
+  элементы массивов с перенумерацией playerID (T8.4).
+- **UI** — `ui/BattleMapPanel` (док, клавиша B): список игроков, Go To,
+  Move to View Centre (z-коррекция), Edit Properties (playersData),
+  New Battle Map (шаблон из RESOURCE/Battle + число игроков + спавны по
+  эллипсу, zeroLayerHeight из мира). Файл-меню: Open Battle Map (автосмена
+  мира по worldName), Save/Save As (Battle/Worlds, предупреждение о
+  перезаписи; `.gmp`/`.dat` не читаются и не пишутся). Оверлей спавнов —
+  `ViewportWidget::setSpawnPoints` (T2.2-хук).
+
+## 5.22. Валидация (T9)
+
+- **`core/Validation`** — `validateWorldFiles` (обязательные файлы,
+  Map Power 0..14, hZeroPlast 0..255, 768-байтные палитры, валидация
+  leveledSurfaceTexture и заголовка hardness.bin), `validateVolumeBalance`
+  (T9.3: сумма `max(0, h-hZP)` против суммы впадин по всей карте через
+  `SGetAlt>>5`; допуск в % от объёма впадин или абсолютный; при выходе —
+  предупреждение про импорт/экспорт грунта), `validateBattleMap` (мир
+  существует в RESOURCE/Worlds, спавны в границах — с go-to клеткой,
+  уникальность имён, камеры на игрока, покрытие shuffling).
+- **`ui/ValidationDialog`** — дерево ошибок/предупреждений/инфо с кнопкой
+  перехода (Tools-меню: Validate World / Validate Battle Map).
+- **Автофиксы** (T9.5, Tools-меню): нормализация playersShufflingIndices
+  в identity, zeroLayerHeight := hZeroPlast мира, перегенерация
+  cache.tga/map.tga.
+
 ## 6. Тесты
 
 Headless-тесты `map_editor_tests` (`tests/`), по файлу на модуль, порядок
@@ -777,6 +934,12 @@ Headless-тесты `map_editor_tests` (`tests/`), по файлу на моду
 | 63 | `BrushPickColorTests` | `PickColor` — поддержанный точечный эффект: сэмпл `SurBuf` в `lastPickedColorIndex()`/`params().colorIndex`, мир байт-в-байт без undo-записи, отказ вне карты, round-trip «красим → выборка → красим выбранным» (мода краски подстраивается под слой клетки), отказ линии (T4.2) |
 | 64 | `PaletteOpsTests` | `setPaletteRgb`/`paletteRgb` по слоям Geo/Dam (отказы вне диапазона и без мира), таблицы после `applyPalettes()` == game-формуле (`Sur2Col32` по полной развертке света, `veryLightDam`), сериализация `geoPalXml` воспроизводит байты через обрыв `float*255`, `saveWorld()` пишет inGeo/inDam+XML и мир перезагружается с редактированной палитрой байт-в-байт (T4.1) |
 | 66–68 | `ViewOptionsTests` | затемнение гео (серые не-дамбовые клетки, дамба в палитре, байт-точный возврат), сетка-оверлей 3D (метки = цвет оверлея), заморозка дамбы (повторы меняются, вид из центра карты — нет) |
+| 58–59 | `WorldCreationTests` | создание мира из шаблона: flat (файлы, ini, ровный гео-слой, S2T0, дубликат имени) и generated (buildWorld, размер) (T5.2) |
+| 60–61 | `ImageImportExportTests` | экспорт: heightmap == `SGetAlt>>5`, top-view/up.tga заголовки, чтение индексированного TGA + отказ true-color; импорт: RGB → ближайший индекс по слою клетки, гейт гео/дамба, whole-map undo байт-в-байт, indexed → SurBuf как есть (T6) |
+| 65 | `MarkerStoreTests` | JSON round-trip маркеров (поля, экранирование), CRUD/ids, путь сайдкара, файл round-trip (T7.1) |
+| 70–71 | `SpgTests` | load→save COMPASS.spg байт-в-байт (XPrm DOM + SpgFile); правки: worldName/playersData/zeroLayerHeight/movePlayerGroup (фрейм+сквад+stable+слоты+камера), setPlayerCount; неизвестные узлы (контролы UI) выживают (T8) |
+| 75 | `ValidationTests` | validateWorldFiles без ошибок; объёмный баланс плоского мира (fill/dig, допуск); validateBattleMap (чисто; ошибка отсутствия мира; out-of-bounds спавн с go-to); автофиксы (T9) |
+| 55–57 | `WorldParamsTests` | чтение `WorldParams` против `world.ini`/`Perimeter.ini` + round-trip записи в scratch-копию (включая ZP-цвет и ключ `[Storage]`); S2T0→S2T1→S2T0 конвертация `output.vmp` байт-в-байт, идемпотентность, отказы; интеграция `applyWorldSettings`/`saveWorld`: живой `hZeroPlast`, `f3d` в живую + в ini, ZP-цвет в `Perimeter.ini` копии, S2T1 переживает сохранение (T5.1) |
 
 Тесты пишут только во временный content-root (`%TEMP%/map_editor_roundtrip`),
 исходный мир не изменяется. `SaveWorldTests` строит изолированный content-root

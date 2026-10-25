@@ -915,6 +915,14 @@ void ViewportWidget::drawMarkers(QPainter &painter)
 
     for (const MapMarker &m : markers_) {
         QPointF pos = mapToScreen(m.mapX, m.mapY);
+        if (m.radius > 0) {
+            // Zone: a circle outline with the radius in map cells.
+            const double screenRadius = static_cast<double>(m.radius) * zoom_;
+            painter.setPen(QPen(m.color, 2));
+            painter.setBrush(QColor(m.color.red(), m.color.green(),
+                                    m.color.blue(), 40));
+            painter.drawEllipse(pos, screenRadius, screenRadius);
+        }
         painter.setPen(Qt::NoPen);
         painter.setBrush(m.color);
         painter.drawEllipse(pos, 5, 5);

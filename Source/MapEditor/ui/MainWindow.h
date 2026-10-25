@@ -3,6 +3,9 @@
 #include <QMainWindow>
 
 #include "BrushTool.h"
+#include "MarkerStore.h"
+#include "Validation.h"
+#include "spg/SpgFile.h"
 
 class GameDirManager;
 class QCloseEvent;
@@ -21,6 +24,8 @@ class EditorSession;
 class ViewportWidget;
 class MinimapWidget;
 class PalettePanel;
+class MarkerPanel;
+class BattleMapPanel;
 class BrushTool;
 struct View3DCamera;
 }
@@ -61,10 +66,15 @@ protected:
 private slots:
     void onActionSelectGameDir();
     void onActionScanWorlds();
+    /// T5.2 — the new-world wizard; creates, loads and saves a new world.
+    void onActionNewWorld();
     void onActionLoadWorld();
     void onActionUnloadWorld();
     void onActionSave();
     void onActionSaveAs();
+    /// T5.1 — open the World Settings dialog for the loaded world and apply
+    /// the changed parameters through EditorSession::applyWorldSettings.
+    void onActionWorldParams();
     void onActionUndo();
     void onActionRedo();
     void onActionClearUndoHistory();
@@ -99,6 +109,34 @@ private slots:
     /// T3.5 — open a file dialog, load an image as brush mask.
     void onLoadBrushImage();
 
+    // T6 — image import/export.
+    /// T6.3 — paint SurBuf from an image (RGB -> nearest palette index,
+    /// indexed TGA -> indices as-is).
+    void onActionImportMapImage();
+    /// T6.1 — any user image becomes the world's up.tga (512x512 24-bit).
+    void onActionImportUpTga();
+    /// T6.4 — replace leveledSurfaceTexture.tga with validation.
+    void onActionImportLeveledTexture();
+    /// T6.2 — 8-bit grayscale heightmap (SGetAlt >> 5).
+    void onActionExportHeightmap();
+    /// T6.2 — the top view raster as 24-bit TGA.
+    void onActionExportTopView();
+
+    // T8 — battle maps (.spg).
+    void onActionOpenBattleMap();
+    void onActionSaveBattleMap();
+    void onActionSaveBattleMapAs();
+    /// T8.4 — new battle map from a template (BattleMapPanel request).
+    void onNewBattleMapRequested(const QString &name, const QString &templateMap,
+                                 int playerCount);
+
+    // T9 — validation + autofixes (Tools menu).
+    void onActionValidateWorld();
+    void onActionValidateBattleMap();
+    void onActionAutofixShuffling();
+    void onActionAutofixZeroLayerHeight();
+    void onActionRegenerateImages();
+
 private:
     void buildMenuBar();
     void buildEditMenu(QMenuBar *menuBar);
@@ -109,6 +147,28 @@ private:
     void buildMinimapDock();
     // T4.1 — the palette panel dock (built right after the minimap dock).
     void buildPaletteDock();
+    // T7.2 — the marker panel dock + View menu toggle.
+    void buildMarkerDock();
+    // T8 — the battle map panel dock.
+    void buildBattleMapDock();
+    // T9 — the Tools menu (validation + autofixes).
+    void buildToolsMenu();
+    /// Shared report dialog with the "Go To" jump wired to the viewport.
+    void showValidationReport(const QString &title,
+                              const MapEditor::ValidationReport &report);
+
+    // T8 — battle map helpers: panel/overlay/action refresh, the world the
+    // .spg refers to, and the spawn overlay contents.
+    void refreshBattleMapUI();
+    bool ensureWorldForBattleMap();
+    void syncSpawnOverlay();
+    QString askBattleMapSaveName(bool &toWorldsFolder) const;
+
+    // T7 — marker sidecar lifecycle: load on world load, autosave on change,
+    // clear on unload; feeds the viewport overlay.
+    void loadMarkerSidecar();
+    void saveMarkerSidecar();
+    void syncMarkerOverlay();
 
     // T3.2 — create the brush type (effect), the brush mode (Geo/Dam) and
     // the editor interaction mode (View/Brush/Eyedropper) actions. Called
@@ -168,6 +228,14 @@ private:
     // Toggled to reflect session state; owned by the menus.
     QAction *actSave_ = nullptr;
     QAction *actSaveAs_ = nullptr;
+    // T5.1 — "World Parameters..." (enabled while a world is loaded).
+    QAction *actWorldParams_ = nullptr;
+    // T6 — image import/export actions (enabled while a world is loaded).
+    QAction *importMapImageAction_ = nullptr;
+    QAction *importUpTgaAction_ = nullptr;
+    QAction *importLeveledAction_ = nullptr;
+    QAction *exportHeightmapAction_ = nullptr;
+    QAction *exportTopViewAction_ = nullptr;
     QAction *actUndo_ = nullptr;
     QAction *actRedo_ = nullptr;
     QAction *actClearUndoHistory_ = nullptr;
@@ -268,4 +336,25 @@ private:
     // feeding the brush colorIndex; dockable like the minimap.
     QDockWidget *paletteDock_ = nullptr;
     MapEditor::PalettePanel *palettePanel_ = nullptr;
+
+    // T7 — markers: sidecar-backed store, dock panel and View menu toggle.
+    MapEditor::MarkerStore markerStore_;
+    QDockWidget *markerDock_ = nullptr;
+    MapEditor::MarkerPanel *markerPanel_ = nullptr;
+
+    // T9 — validation + autofixes (Tools menu).
+    QAction *actValidateWorld_ = nullptr;
+    QAction *actValidateBattleMap_ = nullptr;
+    QAction *actFixShuffling_ = nullptr;
+    QAction *actFixZeroLayer_ = nullptr;
+    QAction *actRegenerateImages_ = nullptr;
+
+    // T8 — the loaded battle map (.spg), its dock panel and File actions.
+    MapEditor::SpgFile battleMap_;
+    QString battleMapPath_;
+    QDockWidget *battleMapDock_ = nullptr;
+    MapEditor::BattleMapPanel *battleMapPanel_ = nullptr;
+    QAction *actOpenBattleMap_ = nullptr;
+    QAction *actSaveBattleMap_ = nullptr;
+    QAction *actSaveBattleMapAs_ = nullptr;
 };

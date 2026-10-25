@@ -27,7 +27,13 @@ ADD_EXECUTABLE(map_editor_tests
         View3DSmoothTests.cpp
         View3DRendererTests.cpp
         ViewOptionsTests.cpp
-        ShadowTrailTests.cpp)
+        ShadowTrailTests.cpp
+        WorldParamsTests.cpp
+        WorldCreationTests.cpp
+        ImageImportExportTests.cpp
+        MarkerStoreTests.cpp
+        SpgTests.cpp
+        ValidationTests.cpp)
 
 SET_TARGET_PROPERTIES(map_editor_tests PROPERTIES
         WIN32_EXECUTABLE OFF

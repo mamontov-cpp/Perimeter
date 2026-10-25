@@ -6,6 +6,16 @@
 
 #include "ViewportRenderer.h"
 
+// vMap for the heightmap export (SGetAlt) — same direct-Terra include the
+// rest of MapEditorCore uses.
+#ifndef _PERIMETER_
+#define _PERIMETER_ 1
+#endif
+#ifndef _TX3D_LIBRARY_
+#define _TX3D_LIBRARY_ 1
+#endif
+#include "terra.h"
+
 #include <algorithm>
 #include <cstdio>
 #include <fstream>
@@ -181,6 +191,157 @@ bool generateMapTga(const std::filesystem::path& worldDir)
     std::vector<unsigned char> minimap;
     downscaleNearest(source, sw, sh, tw, th, minimap);
     return writeTga24(worldDir / "map.tga", tw, th, minimap);
+}
+
+// ---------------------------------------------------------------------------
+// T6 — user image import/export.
+// ---------------------------------------------------------------------------
+
+bool writeUpTga(const std::filesystem::path& worldDir,
+                const std::vector<unsigned char>& bgr)
+{
+    if (bgr.size() < static_cast<std::size_t>(kUpTgaSize) * kUpTgaSize * 3) {
+        fprintf(stderr, "WorldImages: up.tga buffer is %zu bytes, expected %u.\n",
+                bgr.size(), kUpTgaSize * kUpTgaSize * 3);
+        return false;
+    }
+    return writeTga24(worldDir / "up.tga", kUpTgaSize, kUpTgaSize, bgr);
+}
+
+bool writeTga8Gray(const std::filesystem::path& path, unsigned width,
+                   unsigned height, const std::vector<unsigned char>& gray)
+{
+    if (width == 0 || height == 0 ||
+        gray.size() < static_cast<std::size_t>(width) * height) {
+        return false;
+    }
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        fprintf(stderr, "WorldImages: cannot write '%s'.\n",
+                path.u8string().c_str());
+        return false;
+    }
+    unsigned char header[18] = {};
+    header[2] = 3; // uncompressed grayscale
+    header[12] = static_cast<unsigned char>(width & 0xFF);
+    header[13] = static_cast<unsigned char>((width >> 8) & 0xFF);
+    header[14] = static_cast<unsigned char>(height & 0xFF);
+    header[15] = static_cast<unsigned char>((height >> 8) & 0xFF);
+    header[16] = 8;
+    header[17] = 0x20; // top-left origin
+    out.write(reinterpret_cast<const char*>(header), 18);
+    out.write(reinterpret_cast<const char*>(gray.data()),
+              static_cast<std::streamsize>(width) * height);
+    return out.good();
+}
+
+bool exportHeightmapTga(const std::filesystem::path& path)
+{
+    if (vMap.VxGBuf == nullptr) {
+        return false;
+    }
+    const unsigned width = vMap.H_SIZE;
+    const unsigned height = vMap.V_SIZE;
+    std::vector<unsigned char> gray(static_cast<std::size_t>(width) * height);
+    for (unsigned y = 0; y < height; ++y) {
+        for (unsigned x = 0; x < width; ++x) {
+            // Whole voxels of the visible surface (dam priority included).
+            gray[static_cast<std::size_t>(y) * width + x] =
+                static_cast<unsigned char>(vMap.SGetAlt(x, y) >> VX_FRACTION);
+        }
+    }
+    return writeTga8Gray(path, width, height, gray);
+}
+
+bool exportTopViewTga(const std::filesystem::path& path)
+{
+    std::vector<unsigned char> bgr;
+    unsigned width = 0;
+    unsigned height = 0;
+    if (!renderToBgr(bgr, width, height)) {
+        return false;
+    }
+    return writeTga24(path, width, height, bgr);
+}
+
+bool readIndexedTga(const std::filesystem::path& path, unsigned& width,
+                    unsigned& height, std::vector<unsigned char>& indices,
+                    std::vector<unsigned char>& paletteBgr)
+{
+    width = 0;
+    height = 0;
+    indices.clear();
+    paletteBgr.clear();
+
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        fprintf(stderr, "WorldImages: cannot read '%s'.\n",
+                path.u8string().c_str());
+        return false;
+    }
+    unsigned char header[18] = {};
+    in.read(reinterpret_cast<char*>(header), sizeof(header));
+    if (!in) {
+        return false;
+    }
+    // Uncompressed color-mapped only.
+    if (header[2] != 1 || header[1] != 1) {
+        fprintf(stderr, "WorldImages: '%s' is not an uncompressed indexed "
+                        "TGA.\n", path.u8string().c_str());
+        return false;
+    }
+    const unsigned mapStart = static_cast<unsigned>(header[3]) |
+                              (static_cast<unsigned>(header[4]) << 8);
+    const unsigned mapLength = static_cast<unsigned>(header[5]) |
+                               (static_cast<unsigned>(header[6]) << 8);
+    const unsigned mapDepth = header[7];
+    const unsigned w = static_cast<unsigned>(header[12]) |
+                       (static_cast<unsigned>(header[13]) << 8);
+    const unsigned h = static_cast<unsigned>(header[14]) |
+                       (static_cast<unsigned>(header[15]) << 8);
+    if (header[16] != 8 || w == 0 || h == 0 || mapDepth != 24) {
+        return false;
+    }
+
+    std::vector<unsigned char> colorMap(static_cast<std::size_t>(mapLength) * 3);
+    in.read(reinterpret_cast<char*>(colorMap.data()),
+            static_cast<std::streamsize>(colorMap.size()));
+    if (mapLength > 0 && !in) {
+        return false;
+    }
+
+    std::vector<unsigned char> file(static_cast<std::size_t>(w) * h);
+    in.read(reinterpret_cast<char*>(file.data()),
+            static_cast<std::streamsize>(file.size()));
+    if (!in) {
+        fprintf(stderr, "WorldImages: '%s' is truncated.\n",
+                path.u8string().c_str());
+        return false;
+    }
+
+    const bool bottomLeft = (header[17] & 0x20) == 0;
+    indices.assign(file.size(), 0);
+    if (bottomLeft) {
+        for (unsigned y = 0; y < h; ++y) {
+            const auto from = static_cast<std::size_t>(h - 1 - y) * w;
+            const auto to = static_cast<std::size_t>(y) * w;
+            std::copy_n(file.data() + from, w, indices.data() + to);
+        }
+    } else {
+        indices = std::move(file);
+    }
+
+    // Re-base the palette: index 0 of the output must match color map entry
+    // `mapStart`, exactly how tgai-based readers hand indices out.
+    paletteBgr.assign(768, 0);
+    for (unsigned i = 0; i < mapLength && mapStart + i < 256; ++i) {
+        paletteBgr[(mapStart + i) * 3 + 0] = colorMap[i * 3 + 0];
+        paletteBgr[(mapStart + i) * 3 + 1] = colorMap[i * 3 + 1];
+        paletteBgr[(mapStart + i) * 3 + 2] = colorMap[i * 3 + 2];
+    }
+    width = w;
+    height = h;
+    return true;
 }
 
 } // namespace MapEditor::WorldImages

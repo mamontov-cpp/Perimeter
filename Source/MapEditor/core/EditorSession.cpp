@@ -6,8 +6,10 @@
 #include "PaletteOps.h"
 #include "ViewportRenderer.h"
 #include "WorldImages.h"
+#include "WorldParams.h"
 
 #include <algorithm>
+#include <climits>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -243,6 +245,14 @@ bool EditorSession::loadWorld(size_t worldIndex)
     vMap.worldChanged = false;
     state_ = SessionState::WorldLoaded;
 
+    // T5.1 — remember the on-disk output.vmp compression so Save keeps it.
+    if (const auto files = currentWorldFiles()) {
+        vmpCompressionTarget_ = std::max(
+            0, vmpCompressionOfFile(files->filePath(WorldFiles::OutputVmpFile)));
+    } else {
+        vmpCompressionTarget_ = 0;
+    }
+
     printf("EditorSession: loaded world '%s' (%u x %u)\n",
            wantedName.c_str(), vMap.H_SIZE, vMap.V_SIZE);
     return true;
@@ -336,6 +346,41 @@ const std::string& EditorSession::currentWorldName() const
     return worldList_[static_cast<size_t>(currentWorldIndex_)].name;
 }
 
+unsigned EditorSession::mapWidth() const
+{
+    return isWorldLoaded() ? static_cast<unsigned>(vMap.H_SIZE) : 0u;
+}
+
+unsigned EditorSession::mapHeight() const
+{
+    return isWorldLoaded() ? static_cast<unsigned>(vMap.V_SIZE) : 0u;
+}
+
+bool EditorSession::reloadLeveledTextureLive()
+{
+    if (!isWorldLoaded()) {
+        return false;
+    }
+    vMap.delLeveledTexture();
+    return vMap.loadLeveledTexture() != 0;
+}
+
+int EditorSession::zeroLayerHeight() const
+{
+    return isWorldLoaded() ? static_cast<int>(vMap.hZeroPlast) : -1;
+}
+
+int EditorSession::terrainHeightAt(int x, int y) const
+{
+    const unsigned w = mapWidth();
+    const unsigned h = mapHeight();
+    if (w == 0 || x < 0 || y < 0 ||
+        static_cast<unsigned>(x) >= w || static_cast<unsigned>(y) >= h) {
+        return -1;
+    }
+    return vMap.SGetAlt(x, y) >> VX_FRACTION;
+}
+
 SessionState EditorSession::state() const
 {
     return state_;
@@ -421,6 +466,19 @@ bool EditorSession::saveWorld()
         files->writeStorageVersion(*version); // keep the existing version
     } else {
         files->writeStorageVersion("1.4");
+    }
+
+    // ------------------------------------------------------------------
+    // 2b. T5.1 — output.vmp compression: save3Buf() always writes S2T0,
+    // so the session target (from the World Settings dialog, initialised
+    // from the file header on load) is re-applied here.
+    // ------------------------------------------------------------------
+    files->writeStorageCompressedFormat(vmpCompressionTarget_);
+    if (vmpCompressionTarget_ != 0 &&
+        !convertVmpCompression(worldDir / WorldFiles::OutputVmpFile,
+                               vmpCompressionTarget_)) {
+        fprintf(stderr, "EditorSession::saveWorld: output.vmp compression failed.\n");
+        return false;
     }
 
     // ------------------------------------------------------------------
@@ -884,6 +942,228 @@ bool EditorSession::applyPalettes()
     vMap.convertPal2TableSurCol(vMap.GeoPal, vrtMap::Geologic);
     vMap.convertPal2TableSurCol(vMap.DamPal, vrtMap::Damming);
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// T5.1 — world parameters.
+// ---------------------------------------------------------------------------
+
+std::optional<WorldParams> EditorSession::currentWorldParams() const
+{
+    const std::optional<WorldFiles> files = currentWorldFiles();
+    if (!files || !isWorldLoaded()) {
+        return std::nullopt;
+    }
+    std::optional<WorldParams> params =
+        WorldParams::readFromWorld(*files, fs::u8path(gameDir_));
+    if (!params) {
+        return std::nullopt;
+    }
+    // Live state wins over the files for everything the session holds in
+    // memory (edited but not yet saved values included).
+    params->hZeroPlast = static_cast<int>(vMap.hZeroPlast);
+    params->f3dKmx = f3d.kmx;
+    params->f3dKmy = f3d.kmy;
+    params->f3dKmz = f3d.kmz;
+    params->f3dFunction = f3d.currentFunction;
+    return params;
+}
+
+bool EditorSession::applyWorldSettings(const WorldParams& params)
+{
+    if (!isWorldLoaded()) {
+        return false;
+    }
+    const std::optional<WorldFiles> files = currentWorldFiles();
+    if (!files || !hasGameDir()) {
+        return false;
+    }
+    const std::optional<WorldParams> current = currentWorldParams();
+    if (!current) {
+        return false;
+    }
+
+    // Terra resolves world.ini writes through the content root.
+    fs::current_path(fs::u8path(gameDir_));
+
+    bool ok = true;
+
+    // Zeroplast tint — game-wide setting, outside the world save pipeline.
+    if (!(params.zeroLayerColor == current->zeroLayerColor)) {
+        auto clampByte = [](int value) {
+            return static_cast<unsigned char>(std::clamp(value, 0, 255));
+        };
+        vMap.colZeroPlast.r = clampByte(params.zeroLayerColor.r);
+        vMap.colZeroPlast.g = clampByte(params.zeroLayerColor.g);
+        vMap.colZeroPlast.b = clampByte(params.zeroLayerColor.b);
+        vMap.colZeroPlast.alpha = clampByte(params.zeroLayerColor.a);
+        if (!writeZeroLayerColor(fs::u8path(gameDir_), params.zeroLayerColor)) {
+            ok = false;
+        }
+    }
+
+    // Zero-layer height — a live scalar; saveWorld() persists it with the
+    // buffers. Drives the ZP brushes and the 3D grid reference plane.
+    const int hZeroPlast = std::clamp(params.hZeroPlast, 0, 255);
+    if (hZeroPlast != static_cast<int>(vMap.hZeroPlast)) {
+        vMap.hZeroPlast = static_cast<unsigned char>(hZeroPlast);
+        setModified(true);
+    }
+
+    // 3DF geo-noise parameters — applied live and persisted through Terra's
+    // own world.ini writer (f3d.saveVariable writes the current world).
+    if (params.f3dKmx != current->f3dKmx || params.f3dKmy != current->f3dKmy ||
+        params.f3dKmz != current->f3dKmz ||
+        params.f3dFunction != current->f3dFunction) {
+        auto clampKm = [](int value) {
+            return std::clamp(value, 1, 1000000); // 0 would divide by zero
+        };
+        f3d.setKM(clampKm(params.f3dKmx), clampKm(params.f3dKmy),
+                  clampKm(params.f3dKmz));
+        f3d.setFunction(params.f3dFunction != 0 ? 1 : 0);
+        f3d.saveVariable();
+    }
+
+    // Generation powers — world.ini only. The loaded buffers were sized by
+    // the values in effect at load time; the new powers take effect when the
+    // world is reloaded or its terrain is regenerated.
+    if (params.geoNetPower != current->geoNetPower ||
+        params.sectionSizePower != current->sectionSizePower ||
+        params.minimalSquarePower != current->minimalSquarePower) {
+        auto clampPower = [](int value) {
+            return std::clamp(value, 0, 12);
+        };
+        ok &= files->writeIniInt(WorldIni::GlobalParameters,
+                                 WorldIni::GeoNetPower,
+                                 clampPower(params.geoNetPower));
+        ok &= files->writeIniInt(WorldIni::GlobalParameters,
+                                 WorldIni::SectionSizePower,
+                                 clampPower(params.sectionSizePower));
+        ok &= files->writeIniInt(WorldIni::GlobalParameters,
+                                 WorldIni::MinimalSquarePower,
+                                 clampPower(params.minimalSquarePower));
+    }
+
+    // output.vmp compression — convert the stored file right away and let
+    // saveWorld() re-apply the format after every save3Buf().
+    const int format = params.compressedFormat == 1 ? 1 : 0;
+    if (format != vmpCompressionTarget_) {
+        ok &= files->writeStorageCompressedFormat(format);
+        ok &= convertVmpCompression(files->worldDir() / WorldFiles::OutputVmpFile,
+                                    format);
+        vmpCompressionTarget_ = format;
+    }
+
+    return ok;
+}
+
+// ---------------------------------------------------------------------------
+// T6.3 — surface image import.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// Nearest palette entry (squared RGB distance) for a 0x00BBGGRR color.
+unsigned char nearestPaletteIndex(const unsigned char* palette,
+                                  unsigned int bgr)
+{
+    const int r = (bgr >> 16) & 0xFF;
+    const int g = (bgr >> 8) & 0xFF;
+    const int b = bgr & 0xFF;
+    int bestIndex = 0;
+    long bestDist = LONG_MAX;
+    for (int i = 0; i < 256; ++i) {
+        const int dr = static_cast<int>(palette[i * 3 + 0]) - r;
+        const int dg = static_cast<int>(palette[i * 3 + 1]) - g;
+        const int db = static_cast<int>(palette[i * 3 + 2]) - b;
+        const long dist = static_cast<long>(dr) * dr +
+                          static_cast<long>(dg) * dg +
+                          static_cast<long>(db) * db;
+        if (dist < bestDist) {
+            bestDist = dist;
+            bestIndex = i;
+            if (dist == 0) {
+                break;
+            }
+        }
+    }
+    return static_cast<unsigned char>(bestIndex);
+}
+
+/// Shared per-cell import loop; `sample` maps image pixel -> SurBuf byte.
+template <typename Sample>
+bool importSurfaceImage(EditorSession& session, unsigned imgWidth,
+                        unsigned imgHeight, Sample sample,
+                        const EditorSession::SurfaceImportOptions& options)
+{
+    if (!session.isWorldLoaded() || imgWidth == 0 || imgHeight == 0) {
+        return false;
+    }
+    const int mapW = static_cast<int>(vMap.H_SIZE);
+    const int mapH = static_cast<int>(vMap.V_SIZE);
+
+    // One undo step for the whole map.
+    session.recordUndoArea(0, 0, mapW, mapH);
+
+    for (int y = 0; y < mapH; ++y) {
+        const unsigned sy = std::min<unsigned>(
+            static_cast<unsigned>(y) * imgHeight / mapH, imgHeight - 1);
+        for (int x = 0; x < mapW; ++x) {
+            const unsigned sx = std::min<unsigned>(
+                static_cast<unsigned>(x) * imgWidth / mapW, imgWidth - 1);
+            const int off = y * mapW + x;
+            const bool dam = vMap.VxDBuf[off] != 0;
+            if (dam ? !options.damCells : !options.geoCells) {
+                continue;
+            }
+            vMap.SurBuf[off] = sample(sx, sy, dam);
+        }
+    }
+
+    session.regRenderWithShadowTrail(0, 0, mapW - 1, mapH - 1);
+    return true;
+}
+
+} // namespace
+
+bool EditorSession::importSurfaceImageRgb(unsigned imgWidth,
+                                          unsigned imgHeight,
+                                          const std::vector<unsigned char>& bgr,
+                                          const SurfaceImportOptions& options)
+{
+    if (bgr.size() < static_cast<std::size_t>(imgWidth) * imgHeight * 3) {
+        fprintf(stderr, "EditorSession: import image buffer too small.\n");
+        return false;
+    }
+    return importSurfaceImage(
+        *this, imgWidth, imgHeight,
+        [&bgr, imgWidth](unsigned sx, unsigned sy, bool dam) {
+            const std::size_t off =
+                (static_cast<std::size_t>(sy) * imgWidth + sx) * 3;
+            // The buffer is BGR, the palette compare wants 0x00BBGGRR.
+            const unsigned int color = (static_cast<unsigned int>(bgr[off + 2]) << 16) |
+                                       (static_cast<unsigned int>(bgr[off + 1]) << 8) |
+                                       bgr[off + 0];
+            return nearestPaletteIndex(dam ? vMap.DamPal : vMap.GeoPal, color);
+        },
+        options);
+}
+
+bool EditorSession::importSurfaceImageIndexed(
+    unsigned imgWidth, unsigned imgHeight,
+    const std::vector<unsigned char>& indices,
+    const SurfaceImportOptions& options)
+{
+    if (indices.size() < static_cast<std::size_t>(imgWidth) * imgHeight) {
+        fprintf(stderr, "EditorSession: import index buffer too small.\n");
+        return false;
+    }
+    return importSurfaceImage(
+        *this, imgWidth, imgHeight,
+        [&indices, imgWidth](unsigned sx, unsigned sy, bool) {
+            return indices[static_cast<std::size_t>(sy) * imgWidth + sx];
+        },
+        options);
 }
 
 } // namespace MapEditor
