@@ -1178,6 +1178,15 @@ void MainWindow::buildMenuBar()
     actSaveBattleMapAs->setEnabled(false);
     connect(actSaveBattleMapAs, &QAction::triggered, this, &MainWindow::onActionSaveBattleMapAs);
     actSaveBattleMapAs_ = actSaveBattleMapAs;
+
+    QAction *actNewBattleMap = fileMenu->addAction(tr("New Battle &Map..."));
+    actNewBattleMap->setToolTip(tr("Create a battle map (.spg) for the loaded world: player spawns, cameras and player settings"));
+    actNewBattleMap->setEnabled(false);
+    connect(actNewBattleMap, &QAction::triggered, this, &MainWindow::onActionNewBattleMap);
+    actNewBattleMap_ = actNewBattleMap;
+
+    fileMenu->addSeparator();
+
     QAction *actQuit = fileMenu->addAction(tr("E&xit"));
     actQuit->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Q));
     connect(actQuit, &QAction::triggered, this, &QApplication::quit);
@@ -2962,6 +2971,10 @@ void MainWindow::updateActionStates()
     }
     if (actSaveBattleMapAs_) {
         actSaveBattleMapAs_->setEnabled(battleMapLoaded);
+    }
+    if (actNewBattleMap_) {
+        // Creating a battle map builds it for the currently loaded world.
+        actNewBattleMap_->setEnabled(gameDirSet && worldLoaded);
     }
     if (actValidateBattleMap_) {
         actValidateBattleMap_->setEnabled(battleMapLoaded);

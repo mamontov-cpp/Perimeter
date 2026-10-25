@@ -129,6 +129,9 @@ private slots:
     /// T8.4 — new battle map from a template (BattleMapPanel request).
     void onNewBattleMapRequested(const QString &name, const QString &templateMap,
                                  int playerCount);
+    /// T8.4 — the File-menu entry: asks for the name/template/player count
+    /// and creates the battle map for the currently loaded world.
+    void onActionNewBattleMap();
 
     // T9 — validation + autofixes (Tools menu).
     void onActionValidateWorld();
@@ -166,6 +169,8 @@ private:
     bool ensureWorldForBattleMap();
     void syncSpawnOverlay();
     QString askBattleMapSaveName(bool &toWorldsFolder) const;
+    /// *.spg file names in RESOURCE/Battle of the current game dir.
+    QStringList battleMapTemplates() const;
 
     // T7 — marker sidecar lifecycle: load on world load, autosave on change,
     // clear on unload; feeds the viewport overlay.
@@ -360,4 +365,5 @@ private:
     QAction *actOpenBattleMap_ = nullptr;
     QAction *actSaveBattleMap_ = nullptr;
     QAction *actSaveBattleMapAs_ = nullptr;
+    QAction *actNewBattleMap_ = nullptr;
 };

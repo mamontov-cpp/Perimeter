@@ -34,7 +34,8 @@ ADD_EXECUTABLE(map_editor_tests
         MarkerStoreTests.cpp
         SpgTests.cpp
         ValidationTests.cpp
-        View3DHazeTests.cpp)
+        View3DHazeTests.cpp
+        NewBattleMapFlowTests.cpp)
 
 SET_TARGET_PROPERTIES(map_editor_tests PROPERTIES
         WIN32_EXECUTABLE OFF

@@ -16,14 +16,20 @@
 #include <cmath>
 #include <filesystem>
 
+#include <QComboBox>
 #include <QDialog>
+#include <QDialogButtonBox>
 #include <QDockWidget>
 #include <QDir>
 #include <QFileDialog>
+#include <QFormLayout>
 #include <QInputDialog>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMenu>
 #include <QMessageBox>
+#include <QPushButton>
+#include <QSpinBox>
 #include <QStatusBar>
 
 namespace fs = std::filesystem;
@@ -81,6 +87,11 @@ void MainWindow::buildBattleMapDock()
             &MainWindow::onNewBattleMapRequested);
 
     // Template combo: the battle maps of the current game directory.
+    battleMapPanel_->setTemplates(battleMapTemplates());
+}
+
+QStringList MainWindow::battleMapTemplates() const
+{
     QStringList templates;
     const fs::path battleDir =
         fs::u8path(session_ ? session_->getGameDir() : std::string()) /
@@ -98,7 +109,7 @@ void MainWindow::buildBattleMapDock()
         }
     }
     templates.sort();
-    battleMapPanel_->setTemplates(templates);
+    return templates;
 }
 
 bool MainWindow::ensureWorldForBattleMap()
@@ -270,6 +281,72 @@ void MainWindow::onActionSaveBattleMapAs()
                              5000);
 }
 
+void MainWindow::onActionNewBattleMap()
+{
+    if (!session_ || !session_->hasGameDir()) {
+        QMessageBox::warning(this, tr("New Battle Map"),
+                             tr("Select a game directory first."));
+        return;
+    }
+    if (!session_->isWorldLoaded()) {
+        QMessageBox::information(
+            this, tr("New Battle Map"),
+            tr("Load a world first — the battle map is built for it "
+               "(create one with File / New World if needed)."));
+        return;
+    }
+    const QStringList templates = battleMapTemplates();
+    if (templates.isEmpty()) {
+        QMessageBox::warning(
+            this, tr("New Battle Map"),
+            tr("No template battle maps found in RESOURCE/Battle — a new "
+               "battle map is built from one of the shipped maps."));
+        return;
+    }
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("New Battle Map for '%1'")
+                              .arg(QString::fromStdString(
+                                  session_->currentWorldName())));
+    auto *form = new QFormLayout(&dialog);
+
+    auto *nameEdit = new QLineEdit(&dialog);
+    nameEdit->setPlaceholderText(tr("MyMap"));
+    form->addRow(tr("Map name:"), nameEdit);
+
+    auto *templateCombo = new QComboBox(&dialog);
+    templateCombo->addItems(templates);
+    templateCombo->setToolTip(tr("Player settings and unit layouts are taken "
+                                 "from this map and adapted"));
+    form->addRow(tr("Template:"), templateCombo);
+
+    auto *playersSpin = new QSpinBox(&dialog);
+    playersSpin->setRange(1, 8);
+    playersSpin->setValue(2);
+    form->addRow(tr("Players:"), playersSpin);
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok |
+                                         QDialogButtonBox::Cancel, &dialog);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    form->addRow(buttons);
+    // Ok is disabled until the name is filled in.
+    auto *okButton = buttons->button(QDialogButtonBox::Ok);
+    okButton->setEnabled(false);
+    connect(nameEdit, &QLineEdit::textChanged, okButton,
+            [okButton](const QString &text) {
+                okButton->setEnabled(!text.trimmed().isEmpty());
+            });
+
+    if (dialog.exec() != QDialog::Accepted ||
+        nameEdit->text().trimmed().isEmpty()) {
+        return;
+    }
+    onNewBattleMapRequested(nameEdit->text().trimmed(),
+                            templateCombo->currentText(),
+                            playersSpin->value());
+}
+
 void MainWindow::onNewBattleMapRequested(const QString &name,
                                          const QString &templateMap,
                                          int playerCount)
@@ -283,14 +360,15 @@ void MainWindow::onNewBattleMapRequested(const QString &name,
             tr("Load a world first — the new battle map is built for it."));
         return;
     }
-    bool ok = false;
     const QString mapName =
         name.isEmpty()
             ? QInputDialog::getText(this, tr("New Battle Map"),
                                     tr("Map name:"), QLineEdit::Normal,
-                                    QString(), &ok)
+                                    QString())
             : name;
-    if (!ok || mapName.trimmed().isEmpty()) {
+    // `name` comes pre-filled from the File-menu dialog; the input-dialog
+    // fallback above already validated its own result.
+    if (mapName.trimmed().isEmpty()) {
         return;
     }
     const fs::path templatePath =
