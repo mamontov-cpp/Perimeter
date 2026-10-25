@@ -21,6 +21,14 @@ static_assert(MAX_XSIZE_VX_WINDOW == MapEditor::View3DRenderer::kMaxWindowSize,
 
 namespace MapEditor {
 
+// Horizon haze thresholds (ground cells covered by one pixel, vertical
+// footprint of the frustum row): below the start there is surface detail to
+// show, above the full value the detail is gone and the strips fade to the
+// sky color. Tuned so the default view (focus >= 600, footprints <= ~20
+// cells/pixel) is never touched — see the View3DHaze test.
+constexpr int kHazeFootprintStart = 24;
+constexpr int kHazeFootprintFull = 144;
+
 // ---------------------------------------------------------------------------
 // Clamps
 // ---------------------------------------------------------------------------
@@ -300,13 +308,33 @@ void View3DRenderer::renderSmooth(int cx, int cy, bool pointSample)
     // (+d0) and the rear horizon (-d0), so both halves compress with
     // distance (docs/architecture.md §5.15).
     const double horizonD = -tga * vMap.focusC; // d0 = |tga|*F > 0
-    const auto rowAbsNearOfD = [&](double d) -> double {
+    // The ground distance near either horizon explodes (dd -> d0 maps to
+    // near -> infinity). |DY| = near*sqrt(1+tga^2)*65536 must stay inside
+    // int32 (Terra's own viewV2D overflows here — garbage anchor positions
+    // and a broken mip level for the near-horizon rows), so the distance is
+    // clamped; rows whose true distance exceeds the clamp are hazed out
+    // entirely (they carry no usable detail anyway).
+    const double maxNear = 32000.0 / std::sqrt(1.0 + tga * tga);
+    const auto rowAbsNearOfD = [&](double d, bool *clamped = nullptr) -> double {
         const double dd = d < 0.0 ? -d : d;
         const double denom = horizonD - dd;
         if (denom <= 1e-6) {
-            return 1e30; // at/beyond the horizon — no ground
+            if (clamped) {
+                *clamped = true;
+            }
+            return maxNear;
         }
-        return dd * (vMap.focusC + vMap.cameraDZ) / denom;
+        const double n = dd * (vMap.focusC + vMap.cameraDZ) / denom;
+        if (n > maxNear) {
+            if (clamped) {
+                *clamped = true;
+            }
+            return maxNear;
+        }
+        if (clamped) {
+            *clamped = false;
+        }
+        return n;
     };
     const auto rowDY = [&](int d) -> int {
         const double n = rowAbsNearOfD(d);
@@ -328,7 +356,8 @@ void View3DRenderer::renderSmooth(int cx, int cy, bool pointSample)
             havePrev = false; // the ground gap breaks strip continuity
             continue;
         }
-        const double rowNearAbs = rowAbsNearOfD(d);
+        bool rowClamped = false;
+        const double rowNearAbs = rowAbsNearOfD(d, &rowClamped);
         // Mirrored sign: near is negative on BOTH sides, so the lateral
         // span (F+Z-near) grows with distance on both sides of the nadir.
         const double nearSigned = -rowNearAbs;
@@ -398,6 +427,28 @@ void View3DRenderer::renderSmooth(int cx, int cy, bool pointSample)
         // same ground point, so the previous-row samples would be redundant.
         const bool subCellStep = footY == 0;
 
+        // Horizon haze: near either horizon (small focus = the horizon band
+        // enters the frame) one pixel covers hundreds of ground cells — the
+        // pyramid samples its coarsest levels and the frame edge collapses
+        // into a flat average-color slab (e.g. the dirt brown of XELA at
+        // rot 210 / tilt ~114 / focus 150, lift 0). No surface detail
+        // survives at that footprint, so the strips fade toward the sky
+        // color instead — a natural distance falloff into the horizon, on
+        // both edges symmetrically. At normal zoom the footprint stays far
+        // below the threshold and this never engages (default-view safety
+        // checked by the View3DHaze test).
+        int hazeKeep = 256;
+        if (rowClamped) {
+            hazeKeep = 0; // beyond the clamp — no usable ground, fade out
+        } else if (foot > kHazeFootprintStart) {
+            float haze = static_cast<float>(foot - kHazeFootprintStart) /
+                         static_cast<float>(kHazeFootprintFull -
+                                            kHazeFootprintStart);
+            haze = std::min(haze, 1.0f);
+            haze = haze * haze * (3.0f - 2.0f * haze); // smoothstep
+            hazeKeep = static_cast<int>(256.0f * (1.0f - haze));
+        }
+
         int xx0 = xxOr;
         int yy0 = yyOr;
         for (int i = 0; i < GB_MAXX; ++i) {
@@ -460,10 +511,20 @@ void View3DRenderer::renderSmooth(int cx, int cy, bool pointSample)
             const unsigned int cFar = colorAt(mipCur, xx0, yy0);
             const unsigned int cNear =
                 usePrev ? colorAt(mipPrev, xa, ya) : cFar;
-            const int rF = (cFar >> 16) & 0xFF, gF = (cFar >> 8) & 0xFF,
-                      bF = cFar & 0xFF;
-            const int rN = (cNear >> 16) & 0xFF, gN = (cNear >> 8) & 0xFF,
-                      bN = cNear & 0xFF;
+            int rF = (cFar >> 16) & 0xFF, gF = (cFar >> 8) & 0xFF,
+                bF = cFar & 0xFF;
+            int rN = (cNear >> 16) & 0xFF, gN = (cNear >> 8) & 0xFF,
+                bN = cNear & 0xFF;
+            if (hazeKeep < 256) {
+                // Fade toward the sky color (0) — see the horizon haze note
+                // at the footprint computation above.
+                rF = (rF * hazeKeep) >> 8;
+                gF = (gF * hazeKeep) >> 8;
+                bF = (bF * hazeKeep) >> 8;
+                rN = (rN * hazeKeep) >> 8;
+                gN = (gN * hazeKeep) >> 8;
+                bN = (bN * hazeKeep) >> 8;
+            }
 
             const int y = GB_MAXY / 2 - d - (dh * h >> 16);
 
@@ -806,13 +867,17 @@ bool View3DRenderer::pickGroundCell(int cx, int cy, int col, int row,
     // paint lower on the screen and occlude the distant ones, which is what
     // the rendered frame shows.
     const double horizonD = -tga * focusC; // d0 = |tga|*F > 0
+    // Same int32-safety clamp as renderSmooth (|DY| = near*sqrt(1+tga^2)
+    // *65536 must fit int; Terra's original overflows here).
+    const double maxNear = 32000.0 / std::sqrt(1.0 + static_cast<double>(tga) *
+                                                      static_cast<double>(tga));
     const auto rowAbsNearOfD = [&](double d) -> double {
         const double dd = d < 0.0 ? -d : d;
         const double denom = horizonD - dd;
         if (denom <= 1e-6) {
             return -1.0; // at/beyond the horizon — no ground
         }
-        return dd * (focusC + cameraDZ) / denom;
+        return std::min(dd * (focusC + cameraDZ) / denom, maxNear);
     };
     for (int d = -yside - 200; d < yside; ++d) {
         const double rowNearAbs = rowAbsNearOfD(d);
