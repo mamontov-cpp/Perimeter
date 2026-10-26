@@ -6,10 +6,12 @@
 //
 //   * UpdateRegionMap        — Game/Universe.cpp (minimap/radar bookkeeping)
 //   * ZIPStream              — PluginMAX/ZIPStream.cpp (zip overlay for streams)
-//   * MT_IS_LOGIC, global_time, sdlWindow, terVisGeneric, terRenderDevice,
+//   * global_time, sdlWindow, terVisGeneric, terRenderDevice,
 //     terCamera, gameShell, HTManager::self, applicationHasFocus,
 //     getGameContentEnumName, terGameContentBase
 //     — Util/Game symbols needed by Util.lib when linked into map_editor.
+//   * MTConfig::multithreading/setMultithreading — HT/ht.cpp; the render
+//     stack (MapEditorRender) calls it, HT itself is not linked.
 //
 // Neither is needed for headless world processing, so we provide minimal
 // implementations instead of dragging the whole game/plugin link graph in.
@@ -59,10 +61,96 @@ int ZIPStream::open(const char* name, unsigned f)
 // minimal stubs that satisfy the linker.
 // ---------------------------------------------------------------------------
 
-// MT_IS_LOGIC — multi-threading check. Editor is single-threaded, always "logic" thread.
-bool MT_IS_LOGIC()
+// MT_IS_LOGIC / MT_IS_GRAPH — provided by the real render stack now
+// (VisGeneric.cpp in MapEditorRender); the stub was removed when the GPU
+// viewport started linking the game's VisGeneric. They consult MTConfig.
+
+// MTConfig — lives in Source/HT/ht.cpp in the game. HT is not linked into the
+// editor (its HTManager::self stub below is what the Util lib needs), so the
+// two functions are stubbed: the editor is strictly single-threaded, and the
+// render stack's MT_IS_GRAPH()/MT_IS_LOGIC() then always return true.
+namespace MTConfig
 {
-    return true;
+bool multithreading()
+{
+    return false;
+}
+
+void setMultithreading(bool /*value*/)
+{
+}
+}
+
+// hWndVisGeneric — Game/Runtime.cpp global; VisGeneric.cpp only reports
+// debug memory info through it. The editor has no game window.
+struct HWND__;
+HWND__* hWndVisGeneric = nullptr;
+
+// ---------------------------------------------------------------------------
+// PluginMAX mesh storage — cMeshFile/cMeshScene/sSubTexmap symbols referenced
+// by ObjLibrary::LoadM3D. The editor never loads 3D models, so the PluginMAX
+// link unit is not pulled in and these entry points are stubbed out.
+// Only the symbols ObjLibrary references are declared, with the same public
+// access/signatures so the mangled names match; the stubs never touch
+// members (the real objects only exist in ObjLibrary.cpp dead code) and the
+// parse entry points just report an error.
+// ---------------------------------------------------------------------------
+
+// From PluginMAX/Inc/meshfile.h (not included: its BaseClass.h chain needs
+// more game context than the stub TU provides). Stable format constant.
+#ifndef MESHFILE_ERROR
+#define MESHFILE_ERROR 0x00000005
+#endif
+
+class cMeshFile;
+
+struct sSubTexmap
+{
+    void Release();
+};
+
+class cMeshScene
+{
+public:
+    int Read(cMeshFile& f);
+};
+
+class cMeshFile
+{
+public:
+    cMeshFile();
+    ~cMeshFile();
+    int OpenRead(void* buf, int size);
+    void Close();
+    int ReadHeaderFile();
+};
+
+bool ZIPIsOpen()
+{
+    return false;
+}
+
+cMeshFile::cMeshFile() {}
+
+cMeshFile::~cMeshFile() {}
+
+int cMeshFile::OpenRead(void* /*buf*/, int /*size*/)
+{
+    return MESHFILE_ERROR;
+}
+
+void cMeshFile::Close() {}
+
+int cMeshFile::ReadHeaderFile()
+{
+    return MESHFILE_ERROR;
+}
+
+void sSubTexmap::Release() {}
+
+int cMeshScene::Read(cMeshFile& /*f*/)
+{
+    return MESHFILE_ERROR;
 }
 
 // global_time — SyncroTimer. Editor doesn't use timers; return zero.

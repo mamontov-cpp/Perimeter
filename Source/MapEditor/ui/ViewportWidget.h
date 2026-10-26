@@ -1,22 +1,27 @@
 #pragma once
 
 #include <QColor>
+#include <QOpenGLWidget>
 #include <QPoint>
 #include <QPointF>
 #include <QRect>
 #include <QSize>
 #include <QString>
-#include <QWidget>
 #include <cstdint>
 #include <vector>
 
 #include "View3DRenderer.h"
+#include "ViewportRenderer.h"
+
+class QOpenGLTextureBlitter;
+class QOpenGLFunctions;
 
 namespace MapEditor {
 
 class EditorSession;
 class ViewportRenderer;
 class BrushTool;
+class TerrainGpuView;
 
 // ============================================================================
 // MapEditor UI — ViewportWidget (T2.2, T2.3).
@@ -80,9 +85,16 @@ class BrushTool;
 //                     picked index lands in BrushTool::params().colorIndex).
 //     Alt+left in Oblique still orbits; middle/right drags still pan.
 //
-// Both base rasters are painted from zero-copy QImages: the ARGB32 cache of
-// ViewportRenderer and the RGB16 (565) frame of View3DRenderer.
-// All vMap access happens in the UI thread (Terra is not thread-safe).
+// The two CPU-rendered base rasters (the ARGB32 map cache of ViewportRenderer
+// and the RGB565 frame of View3DRenderer) are kept on the GPU as persistent GL
+// textures of a QOpenGLWidget: a full upload on (re)creation and a
+// glTexSubImage2D per dirty rectangle afterwards, drawn through
+// QOpenGLTextureBlitter with linear/nearest sampling per the render style —
+// the same filtered-terrain-texture technique the game itself uses
+// (Source/Game/CopyToGraph.cpp GetTileColor). All overlays (grid, brush
+// preview, markers, spawns, HUD) are drawn by QPainter on top of the same
+// framebuffer. All vMap access happens in the UI thread (Terra is not
+// thread-safe).
 // ============================================================================
 
 /// Marker on the map (owned by T7 — the widget only renders what it is given).
@@ -113,7 +125,7 @@ enum class BrushPreviewShape
     Square,
 };
 
-class ViewportWidget : public QWidget
+class ViewportWidget : public QOpenGLWidget
 {
     Q_OBJECT
 
@@ -351,7 +363,8 @@ signals:
     void eyedropperPicked(int mapX, int mapY, unsigned char surIndex);
 
 protected:
-    void paintEvent(QPaintEvent *event) override;
+    void initializeGL() override;
+    void paintGL() override;
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
@@ -368,30 +381,89 @@ private:
     /// renderer (called from setSession/reloadWorld after bindWorld()).
     void applyViewportSettings();
 
-    void drawBaseRaster(QPainter &painter);
-    void draw3DRaster(QPainter &painter);
-    /// Blit the cached RGB565 frame without calling viewV2D() again.
-    void blit3DFrame(QPainter &painter);
+    // --- Hardware-accelerated base rasters (QOpenGLWidget) -----------------
+    //
+    // The CPU renderers keep producing the two pixel buffers (the ARGB32 map
+    // cache of ViewportRenderer and the RGB565 oblique frame of
+    // View3DRenderer); their presentation is GPU-driven:
+    //   * drawTopDownGL / drawObliqueGL upload the buffers into persistent GL
+    //     textures — full upload on (re)creation, glTexSubImage2D per dirty
+    //     rectangle for map edits afterwards — and draw them with
+    //     QOpenGLTextureBlitter (linear/nearest sampling per the render
+    //     style).
+    //   * Everything above the base raster (grid, brush preview, markers,
+    //     spawns, HUD) is QPainter as before, drawn on the same framebuffer
+    //     after the native GL pass.
+
+    /// Draw the TopDown base raster: refresh the map texture from `dirty`
+    /// (full upload when the texture was just created), clear and blit.
+    /// Returns false when there is nothing drawable (no bound world).
+    bool drawTopDownGL(QOpenGLFunctions *gl,
+                       const std::vector<DirtyRect> &dirty);
+    /// (Re)render the oblique frame when needed (needs3DRedraw_), bake the
+    /// grid overlay, upload it into the frame texture and blit. Returns false
+    /// when there is nothing drawable (no bound world / no rendered frame).
+    bool drawObliqueGL(QOpenGLFunctions *gl);
+    /// Create the map texture when missing/resize (returns true then — the
+    /// caller must upload the full image).
+    bool ensureMapTexture(QOpenGLFunctions *gl, int mapW, int mapH);
+    /// Create the frame texture when missing/resize and upload the current
+    /// RGB565 frame of view3d_ in full.
+    void uploadFrameTexture(QOpenGLFunctions *gl);
+    /// Delete the GL blitter and both textures (context must be current).
+    void releaseGLResources();
+
     void drawGrid(QPainter &painter);
+    /// GPU-mode grid: zeroplast-plane grid lines projected through the sokol
+    /// camera (the CPU 3D view bakes the same grid into its frame).
+    void drawGrid3D(QPainter &painter);
     void drawBrushPreview(QPainter &painter);
     void drawMarkers(QPainter &painter);
     void drawSpawnPoints(QPainter &painter);
     void drawHud(QPainter &painter);
     QRect visibleCellRange() const;
 
-    /// Rendered 3D buffer size draw3DRaster() uses (widget size clamped to
+    /// Rendered 3D buffer size drawObliqueGL() uses (widget size clamped to
     /// Terra's window limits) — shared with currentViewRect() so the minimap
     /// footprint matches what the next 3D paint will show.
     QSize obliqueBufferSize() const;
 
     /// Compare currentViewRect() with the last emitted one and emit
-    /// viewRectChanged() when it moved (called from paintEvent, so every
+    /// viewRectChanged() when it moved (called from paintGL, so every
     /// pan/zoom/orbit/mode/resize change is caught, whatever triggered it).
     void emitViewRectIfChanged();
 
     /// Pan of the 3D camera over the ground plane after a screen-drag of the
     /// given pixel deltas — inverse view-basis mapping, see the .cpp.
     void panObliqueBy(double dxCursorPx, double dyCursorPx);
+
+    // --- GPU oblique path (TerrainGpuView) ---------------------------------
+    //
+    // When the MapEditorRender target is linked (MAP_EDITOR_GPU_VIEW) the
+    // Oblique view renders through the game's sokol terrain renderer into
+    // this widget's FBO; the CPU voxel renderer (view3d_) then only serves
+    // as the fallback when GL/sokol setup fails. setSession/reloadWorld run
+    // without a current GL context, so the GPU scene (re)build is deferred
+    // to the next paintGL (flag below).
+
+    /// True when the GPU path currently renders the Oblique view.
+    bool gpuActive() const;
+    /// Rebuild/delete the GPU scene at the next paintGL (context current).
+    void scheduleGpuRebuild() { gpuRebuildPending_ = true; }
+    /// Immediate rebuild — must be called with the GL context current
+    /// (initializeGL / paintGL).
+    void rebuildGpuView();
+    /// Push obliqueCamera_ + obliqueCenter_ into the GPU view (no GL calls —
+    /// safe from mouse handlers).
+    void applyGpuCamera();
+    /// The lean the oblique math uses: the CPU voxel renderer clamps it into
+    /// its stable band (View3DRenderer::stableLeanDeg), the GPU camera does
+    /// not. Shared by currentViewRect/pan/preview/grid math.
+    double obliqueMathLeanDeg() const;
+    /// Ground cells per widget pixel across the view (x): (F+Z)/F scaled by
+    /// the CPU buffer/widget ratio in the chunky window, plain (F+Z)/F in
+    /// GPU mode.
+    double obliqueCellsPerWidgetPx() const;
 
     /// Cursor shape for the current editor mode: cross over a brush/pipette
     /// working area, arrow for pure navigation.
@@ -450,6 +522,23 @@ private:
 
     ViewMode viewMode_ = ViewMode::TopDown;
     View3DRenderer *view3d_ = nullptr;
+
+    /// GPU oblique path — the game's sokol terrain renderer drawing into this
+    /// widget's FBO. Null when the MapEditorRender target is absent or GL/
+    /// sokol setup failed; the CPU renderer (view3d_) is the fallback then.
+    TerrainGpuView *gpuView_ = nullptr;
+    /// setSession/reloadWorld happen without a current GL context — the GPU
+    /// scene (re)build is deferred to the next paintGL.
+    bool gpuRebuildPending_ = false;
+
+    // --- GL presentation state (created in initializeGL, see above) --------
+    QOpenGLTextureBlitter *glBlitter_ = nullptr;
+    /// ARGB32 map cache texture (GL_RGBA/GL_BGRA upload).
+    unsigned int mapTexture_ = 0;
+    QSize mapTextureSize_;
+    /// RGB565 oblique frame texture (GL_RGB/GL_UNSIGNED_SHORT_5_6_5 upload).
+    unsigned int frameTexture_ = 0;
+    QSize frameTextureSize_;
 
     /// How the per-cell raster is sampled on the screen (post-T3.3 fix).
     RenderStyle renderStyle_ = RenderStyle::Smooth;

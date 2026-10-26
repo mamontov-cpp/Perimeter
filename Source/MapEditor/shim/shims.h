@@ -21,42 +21,11 @@ float logicRNDf_internal(const char* file, int line);
 float logicRNDfa_internal(const char* file, int line);
 
 // ---------------------------------------------------------------------------
-// INI helpers  (from Util/SystemUtil.cpp + SimpleIni)
+// INI helpers (ReadIniString/WriteIniString/IniManager) — provided by the real
+// Util/SystemUtil since the GPU viewport work: the render stack pulls
+// SystemUtil.obj into the editor link, and duplicate definitions (this shim's
+// older clones) would break it. Include "SystemUtil.h" instead.
 // ---------------------------------------------------------------------------
-uint32_t ReadIniString(const char* section, const char* key, const char* defaultVal,
-                       char* returnBuffer, uint32_t bufferSize, const std::string& filePath);
-
-uint32_t WriteIniString(const char* section, const char* key, const char* value,
-                        const std::string& filePath);
-
-// ---------------------------------------------------------------------------
-// IniManager  (from Util/SystemUtil.cpp)
-// ---------------------------------------------------------------------------
-class IniManager
-{
-private:
-    void* ini_instance = nullptr;
-    bool pending_changes = false;
-    std::string fname_;
-    bool is_full_path;
-    std::string getFilePath();
-public:
-    bool check_existence = true;
-    explicit IniManager(const char* fname, bool check_existence = true, bool full_path = false);
-    ~IniManager();
-    bool load();
-    bool save();
-    const char* get(const char* section, const char* key);
-    void put(const char* section, const char* key, const char* val);
-    int getInt(const char* section, const char* key);
-    bool getInt(const char* section, const char* key, int& value);
-    void putInt(const char* section, const char* key, int val);
-    float getFloat(const char* section, const char* key);
-    bool getFloat(const char* section, const char* key, float& value);
-    void putFloat(const char* section, const char* key, float val);
-    void getFloatArray(const char* section, const char* key, int size, float array[]);
-    void putFloatArray(const char* section, const char* key, int size, const float array[]);
-};
 
 // ---------------------------------------------------------------------------
 // terEnergyBorderCheck  (from Game/Player.cpp)

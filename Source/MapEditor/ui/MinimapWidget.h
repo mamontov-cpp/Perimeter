@@ -1,11 +1,14 @@
 #pragma once
 
 #include <QImage>
+#include <QOpenGLWidget>
 #include <QPointF>
 #include <QRect>
 #include <QSize>
-#include <QWidget>
 #include <vector>
+
+class QOpenGLTextureBlitter;
+class QOpenGLFunctions;
 
 namespace MapEditor {
 
@@ -31,14 +34,22 @@ class EditorSession;
 //
 // The widget never touches Terra itself: map pixels go through
 // WorldImages (MapEditorCore), world geometry (map size) through WorldFiles.
+//
+// Presentation is GPU-accelerated (QOpenGLWidget): the minimap image lives in
+// a persistent GL texture uploaded only when the image changes, drawn scaled
+// by QOpenGLTextureBlitter — a pan of the main viewport repaints the view
+// rectangle every frame, and the old raster path re-scaled the whole (up to
+// 4096²) source image on every such paint. The frame/view-rectangle drawing
+// on top stays QPainter.
 // ============================================================================
 
-class MinimapWidget : public QWidget
+class MinimapWidget : public QOpenGLWidget
 {
     Q_OBJECT
 
 public:
     explicit MinimapWidget(QWidget *parent = nullptr);
+    ~MinimapWidget() override;
 
     /// Bind the session and (re)load the minimap image of the current world.
     /// Safe to call when no game directory/world is available — the panel
@@ -67,7 +78,8 @@ signals:
     void cellClicked(int mapX, int mapY);
 
 protected:
-    void paintEvent(QPaintEvent *event) override;
+    void initializeGL() override;
+    void paintGL() override;
     void resizeEvent(QResizeEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
 
@@ -78,6 +90,13 @@ private:
     QPoint widgetToMapCell(const QPointF &pos) const;
     /// Recompute the letter-boxed rectangle of the map inside the widget.
     void updateMapArea();
+
+    /// Create the GL texture when missing and upload the current minimap
+    /// image (called from paintGL — needs the current GL context). Returns
+    /// false when the image is not loaded or the blitter is unavailable.
+    bool ensureMinimapTexture(QOpenGLFunctions *gl);
+    /// Delete the GL blitter and the texture (context must be current).
+    void releaseGLResources();
 
     /// Set the minimap data: image (BGR buffer), world size in cells; sizes
     /// the widget's layout rectangle accordingly.
@@ -92,6 +111,12 @@ private:
     QRect viewRect_;      ///< viewport view rectangle, in map cells.
 
     QRectF mapArea_;      ///< letter-boxed map rectangle inside the widget.
+
+    // --- GL presentation state (created in initializeGL) -------------------
+    QOpenGLTextureBlitter *glBlitter_ = nullptr;
+    /// Minimap image texture, valid while minimapTextureStale_ is false.
+    unsigned int minimapTexture_ = 0;
+    bool minimapTextureStale_ = true;
 };
 
 } // namespace MapEditor

@@ -834,3 +834,57 @@ veryLightDam`. РџРѕСЃР»Рµ РїРѕСЃРµРІР° `VD != 0` Рё С‚СѓР»Р·РµСЂ РєРѕСЂСЂРµРєС‚Р
 `At_ZPMASK` РѕС‡РёС‰Р°РµС‚СЃСЏ вЂ” gate РЅРµ СЃСЂР°Р±Р°С‚С‹РІР°РµС‚, С‚СѓР»Р·РµСЂ РґРІРёРіР°РµС‚ РґР°РјР±Сѓ.
 РџСЂРё `whole == hZeroPlast` РјРµС‚РєР° СЃРѕС…СЂР°РЅСЏРµС‚СЃСЏ (С‚СѓР»Р·РµСЂ РїРѕ-РїСЂРµР¶РЅРµРјСѓ РїСЂРѕРїСѓСЃРєР°РµС‚
 РєР»РµС‚РєСѓ вЂ” СЌС‚Рѕ РєРѕСЂСЂРµРєС‚РЅРѕ, РєР»РµС‚РєР° РѕСЃС‚Р°С‘С‚СЃСЏ Р·РµСЂРѕРїР»Р°СЃС‚РѕРј РЅР° СЃРІРѕРµР№ РІС‹СЃРѕС‚Рµ).
+
+## 5.23 (контекст): находки сессии GPU-миграции
+
+* **MSVC кодирует доступ члена в mangled-имени**: private 'A', protected 'P',
+  public 'Q' (видно в dumpbin: `?ClearPooledResources@cSokolRender@@AEAAXI@Z`
+  — определение, `@@QEAAXI@Z` — ссылка из TU с хаком private>public >
+  LNK2019). Значит хак должен применяться КО ВСЕМ TU, где живут/используются
+  эти классы — сделано через `/FI shim/render_msvc_access.h` на весь таргет
+  `MapEditorRender`. Там же `#define _ALLOW_KEYWORD_MACROS`, иначе MSVC STL
+  (xkeycheck.h) даёт #error "forbids macroizing the keyword private".
+* **`StdAfxRD.h` НЕ имеет include-guard** — рассчитан на один парс на TU
+  (внешние заголовки его не подключают). В редакторском коде он включается
+  ровно один раз (через render/EditorTerraInterface.h); правило
+  задокументировано в cpp-файлах.
+* `TerraInterface.inl` требует перед собой terra.h (vMap, VX_FRACTION, kmGrid).
+* `/UPERIMETER_D3D9` работает: MSVC кладёт его в AdditionalOptions после /D,
+  предупреждение D9025 подтверждает вычитывание PERIMETER_D3D9.
+* `MT_IS_LOGIC/MT_IS_GRAPH` определяются только в VisGeneric.cpp (RenderMT.h
+  только объявляет); после удаления стаба `MT_IS_LOGIC` из game_stubs.cpp
+  тесты линкуются — Terra/tx3d/XTool/Util их не зовут. Осталась функция
+  `MTConfig::multithreading/setMultithreading` (HT/ht.cpp) — стаб в
+  game_stubs.cpp (false > однопоточно).
+* `hWndVisGeneric` — глобал Game/Runtime.cpp; нужен VisGeneric.cpp (диагностика
+  памяти). Стаб в game_stubs.cpp.
+* PluginMAX-символы ObjLibrary (cMeshFile/cMeshScene/sSubTexmap/ZIPIsOpen)
+  заcтаблены минимальными объявлениями с теми же public-сигнатурами (манглирование
+  совпадает); PluginMAX целиком не линкуется — ZIPStream-шим конфликтовал бы.
+  Заголовок meshfile.h в стаб-TU не включается: его Src/BaseClass.h требует
+  больше игрового контекста.
+* `FileImage.cpp` зовёт `IMG_Init/IMG_Quit/IMG_Load_RW` > таргету нужен
+  `SDL2_image` (корень уже находит его в SetupSDL.cmake, переменная
+  `SDL2_IMAGE_LIBRARY`).
+* **WorldCreation: assert Terra `loadLeveledTexture: size texture > size map`**
+  (VMAP.cpp:2481) при создании маленького мира из шаблона-«настоящей» карты
+  (COMPASS 2048 > мир 64?64): leveledSurfaceTexture.tga копируется из шаблона,
+  а Terra loader требует texture ? map (xassert абортит в Debug). Проявлялось
+  и до GPU-сессии (проверено stash-ом шимов). Исправлено в редакторе:
+  `resizeLeveledTextureIfNeeded` в WorldCreation.cpp — nearest-neighbour
+  downscale в индексном пространстве (палитра DAM-типов сохраняется), сдвиг
+  на степень двойки, TGA остаётся 256-цветным.
+* INI-шимы (`ReadIniString/WriteIniString/IniManager` в MapEditorSupport)
+  удалены: стек рендера притянул настоящий `Util.lib(SystemUtil.obj)` >
+  дубли символов. Тесты переключены на реальный `SystemUtil.h` (Util уже
+  линкуется тестами). Класс IniManager в шиме был мёртвым кодом.
+* Краш-тест: `map_editor_tests` упирался в тест 17 abort'ом — теперь все 39
+  тестов зелёные (аргумент запуска — КОРЕНЬ игры, т.е. каталог с `RESOURCE/`,
+  НЕ сам каталог RESOURCE).
+* sokol GLCORE backend в ревизии 4bda1469 не имеет sg_begin_default_pass —
+  кадр рисуется в pass с `swapchain.gl.framebuffer` = FBO QOpenGLWidget (?0).
+  sokol не владеет контекстом > `sg_reset_state_cache()` каждый кадр перед
+  BeginScene (QPainter/blitter портят GL-состояние).
+* Визуальная проверка GPU-картинки требует GUI-запуска с загруженным миром
+  (кли: нет; мир грузится через диалог). Пока проверено: сборка, 39/39 тестов,
+  запуск редактора без краша при старте.

@@ -9,6 +9,8 @@
 #include "WorldImages.h"
 
 #include <QMouseEvent>
+#include <QOpenGLFunctions>
+#include <QOpenGLTextureBlitter>
 #include <QPainter>
 #include <QPaintEvent>
 #include <QtMath>
@@ -25,10 +27,49 @@ constexpr int kMinDrawSize = 16;  ///< too small — show the hint text instead.
 } // namespace
 
 MinimapWidget::MinimapWidget(QWidget *parent)
-    : QWidget(parent)
+    : QOpenGLWidget(parent)
 {
     setMinimumSize(140, 140);
     setMouseTracking(true);
+}
+
+MinimapWidget::~MinimapWidget()
+{
+    if (isValid()) {
+        makeCurrent();
+        releaseGLResources();
+        doneCurrent();
+    }
+}
+
+void MinimapWidget::initializeGL()
+{
+    // Free the GL-backed state together with the context; the next
+    // initializeGL (context recreation) rebuilds everything.
+    connect(context(), &QOpenGLContext::aboutToBeDestroyed, this, [this] {
+        releaseGLResources();
+    }, Qt::DirectConnection);
+
+    glBlitter_ = new QOpenGLTextureBlitter();
+    if (!glBlitter_->create()) {
+        qWarning("MinimapWidget: QOpenGLTextureBlitter creation failed, "
+                 "the minimap image will not be drawn");
+        delete glBlitter_;
+        glBlitter_ = nullptr;
+    }
+}
+
+void MinimapWidget::releaseGLResources()
+{
+    if (glBlitter_) {
+        delete glBlitter_;
+        glBlitter_ = nullptr;
+    }
+    if (minimapTexture_ != 0 && context() && context()->functions()) {
+        context()->functions()->glDeleteTextures(1, &minimapTexture_);
+    }
+    minimapTexture_ = 0;
+    minimapTextureStale_ = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -125,6 +166,7 @@ void MinimapWidget::setMinimapData(unsigned imageWidth, unsigned imageHeight,
 
     minimapImage_ = std::move(image);
     mapSize_ = worldSize;
+    minimapTextureStale_ = true;
     updateMapArea();
     update();
 }
@@ -207,41 +249,86 @@ void MinimapWidget::mousePressEvent(QMouseEvent *event)
         event->accept();
         return;
     }
-    QWidget::mousePressEvent(event);
+    QOpenGLWidget::mousePressEvent(event);
 }
 
 // ---------------------------------------------------------------------------
 // Paint
 // ---------------------------------------------------------------------------
 
-void MinimapWidget::paintEvent(QPaintEvent * /*event*/)
+bool MinimapWidget::ensureMinimapTexture(QOpenGLFunctions *gl)
 {
+    if (!glBlitter_ || minimapImage_.isNull()) {
+        return false;
+    }
+    if (minimapTexture_ != 0 && !minimapTextureStale_) {
+        return true;
+    }
+    if (minimapTexture_ != 0) {
+        gl->glDeleteTextures(1, &minimapTexture_);
+        minimapTexture_ = 0;
+    }
+    gl->glGenTextures(1, &minimapTexture_);
+    gl->glBindTexture(GL_TEXTURE_2D, minimapTexture_);
+    gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    // Format_RGB32: byte order B,G,R,A — GL_BGRA feeds the channels through.
+    gl->glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
+                     minimapImage_.width(), minimapImage_.height(), 0,
+                     GL_BGRA, GL_UNSIGNED_BYTE,
+                     reinterpret_cast<const GLvoid *>(minimapImage_.constBits()));
+    minimapTextureStale_ = false;
+    return true;
+}
+
+void MinimapWidget::paintGL()
+{
+    QOpenGLFunctions *gl = context()->functions();
+
+    // Native pass FIRST, before QPainter is constructed: texture upload +
+    // clear + map raster blit, the same discipline ViewportWidget uses (raw
+    // GL calls while a QPainter is active are only legal inside
+    // beginNativePainting — and doing them lazily below used to leave the
+    // texture upload in exactly that illegal window).
+    const bool drawMap = !mapSize_.isEmpty() && width() >= kMinDrawSize
+                         && height() >= kMinDrawSize
+                         && ensureMinimapTexture(gl);
+    if (drawMap) {
+        // The map raster is stretched over the whole letter-boxed map
+        // rectangle: the view rectangle must align with world geometry (map
+        // cells), not with whatever aspect map.tga happens to have. GPU
+        // path: the image texture is uploaded once (setMinimapData marks it
+        // stale) and sampled linearly — the old raster path re-scaled the
+        // whole source image on every paint.
+        gl->glClearColor(32.0f / 255.0f, 32.0f / 255.0f, 32.0f / 255.0f, 1.0f);
+        gl->glClear(GL_COLOR_BUFFER_BIT);
+        gl->glDisable(GL_DEPTH_TEST);
+        gl->glDisable(GL_BLEND);
+        glBlitter_->bind();
+        glBlitter_->blit(minimapTexture_,
+                         QOpenGLTextureBlitter::targetTransform(
+                             mapArea_, rect()),
+                         QOpenGLTextureBlitter::OriginTopLeft);
+        glBlitter_->release();
+    }
+
     QPainter painter(this);
-    painter.fillRect(rect(), QColor(32, 32, 32));
 
-    // Overflowing world size (e.g. image not loaded) — hint text instead.
-    if (mapSize_.isEmpty()) {
-        painter.setPen(QColor(160, 160, 160));
-        painter.drawText(rect(), Qt::AlignCenter,
-                         tr("No minimap.\n"
-                            "Load a world to see the overview here."));
+    if (!drawMap) {
+        painter.fillRect(rect(), QColor(32, 32, 32));
+        // Overflowing world size (e.g. image not loaded) — hint text instead.
+        if (mapSize_.isEmpty()) {
+            painter.setPen(QColor(160, 160, 160));
+            painter.drawText(rect(), Qt::AlignCenter,
+                             tr("No minimap.\n"
+                                "Load a world to see the overview here."));
+        }
         return;
-    }
-    if (width() < kMinDrawSize || height() < kMinDrawSize) {
-        return;
-    }
-
-    // The map raster is stretched over the whole letter-boxed map rectangle:
-    // the view rectangle must align with world geometry (map cells), not with
-    // whatever aspect map.tga happens to have.
-    if (!minimapImage_.isNull()) {
-        painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
-        painter.drawImage(mapArea_, minimapImage_,
-                          QRectF(minimapImage_.rect()));
     }
 
     // Frame around the map.
-    painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
     painter.setPen(QColor(90, 90, 90));
     painter.setBrush(Qt::NoBrush);
     painter.drawRect(mapArea_.adjusted(-0.5, -0.5, 0.5, 0.5));

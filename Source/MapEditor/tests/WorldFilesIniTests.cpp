@@ -14,8 +14,10 @@
 
 // WorldFiles (MapEditorCore) — file-level world folder access.
 #include "WorldFiles.h"
-// shims.h (MapEditorSupport) — ReadIniString, the game's SimpleIni reader.
-#include "shims.h"
+// Util/SystemUtil — ReadIniString, the game's SimpleIni reader (the INI
+// shims were removed when the render stack started pulling SystemUtil.obj
+// into the editor link).
+#include "SystemUtil.h"
 
 #include <cstdint>
 #include <cstdio>

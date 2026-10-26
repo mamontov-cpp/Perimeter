@@ -987,3 +987,137 @@ Headless-С‚РµСЃС‚С‹ `map_editor_tests` (`tests/`), РїРѕ С„Р°Р№Р»Сѓ РЅР° РјРѕРґСѓ
 РёСЃС…РѕРґРЅС‹Р№ РјРёСЂ РЅРµ РёР·РјРµРЅСЏРµС‚СЃСЏ. `SaveWorldTests` СЃС‚СЂРѕРёС‚ РёР·РѕР»РёСЂРѕРІР°РЅРЅС‹Р№ content-root
 (РєРѕРїРёСЏ СЃРѕС…СЂР°РЅС‘РЅРЅРѕРіРѕ РјРёСЂР° + РѕР±С‰РёРµ СЂРµСЃСѓСЂСЃС‹ `RESOURCE/GeoTx` + `Perimeter.ini`),
 С‡С‚РѕР±С‹ `fullLoad()` РїСЂРѕС€С‘Р» С‚Р°Рє Р¶Рµ, РєР°Рє РІ РёРіСЂРµ.
+
+## 5.23. GPU-режим Oblique-вида: TerrainGpuView + sokol (post-plan)
+
+Пост-плановая миграция Oblique-вида с софтверного `View3DRenderer` (voxel-окно,
+CPU-пиксели) на игровой sokol-рендер. TopDown-вид и `MinimapWidget` остаются на
+точных CPU-пикселях (`QOpenGLTextureBlitter`), оверлеи — по-прежнему QPainter.
+Если GL 4.1/sokol недоступны (ANGLE, старый драйвер, сборка без
+`OPTION_SOKOL`) — автоматический фолбэк на прежний CPU-рендер.
+
+### Таргет `MapEditorRender` и линковка (CMakeLists.txt)
+
+* Источники: неизменённые не-D3D9-исходники `Source/Render` (src/client/
+  tracker/tilemap/gemsiii/saver + sokol/*.cpp), fetched imgui core +
+  `imgui_impl_opengl3.cpp`, и редакторские `render/EditorSokolDevice.cpp`,
+  `render/EditorTerraInterface.cpp`, `render/TerrainGpuView.cpp`.
+* Define `SOKOL_GLCORE`. MSVC: `/UPERIMETER_D3D9` через AdditionalOptions —
+  `/U` попадает в командную строку после корневых `/D`, поэтому унаследованный
+  `PERIMETER_D3D9` надёжно вычитывается (в логе видно предупреждение D9025 —
+  это подтверждение работы трюка). Остальные определения (`PERIMETER_SOKOL`,
+  `_PERIMETER_`, `_TX3D_LIBRARY_`...) наследуются от корня как в игре.
+* `map_editor` линкует `MapEditorRender` и получает `MAP_EDITOR_GPU_VIEW=1`;
+  без таргета виджет собирается с инертным стабом `TerrainGpuView` (тот же
+  интерфейс, `init()` возвращает false).
+* Игровые библиотеки `Render`/`RenderSokol`/`PluginMAX`/`HT` НЕ линкуются —
+  на Windows они собраны с D3D9/D3D11 и клэшат с шимами (`logicRND`,
+  `ZIPStream`, ...). Недостающие символы стека закрыты стабами в
+  `shim/game_stubs.cpp`: `MTConfig::multithreading/setMultithreading`
+  (HT не линкуется; редактор однопоточен, `MT_IS_GRAPH()` > true),
+  `hWndVisGeneric`, и ПлагMAX-символы, на которые ссылается `ObjLibrary::LoadM3D`
+  (`ZIPIsOpen`, `cMeshFile::*`, `cMeshScene::Read`, `sSubTexmap::Release` —
+  редактор 3D-модели не грузит). Плюс линк `SDL2_image` (игровой `FileImage`
+  зовёт `IMG_*`).
+
+### MSVC: доступ члена в mangled-имени (shim/render_msvc_access.h)
+
+MSVC кодирует доступ (private 'A', protected 'P', public 'Q') в mangled-имени
+метода. Хак `#define private public` в `EditorSokolDevice.cpp` делает
+обращения к приватным членам `cSokolRender` публичными (Q...), а определения в
+sokol-*.cpp остаются приватными (A...) — LNK2019. Решение: каждый TU таргета
+компилируется с forced include `/FI shim/render_msvc_access.h`
+(push_macro + `#define private/protected public`), плюс
+`_ALLOW_KEYWORD_MACROS` — иначе xkeycheck.h MSVC STL даёт #error на
+макроизацию ключевого слова. Это меняет только манглирование внутри таргета:
+он заменяет (не линкуется с) игровые Render-библиотеки. На GCC манглирование
+доступа отсутствует — там достаточно локального хака в `EditorSokolDevice.cpp`.
+
+### `EditorSokolRender` (render/EditorSokolDevice.{h,cpp})
+
+Подкласс игрового `cSokolRender`, создаваемый только фабрикой
+`CreateEditorSokolDevice()`; доступ к приватным членам — через ограниченный
+хак. Переопределения:
+
+* `Init` — базовый `Init` с нулевым SDL-окном, затем пулы/sg_setup (размер и
+  sample_count=1 от виджета), simgui_setup, `debugUIEnabled=false`, сэмплеры,
+  `emptyTexture`, `UpdateRenderMode()`.
+* `EndScene` — перед родителем подменяет `swapchain` (ширина/высота и
+  `gl.framebuffer` = FBO виджета, ? 0).
+* `Flush(false)` — без SDL-свапа: `sg_commit()`, `ClearPooledResources`,
+  `ClearAllCommands` (Qt сам композитит виджет).
+* `Done` — родитель (пропускает sg_shutdown при нулевом окне) + свой
+  `sg_shutdown()`.
+* Хелперы: `setDeviceTarget(device, fbo, w, h)` — кадр в FBO виджета;
+  `resetDeviceStateCache(device)` — `sg_reset_state_cache()`.
+
+sokol здесь НЕ владеет контекстом: между кадрами QPainter и texture blitter
+портят GL-состояние, поэтому `TerrainGpuView::renderFrame` каждый кадр зовёт
+`resetDeviceStateCache` до `BeginScene`, чтобы sokol заново применил всё своё
+состояние, а не только дельты.
+
+### `TerrainGpuView` (render/TerrainGpuView.{h,cpp})
+
+Сборка сцены (в init, контекст актуален): `CreateIVisGeneric` >
+`SetData(device)` > `SetShadowType(SHADOW_NONE,0)` (отключает per-frame
+CreateLightmap) > `CreateScene` > `DisableTileMapVisibleTest()` (до CreateMap)
+> `CreateCamera()` + `SetAttr(ATTRCAMERA_PERSPECTIVE)` >
+`CreateMap(terra_, 0)` (SetBuffer сам создаёт tilemap и ставит полный
+UpdateMap). Разрушение — в обратном порядке при живом девайсе: tilemap >
+camera > scene > visGeneric > device (dtor cSokolRender зовёт Done).
+
+* Камера — дословная копия `terCameraType::update()` + `SetCameraPosition`
+  (Source/Game/CameraManager.cpp) с параметрами psi = PI/2 + turn,
+  theta = lean ? 90°, r = H/cos(theta), H = focusC + cameraDZ (высота над
+  zeroplast-плоскостью в клетках), фокус в клип-координатах =
+  focalDevPx / ширина_экрана. Виджет передаёт focalDevPx = focusC ? DPR,
+  поэтому масштаб "клеток на виджет-пиксель" = (F+Z)/F — не зависит от DPR и
+  совпадает с формулами CPU-вида.
+* Пикинг — `cCamera::GetWorldRay` (вход pe в [?0.5,0.5], y вверх; домен тот
+  же, что у ConvertorCameraToWorld) + собственный ray-march по высотам
+  (`SGetAlt`, вход обязан быть clamped — офсет не циклический) с бисекцией.
+* `projectToScreen` — `cCamera::ConvertorWorldToViewPort` (девайс-пиксели,
+  y вниз).
+* Цвета — `EditorTerraInterface` (наследник `StandartTerraInterface`):
+  `GetTileColor` берёт пиксели из кэша `ViewportRenderer::colorAt`
+  (фильтры слоёв + приглушение geo — ровно то, что показывает TopDown);
+  альфа всегда 0xFF — сценa создаётся с zeroplastnumber=0 (зелёные
+  zeroplast-квадраты игры — рантайм-эффект, CPU-вид их тоже не рисует, а
+  маркер 0xFE проделал бы дыры в террейне).
+
+### Интеграция в `ViewportWidget`
+
+* Конструктор запрашивает `QSurfaceFormat` (desktop GL ? 4.1) только для себя.
+* `setSession`/`reloadWorld`/`setGeoDimmed` зовут `scheduleGpuRebuild()` —
+  пересборка сцены выполняется в `paintGL`/`initializeGL` (контекст актуален;
+  без него sokol/тайлмапу делать нечего).
+* Dirty-прямоугольники `renderer_->update()` (штампы кисти, undo/redo)
+  раздаются и в тайлмап: `gpuView_->updateCells(...)` — та же каноника,
+  что и у 2D-кэша.
+* Пиксельная математика GPU-режима (currentViewRect / pan / pxPerCell /
+  сетка) — без клампа окна 640: cellsPerWidgetPx = (F+Z)/F прямо, kv-эвристика
+  по сырому lean; 640-кламп остаётся только в CPU-ветке.
+* Сетка в GPU-режиме — плоскость zeroplast, линии проецируются через
+  `projectToScreen` и рисуются QPainter'ом (прямая на земле остаётся прямой
+  в перспективе).
+* После sokol-кадра: вернуть FBO виджета и выключить depth/blend/scissor
+  перед QPainter.
+* Формулы MinimapWidget (вид-прямоугольник по currentViewRect) сохранены —
+  по построению они остаются согласованными.
+
+### `MinimapWidget`: дисциплина native-first
+
+Раньше `ensureMinimapTexture()` делал raw-GL между конструированием QPainter
+и `beginNativePainting()` — UB для GL paint engine. Теперь загрузка текстуры,
+clear и blit выполняются до конструирования QPainter (как в ViewportWidget),
+QPainter рисует только оверлеи. Контекст-хук `aboutToBeDestroyed` освобождает
+GL-объекты при пересоздании контекста.
+
+### Известные ограничения GPU-режима
+
+* Dam-фичи CPU-рендера (`damFrozen` — торцевые повторы, террасность) в
+  GPU-виде игнорируются: рендерится одна карта, как в игре.
+* Рендер каждый кадр без кэша кадра (стоимость как в игре, ~единичный
+  tilemap-проход; рисование только по update()).
+* Вид "как в игре": пулы текстур дают лёгкое сглаживание, которого нет в
+  Chunky-режиме TopDown; это ожидаемое отличие от CPU Oblique.

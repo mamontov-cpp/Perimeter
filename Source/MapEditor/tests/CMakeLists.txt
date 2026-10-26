@@ -50,6 +50,7 @@ TARGET_INCLUDE_DIRECTORIES(map_editor_tests PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/../../XTool"
         "${CMAKE_CURRENT_SOURCE_DIR}/../../Terra"
         "${CMAKE_CURRENT_SOURCE_DIR}/../../tx3d"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../Util"
 )
 
 # MapEditorSupport provides shims for symbols Terra/tx3d reference, while
