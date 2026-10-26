@@ -634,6 +634,31 @@ void BrushTool::applyEffectToCell(const BrushParams& params, int x, int y, unsig
             plotZPToolzer.setHAppoximation(whole);
             plotZPToolzer.tVoxSet(off, 1);
         } else {
+            // AlignVariableH ("Level to Height"). The Dam mode owns the dam
+            // layer, so a dam-free cell must get a seeded dam first —
+            // otherwise Terra's toolzer takes its VD==0 (geo) branch and the
+            // brush moves the ground instead of building a dam at the chosen
+            // height. This mirrors the Align4ZP Dam-mode seeding above: after
+            // the seed VxDBuf != 0, so the toolzer drives the dam layer up to
+            // the target while the geo stays below it.
+            //
+            // Terra's alignment toolzers have an early-return gate:
+            // `if (AtrBuf & At_ZPMASK == At_ZEROPLAST) return 0`
+            // (tools.h:546, 590). A cell marked At_ZEROPLAST is silently
+            // skipped — the dam height never moves. The user-level rule is:
+            // when the brush target differs from hZeroPlast, the dam should
+            // be levelled to the target and the zeroplast mark removed (the
+            // cell no longer represents zeroplast). Clear the ZP gate here
+            // so the toolzer can drive the dam layer.
+            if (params.mode == BrushMode::Dam) {
+                const int wholeZP = static_cast<int>(vMap.hZeroPlast);
+                if (whole != wholeZP &&
+                    (vMap.AtrBuf[off] & At_ZPMASK) == At_ZEROPLAST) {
+                    vMap.AtrBuf[off] = static_cast<unsigned char>(
+                        vMap.AtrBuf[off] & ~At_ZPMASK);
+                }
+                seedDamLayer(off);
+            }
             static individualToolzer<T2TE_ALIGNMENT_TERRAIN_VARIABLE_H> alignHToolzer;
             alignHToolzer.setHAppoximation(whole);
             alignHToolzer.tVoxSet(off, dV);

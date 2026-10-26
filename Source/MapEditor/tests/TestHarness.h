@@ -59,8 +59,12 @@ bool addTest(const char* name, int order, TestFunction function);
 /// Print a failure diagnostic; used by TEST_REQUIRE.
 void reportFailure(const char* file, int line, const char* format, ...);
 
-/// Runs all registered tests in ascending order. Returns the process exit code.
-int runAll(const std::string& gameDir);
+/// Runs all registered tests in ascending order, optionally filtered by a
+/// name subpattern. When a filter is given, only tests whose names contain
+/// the subpattern are run — but all tests with a lower order value are also
+/// included (they are setup tests that later tests depend on).
+/// Returns the process exit code (0 = all passed, 1 = failure).
+int runAll(const std::string& gameDir, const std::string& filter = "");
 
 struct TestRegistration
 {

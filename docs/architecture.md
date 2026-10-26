@@ -660,6 +660,30 @@ Dam на гео — нет).
    Выравнивание в Dam-режиме поверх дамбы работает через штатный тулзер
    Terra (дамба — активный слой).
 
+2a. **Выравнивание в Dam-режиме на гео-клетках (исправление).** Раньше
+   `AlignVariableH` в Dam-режиме на клетке без дамбы (`VxDBuf == 0`) не
+   сеял дамбу — тулзер Terra брал ветку `VD==0` и двигал гео, а не строил
+   дамбу на выбранной высоте. Теперь перед вызовом `T2TE_ALIGNMENT_TERRAIN_VARIABLE_H`
+   вызывается `seedDamLayer` (аналогично `Align4ZP` в Dam-режиме), что
+   создаёт дамбу на высоте гео, после чего тулзер ведёт её к цели.
+   Нюанс: при `VxGBuf == 0` (`seedDamLayer` поднимает дамбу на 1 воксель,
+   `bump = 1 << VX_FRACTION`), потому что `VxDBuf == 0` семантически
+   означает «дамбы нет» и нулевая клетка не может нести дамбу.
+
+2b. **Снятие зеропласта при выравнивании дамбы (исправление).** Оба
+   Terra-тулзера (`T2TE_ALIGNMENT_TERRAIN_4ZP`, `T2TE_ALIGNMENT_TERRAIN_VARIABLE_H`)
+   имеют early-return gate: `if ((AtrBuf & At_ZPMASK) == At_ZEROPLAST)
+   return 0` (tools.h:546, 590). Клетки с `At_ZEROPLAST` молча пропускались —
+   «Level to Height» в Dam-режиме ничего не делал на зеропластовой дамбе.
+   Пользовательское правило: если целевая высота кисти `heightLevel` отличается
+   от `hZeroPlast`, дамба должна выровняться на эту высоту, а метка зеропласта
+   сняться (клетка больше не представляет зеропласт). Теперь перед вызовом
+   тулзера `AlignVariableH` в Dam-режиме, при `heightLevel != hZeroPlast`
+   и `(AtrBuf & At_ZPMASK) == At_ZEROPLAST`, бит `At_ZPMASK` очищается —
+   gate тулзера не срабатывает, дамба движется к цели. При `heightLevel ==
+   hZeroPlast` цель совпадает с зеропластом, метка сохраняется (тулзер
+   пропускает клетку, как и раньше — поведение `Align4ZP`).
+
 3. **Картинка как маска штампа.** `BrushParams::useImageMask`: загруженная
    картинка (`BrushTool::setImageMask`) заменяет форму/радиус как геометрию
    штампа для любого эффекта; выбор формы сбрасывает флаг. Тип «Image
@@ -956,6 +980,8 @@ Headless-тесты `map_editor_tests` (`tests/`), по файлу на моду
 | 70–71 | `SpgTests` | load→save COMPASS.spg байт-в-байт (XPrm DOM + SpgFile); правки: worldName/playersData/zeroLayerHeight/movePlayerGroup (фрейм+сквад+stable+слоты+камера), setPlayerCount; неизвестные узлы (контролы UI) выживают (T8) |
 | 75 | `ValidationTests` | validateWorldFiles без ошибок; объёмный баланс плоского мира (fill/dig, допуск); validateBattleMap (чисто; ошибка отсутствия мира; out-of-bounds спавн с go-to); автофиксы (T9) |
 | 55–57 | `WorldParamsTests` | чтение `WorldParams` против `world.ini`/`Perimeter.ini` + round-trip записи в scratch-копию (включая ZP-цвет и ключ `[Storage]`); S2T0→S2T1→S2T0 конвертация `output.vmp` байт-в-байт, идемпотентность, отказы; интеграция `applyWorldSettings`/`saveWorld`: живой `hZeroPlast`, `f3d` в живую + в ini, ZP-цвет в `Perimeter.ini` копии, S2T1 переживает сохранение (T5.1) |
+| 78 | `BrushAlignDamOnGeoTests` | `AlignVariableH`/`Align4ZP` в Dam-режиме на гео-клетках (`VxDBuf == 0`) сеют дамбу (`seedDamLayer`), затем тулзер ведёт её к цели; `VxGBuf` неизменен, `SurBuf == veryLightDam`; bump `VxDBuf = 1` при `VxGBuf == 0`; undo байт-в-байт (T3.2) |
+| 79 | `BrushAlignVariableHZPTests` | `AlignVariableH` в Dam-режиме на клетке с `At_ZEROPLAST`: при `heightLevel != hZeroPlast` бит `At_ZPMASK` очищается, тулзер Terra двигает дамбу (down/up), метка снимается; при `heightLevel == hZeroPlast` метка сохраняется (gate не снимается); undo байт-в-байт (T3.2) |
 
 Тесты пишут только во временный content-root (`%TEMP%/map_editor_roundtrip`),
 исходный мир не изменяется. `SaveWorldTests` строит изолированный content-root

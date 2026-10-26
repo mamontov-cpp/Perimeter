@@ -2,10 +2,14 @@
 // Map editor headless test runner.
 //
 // Usage:
-//   map_editor_tests [game_dir]
+//   map_editor_tests [game_dir] [--filter <subpattern>]
 //
 // game_dir is the folder that contains RESOURCE/ (defaults to the current
 // directory, i.e. the build output folder where this executable is deployed).
+//
+// --filter <subpattern> runs only tests whose names contain the subpattern,
+// but also automatically includes all tests with a lower order value (these
+// are the setup tests that later tests depend on).
 //
 // The individual tests live next to this file and register themselves with the
 // harness (see TestHarness.h). They run in a fixed order because the later
@@ -33,11 +37,17 @@ int main(int argc, char* argv[])
     std::printf("==========================\n");
 
     std::string gameDir = ".";
-    if (argc > 1) {
-        gameDir = argv[1];
+    std::string filter;
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "--filter" && i + 1 < argc) {
+            filter = argv[i + 1];
+            ++i;
+        } else {
+            gameDir = argv[i];
+        }
     }
 
-    const int result = MapEditor::Tests::runAll(gameDir);
+    const int result = MapEditor::Tests::runAll(gameDir, filter);
 
     std::printf("\nTest %s\n", result == 0 ? "PASSED" : "FAILED");
     return result;
