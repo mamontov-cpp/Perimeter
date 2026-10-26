@@ -835,56 +835,80 @@ veryLightDam`. ÐŸÐ¾ÑÐ»Ðµ Ð¿Ð¾ÑÐµÐ²Ð° `VD != 0` Ð¸ Ñ‚ÑƒÐ»Ð·ÐµÑ€ ÐºÐ¾Ñ€Ñ€ÐµÐºÑ‚Ð
 ÐŸÑ€Ð¸ `whole == hZeroPlast` Ð¼ÐµÑ‚ÐºÐ° ÑÐ¾Ñ…Ñ€Ð°Ð½ÑÐµÑ‚ÑÑ (Ñ‚ÑƒÐ»Ð·ÐµÑ€ Ð¿Ð¾-Ð¿Ñ€ÐµÐ¶Ð½ÐµÐ¼Ñƒ Ð¿Ñ€Ð¾Ð¿ÑƒÑÐºÐ°ÐµÑ‚
 ÐºÐ»ÐµÑ‚ÐºÑƒ â€” ÑÑ‚Ð¾ ÐºÐ¾Ñ€Ñ€ÐµÐºÑ‚Ð½Ð¾, ÐºÐ»ÐµÑ‚ÐºÐ° Ð¾ÑÑ‚Ð°Ñ‘Ñ‚ÑÑ Ð·ÐµÑ€Ð¾Ð¿Ð»Ð°ÑÑ‚Ð¾Ð¼ Ð½Ð° ÑÐ²Ð¾ÐµÐ¹ Ð²Ñ‹ÑÐ¾Ñ‚Ðµ).
 
-## 5.23 (êîíòåêñò): íàõîäêè ñåññèè GPU-ìèãðàöèè
+## 5.23 (ÐºÐ¾Ð½Ñ‚ÐµÐºÑÑ‚): Ð½Ð°Ñ…Ð¾Ð´ÐºÐ¸ ÑÐµÑÑÐ¸Ð¸ GPU-Ð¼Ð¸Ð³Ñ€Ð°Ñ†Ð¸Ð¸
 
-* **MSVC êîäèðóåò äîñòóï ÷ëåíà â mangled-èìåíè**: private 'A', protected 'P',
-  public 'Q' (âèäíî â dumpbin: `?ClearPooledResources@cSokolRender@@AEAAXI@Z`
-  — îïðåäåëåíèå, `@@QEAAXI@Z` — ññûëêà èç TU ñ õàêîì private>public >
-  LNK2019). Çíà÷èò õàê äîëæåí ïðèìåíÿòüñÿ ÊÎ ÂÑÅÌ TU, ãäå æèâóò/èñïîëüçóþòñÿ
-  ýòè êëàññû — ñäåëàíî ÷åðåç `/FI shim/render_msvc_access.h` íà âåñü òàðãåò
-  `MapEditorRender`. Òàì æå `#define _ALLOW_KEYWORD_MACROS`, èíà÷å MSVC STL
-  (xkeycheck.h) äà¸ò #error "forbids macroizing the keyword private".
-* **`StdAfxRD.h` ÍÅ èìååò include-guard** — ðàññ÷èòàí íà îäèí ïàðñ íà TU
-  (âíåøíèå çàãîëîâêè åãî íå ïîäêëþ÷àþò). Â ðåäàêòîðñêîì êîäå îí âêëþ÷àåòñÿ
-  ðîâíî îäèí ðàç (÷åðåç render/EditorTerraInterface.h); ïðàâèëî
-  çàäîêóìåíòèðîâàíî â cpp-ôàéëàõ.
-* `TerraInterface.inl` òðåáóåò ïåðåä ñîáîé terra.h (vMap, VX_FRACTION, kmGrid).
-* `/UPERIMETER_D3D9` ðàáîòàåò: MSVC êëàä¸ò åãî â AdditionalOptions ïîñëå /D,
-  ïðåäóïðåæäåíèå D9025 ïîäòâåðæäàåò âû÷èòûâàíèå PERIMETER_D3D9.
-* `MT_IS_LOGIC/MT_IS_GRAPH` îïðåäåëÿþòñÿ òîëüêî â VisGeneric.cpp (RenderMT.h
-  òîëüêî îáúÿâëÿåò); ïîñëå óäàëåíèÿ ñòàáà `MT_IS_LOGIC` èç game_stubs.cpp
-  òåñòû ëèíêóþòñÿ — Terra/tx3d/XTool/Util èõ íå çîâóò. Îñòàëàñü ôóíêöèÿ
-  `MTConfig::multithreading/setMultithreading` (HT/ht.cpp) — ñòàá â
-  game_stubs.cpp (false > îäíîïîòî÷íî).
-* `hWndVisGeneric` — ãëîáàë Game/Runtime.cpp; íóæåí VisGeneric.cpp (äèàãíîñòèêà
-  ïàìÿòè). Ñòàá â game_stubs.cpp.
-* PluginMAX-ñèìâîëû ObjLibrary (cMeshFile/cMeshScene/sSubTexmap/ZIPIsOpen)
-  çàcòàáëåíû ìèíèìàëüíûìè îáúÿâëåíèÿìè ñ òåìè æå public-ñèãíàòóðàìè (ìàíãëèðîâàíèå
-  ñîâïàäàåò); PluginMAX öåëèêîì íå ëèíêóåòñÿ — ZIPStream-øèì êîíôëèêòîâàë áû.
-  Çàãîëîâîê meshfile.h â ñòàá-TU íå âêëþ÷àåòñÿ: åãî Src/BaseClass.h òðåáóåò
-  áîëüøå èãðîâîãî êîíòåêñòà.
-* `FileImage.cpp` çîâ¸ò `IMG_Init/IMG_Quit/IMG_Load_RW` > òàðãåòó íóæåí
-  `SDL2_image` (êîðåíü óæå íàõîäèò åãî â SetupSDL.cmake, ïåðåìåííàÿ
+* **MSVC ÐºÐ¾Ð´Ð¸Ñ€ÑƒÐµÑ‚ Ð´Ð¾ÑÑ‚ÑƒÐ¿ Ñ‡Ð»ÐµÐ½Ð° Ð² mangled-Ð¸Ð¼ÐµÐ½Ð¸**: private 'A', protected 'P',
+  public 'Q' (Ð²Ð¸Ð´Ð½Ð¾ Ð² dumpbin: `?ClearPooledResources@cSokolRender@@AEAAXI@Z`
+  â€” Ð¾Ð¿Ñ€ÐµÐ´ÐµÐ»ÐµÐ½Ð¸Ðµ, `@@QEAAXI@Z` â€” ÑÑÑ‹Ð»ÐºÐ° Ð¸Ð· TU Ñ Ñ…Ð°ÐºÐ¾Ð¼ private>public >
+  LNK2019). Ð—Ð½Ð°Ñ‡Ð¸Ñ‚ Ñ…Ð°Ðº Ð´Ð¾Ð»Ð¶ÐµÐ½ Ð¿Ñ€Ð¸Ð¼ÐµÐ½ÑÑ‚ÑŒÑÑ ÐšÐž Ð’Ð¡Ð•Ðœ TU, Ð³Ð´Ðµ Ð¶Ð¸Ð²ÑƒÑ‚/Ð¸ÑÐ¿Ð¾Ð»ÑŒÐ·ÑƒÑŽÑ‚ÑÑ
+  ÑÑ‚Ð¸ ÐºÐ»Ð°ÑÑÑ‹ â€” ÑÐ´ÐµÐ»Ð°Ð½Ð¾ Ñ‡ÐµÑ€ÐµÐ· `/FI shim/render_msvc_access.h` Ð½Ð° Ð²ÐµÑÑŒ Ñ‚Ð°Ñ€Ð³ÐµÑ‚
+  `MapEditorRender`. Ð¢Ð°Ð¼ Ð¶Ðµ `#define _ALLOW_KEYWORD_MACROS`, Ð¸Ð½Ð°Ñ‡Ðµ MSVC STL
+  (xkeycheck.h) Ð´Ð°Ñ‘Ñ‚ #error "forbids macroizing the keyword private".
+* **`StdAfxRD.h` ÐÐ• Ð¸Ð¼ÐµÐµÑ‚ include-guard** â€” Ñ€Ð°ÑÑÑ‡Ð¸Ñ‚Ð°Ð½ Ð½Ð° Ð¾Ð´Ð¸Ð½ Ð¿Ð°Ñ€Ñ Ð½Ð° TU
+  (Ð²Ð½ÐµÑˆÐ½Ð¸Ðµ Ð·Ð°Ð³Ð¾Ð»Ð¾Ð²ÐºÐ¸ ÐµÐ³Ð¾ Ð½Ðµ Ð¿Ð¾Ð´ÐºÐ»ÑŽÑ‡Ð°ÑŽÑ‚). Ð’ Ñ€ÐµÐ´Ð°ÐºÑ‚Ð¾Ñ€ÑÐºÐ¾Ð¼ ÐºÐ¾Ð´Ðµ Ð¾Ð½ Ð²ÐºÐ»ÑŽÑ‡Ð°ÐµÑ‚ÑÑ
+  Ñ€Ð¾Ð²Ð½Ð¾ Ð¾Ð´Ð¸Ð½ Ñ€Ð°Ð· (Ñ‡ÐµÑ€ÐµÐ· render/EditorTerraInterface.h); Ð¿Ñ€Ð°Ð²Ð¸Ð»Ð¾
+  Ð·Ð°Ð´Ð¾ÐºÑƒÐ¼ÐµÐ½Ñ‚Ð¸Ñ€Ð¾Ð²Ð°Ð½Ð¾ Ð² cpp-Ñ„Ð°Ð¹Ð»Ð°Ñ….
+* `TerraInterface.inl` Ñ‚Ñ€ÐµÐ±ÑƒÐµÑ‚ Ð¿ÐµÑ€ÐµÐ´ ÑÐ¾Ð±Ð¾Ð¹ terra.h (vMap, VX_FRACTION, kmGrid).
+* `/UPERIMETER_D3D9` Ñ€Ð°Ð±Ð¾Ñ‚Ð°ÐµÑ‚: MSVC ÐºÐ»Ð°Ð´Ñ‘Ñ‚ ÐµÐ³Ð¾ Ð² AdditionalOptions Ð¿Ð¾ÑÐ»Ðµ /D,
+  Ð¿Ñ€ÐµÐ´ÑƒÐ¿Ñ€ÐµÐ¶Ð´ÐµÐ½Ð¸Ðµ D9025 Ð¿Ð¾Ð´Ñ‚Ð²ÐµÑ€Ð¶Ð´Ð°ÐµÑ‚ Ð²Ñ‹Ñ‡Ð¸Ñ‚Ñ‹Ð²Ð°Ð½Ð¸Ðµ PERIMETER_D3D9.
+* `MT_IS_LOGIC/MT_IS_GRAPH` Ð¾Ð¿Ñ€ÐµÐ´ÐµÐ»ÑÑŽÑ‚ÑÑ Ñ‚Ð¾Ð»ÑŒÐºÐ¾ Ð² VisGeneric.cpp (RenderMT.h
+  Ñ‚Ð¾Ð»ÑŒÐºÐ¾ Ð¾Ð±ÑŠÑÐ²Ð»ÑÐµÑ‚); Ð¿Ð¾ÑÐ»Ðµ ÑƒÐ´Ð°Ð»ÐµÐ½Ð¸Ñ ÑÑ‚Ð°Ð±Ð° `MT_IS_LOGIC` Ð¸Ð· game_stubs.cpp
+  Ñ‚ÐµÑÑ‚Ñ‹ Ð»Ð¸Ð½ÐºÑƒÑŽÑ‚ÑÑ â€” Terra/tx3d/XTool/Util Ð¸Ñ… Ð½Ðµ Ð·Ð¾Ð²ÑƒÑ‚. ÐžÑÑ‚Ð°Ð»Ð°ÑÑŒ Ñ„ÑƒÐ½ÐºÑ†Ð¸Ñ
+  `MTConfig::multithreading/setMultithreading` (HT/ht.cpp) â€” ÑÑ‚Ð°Ð± Ð²
+  game_stubs.cpp (false > Ð¾Ð´Ð½Ð¾Ð¿Ð¾Ñ‚Ð¾Ñ‡Ð½Ð¾).
+* `hWndVisGeneric` â€” Ð³Ð»Ð¾Ð±Ð°Ð» Game/Runtime.cpp; Ð½ÑƒÐ¶ÐµÐ½ VisGeneric.cpp (Ð´Ð¸Ð°Ð³Ð½Ð¾ÑÑ‚Ð¸ÐºÐ°
+  Ð¿Ð°Ð¼ÑÑ‚Ð¸). Ð¡Ñ‚Ð°Ð± Ð² game_stubs.cpp.
+* PluginMAX-ÑÐ¸Ð¼Ð²Ð¾Ð»Ñ‹ ObjLibrary (cMeshFile/cMeshScene/sSubTexmap/ZIPIsOpen)
+  Ð·Ð°cÑ‚Ð°Ð±Ð»ÐµÐ½Ñ‹ Ð¼Ð¸Ð½Ð¸Ð¼Ð°Ð»ÑŒÐ½Ñ‹Ð¼Ð¸ Ð¾Ð±ÑŠÑÐ²Ð»ÐµÐ½Ð¸ÑÐ¼Ð¸ Ñ Ñ‚ÐµÐ¼Ð¸ Ð¶Ðµ public-ÑÐ¸Ð³Ð½Ð°Ñ‚ÑƒÑ€Ð°Ð¼Ð¸ (Ð¼Ð°Ð½Ð³Ð»Ð¸Ñ€Ð¾Ð²Ð°Ð½Ð¸Ðµ
+  ÑÐ¾Ð²Ð¿Ð°Ð´Ð°ÐµÑ‚); PluginMAX Ñ†ÐµÐ»Ð¸ÐºÐ¾Ð¼ Ð½Ðµ Ð»Ð¸Ð½ÐºÑƒÐµÑ‚ÑÑ â€” ZIPStream-ÑˆÐ¸Ð¼ ÐºÐ¾Ð½Ñ„Ð»Ð¸ÐºÑ‚Ð¾Ð²Ð°Ð» Ð±Ñ‹.
+  Ð—Ð°Ð³Ð¾Ð»Ð¾Ð²Ð¾Ðº meshfile.h Ð² ÑÑ‚Ð°Ð±-TU Ð½Ðµ Ð²ÐºÐ»ÑŽÑ‡Ð°ÐµÑ‚ÑÑ: ÐµÐ³Ð¾ Src/BaseClass.h Ñ‚Ñ€ÐµÐ±ÑƒÐµÑ‚
+  Ð±Ð¾Ð»ÑŒÑˆÐµ Ð¸Ð³Ñ€Ð¾Ð²Ð¾Ð³Ð¾ ÐºÐ¾Ð½Ñ‚ÐµÐºÑÑ‚Ð°.
+* `FileImage.cpp` Ð·Ð¾Ð²Ñ‘Ñ‚ `IMG_Init/IMG_Quit/IMG_Load_RW` > Ñ‚Ð°Ñ€Ð³ÐµÑ‚Ñƒ Ð½ÑƒÐ¶ÐµÐ½
+  `SDL2_image` (ÐºÐ¾Ñ€ÐµÐ½ÑŒ ÑƒÐ¶Ðµ Ð½Ð°Ñ…Ð¾Ð´Ð¸Ñ‚ ÐµÐ³Ð¾ Ð² SetupSDL.cmake, Ð¿ÐµÑ€ÐµÐ¼ÐµÐ½Ð½Ð°Ñ
   `SDL2_IMAGE_LIBRARY`).
 * **WorldCreation: assert Terra `loadLeveledTexture: size texture > size map`**
-  (VMAP.cpp:2481) ïðè ñîçäàíèè ìàëåíüêîãî ìèðà èç øàáëîíà-«íàñòîÿùåé» êàðòû
-  (COMPASS 2048 > ìèð 64?64): leveledSurfaceTexture.tga êîïèðóåòñÿ èç øàáëîíà,
-  à Terra loader òðåáóåò texture ? map (xassert àáîðòèò â Debug). Ïðîÿâëÿëîñü
-  è äî GPU-ñåññèè (ïðîâåðåíî stash-îì øèìîâ). Èñïðàâëåíî â ðåäàêòîðå:
-  `resizeLeveledTextureIfNeeded` â WorldCreation.cpp — nearest-neighbour
-  downscale â èíäåêñíîì ïðîñòðàíñòâå (ïàëèòðà DAM-òèïîâ ñîõðàíÿåòñÿ), ñäâèã
-  íà ñòåïåíü äâîéêè, TGA îñòà¸òñÿ 256-öâåòíûì.
-* INI-øèìû (`ReadIniString/WriteIniString/IniManager` â MapEditorSupport)
-  óäàëåíû: ñòåê ðåíäåðà ïðèòÿíóë íàñòîÿùèé `Util.lib(SystemUtil.obj)` >
-  äóáëè ñèìâîëîâ. Òåñòû ïåðåêëþ÷åíû íà ðåàëüíûé `SystemUtil.h` (Util óæå
-  ëèíêóåòñÿ òåñòàìè). Êëàññ IniManager â øèìå áûë ì¸ðòâûì êîäîì.
-* Êðàø-òåñò: `map_editor_tests` óïèðàëñÿ â òåñò 17 abort'îì — òåïåðü âñå 39
-  òåñòîâ çåë¸íûå (àðãóìåíò çàïóñêà — ÊÎÐÅÍÜ èãðû, ò.å. êàòàëîã ñ `RESOURCE/`,
-  ÍÅ ñàì êàòàëîã RESOURCE).
-* sokol GLCORE backend â ðåâèçèè 4bda1469 íå èìååò sg_begin_default_pass —
-  êàäð ðèñóåòñÿ â pass ñ `swapchain.gl.framebuffer` = FBO QOpenGLWidget (?0).
-  sokol íå âëàäååò êîíòåêñòîì > `sg_reset_state_cache()` êàæäûé êàäð ïåðåä
-  BeginScene (QPainter/blitter ïîðòÿò GL-ñîñòîÿíèå).
-* Âèçóàëüíàÿ ïðîâåðêà GPU-êàðòèíêè òðåáóåò GUI-çàïóñêà ñ çàãðóæåííûì ìèðîì
-  (êëè: íåò; ìèð ãðóçèòñÿ ÷åðåç äèàëîã). Ïîêà ïðîâåðåíî: ñáîðêà, 39/39 òåñòîâ,
-  çàïóñê ðåäàêòîðà áåç êðàøà ïðè ñòàðòå.
+  (VMAP.cpp:2481) Ð¿Ñ€Ð¸ ÑÐ¾Ð·Ð´Ð°Ð½Ð¸Ð¸ Ð¼Ð°Ð»ÐµÐ½ÑŒÐºÐ¾Ð³Ð¾ Ð¼Ð¸Ñ€Ð° Ð¸Ð· ÑˆÐ°Ð±Ð»Ð¾Ð½Ð°-Â«Ð½Ð°ÑÑ‚Ð¾ÑÑ‰ÐµÐ¹Â» ÐºÐ°Ñ€Ñ‚Ñ‹
+  (COMPASS 2048 > Ð¼Ð¸Ñ€ 64?64): leveledSurfaceTexture.tga ÐºÐ¾Ð¿Ð¸Ñ€ÑƒÐµÑ‚ÑÑ Ð¸Ð· ÑˆÐ°Ð±Ð»Ð¾Ð½Ð°,
+  Ð° Terra loader Ñ‚Ñ€ÐµÐ±ÑƒÐµÑ‚ texture ? map (xassert Ð°Ð±Ð¾Ñ€Ñ‚Ð¸Ñ‚ Ð² Debug). ÐŸÑ€Ð¾ÑÐ²Ð»ÑÐ»Ð¾ÑÑŒ
+  Ð¸ Ð´Ð¾ GPU-ÑÐµÑÑÐ¸Ð¸ (Ð¿Ñ€Ð¾Ð²ÐµÑ€ÐµÐ½Ð¾ stash-Ð¾Ð¼ ÑˆÐ¸Ð¼Ð¾Ð²). Ð˜ÑÐ¿Ñ€Ð°Ð²Ð»ÐµÐ½Ð¾ Ð² Ñ€ÐµÐ´Ð°ÐºÑ‚Ð¾Ñ€Ðµ:
+  `resizeLeveledTextureIfNeeded` Ð² WorldCreation.cpp â€” nearest-neighbour
+  downscale Ð² Ð¸Ð½Ð´ÐµÐºÑÐ½Ð¾Ð¼ Ð¿Ñ€Ð¾ÑÑ‚Ñ€Ð°Ð½ÑÑ‚Ð²Ðµ (Ð¿Ð°Ð»Ð¸Ñ‚Ñ€Ð° DAM-Ñ‚Ð¸Ð¿Ð¾Ð² ÑÐ¾Ñ…Ñ€Ð°Ð½ÑÐµÑ‚ÑÑ), ÑÐ´Ð²Ð¸Ð³
+  Ð½Ð° ÑÑ‚ÐµÐ¿ÐµÐ½ÑŒ Ð´Ð²Ð¾Ð¹ÐºÐ¸, TGA Ð¾ÑÑ‚Ð°Ñ‘Ñ‚ÑÑ 256-Ñ†Ð²ÐµÑ‚Ð½Ñ‹Ð¼.
+* INI-ÑˆÐ¸Ð¼Ñ‹ (`ReadIniString/WriteIniString/IniManager` Ð² MapEditorSupport)
+  ÑƒÐ´Ð°Ð»ÐµÐ½Ñ‹: ÑÑ‚ÐµÐº Ñ€ÐµÐ½Ð´ÐµÑ€Ð° Ð¿Ñ€Ð¸Ñ‚ÑÐ½ÑƒÐ» Ð½Ð°ÑÑ‚Ð¾ÑÑ‰Ð¸Ð¹ `Util.lib(SystemUtil.obj)` >
+  Ð´ÑƒÐ±Ð»Ð¸ ÑÐ¸Ð¼Ð²Ð¾Ð»Ð¾Ð². Ð¢ÐµÑÑ‚Ñ‹ Ð¿ÐµÑ€ÐµÐºÐ»ÑŽÑ‡ÐµÐ½Ñ‹ Ð½Ð° Ñ€ÐµÐ°Ð»ÑŒÐ½Ñ‹Ð¹ `SystemUtil.h` (Util ÑƒÐ¶Ðµ
+  Ð»Ð¸Ð½ÐºÑƒÐµÑ‚ÑÑ Ñ‚ÐµÑÑ‚Ð°Ð¼Ð¸). ÐšÐ»Ð°ÑÑ IniManager Ð² ÑˆÐ¸Ð¼Ðµ Ð±Ñ‹Ð» Ð¼Ñ‘Ñ€Ñ‚Ð²Ñ‹Ð¼ ÐºÐ¾Ð´Ð¾Ð¼.
+* ÐšÑ€Ð°Ñˆ-Ñ‚ÐµÑÑ‚: `map_editor_tests` ÑƒÐ¿Ð¸Ñ€Ð°Ð»ÑÑ Ð² Ñ‚ÐµÑÑ‚ 17 abort'Ð¾Ð¼ â€” Ñ‚ÐµÐ¿ÐµÑ€ÑŒ Ð²ÑÐµ 39
+  Ñ‚ÐµÑÑ‚Ð¾Ð² Ð·ÐµÐ»Ñ‘Ð½Ñ‹Ðµ (Ð°Ñ€Ð³ÑƒÐ¼ÐµÐ½Ñ‚ Ð·Ð°Ð¿ÑƒÑÐºÐ° â€” ÐšÐžÐ Ð•ÐÐ¬ Ð¸Ð³Ñ€Ñ‹, Ñ‚.Ðµ. ÐºÐ°Ñ‚Ð°Ð»Ð¾Ð³ Ñ `RESOURCE/`,
+  ÐÐ• ÑÐ°Ð¼ ÐºÐ°Ñ‚Ð°Ð»Ð¾Ð³ RESOURCE).
+* sokol GLCORE backend Ð² Ñ€ÐµÐ²Ð¸Ð·Ð¸Ð¸ 4bda1469 Ð½Ðµ Ð¸Ð¼ÐµÐµÑ‚ sg_begin_default_pass â€”
+  ÐºÐ°Ð´Ñ€ Ñ€Ð¸ÑÑƒÐµÑ‚ÑÑ Ð² pass Ñ `swapchain.gl.framebuffer` = FBO QOpenGLWidget (?0).
+  sokol Ð½Ðµ Ð²Ð»Ð°Ð´ÐµÐµÑ‚ ÐºÐ¾Ð½Ñ‚ÐµÐºÑÑ‚Ð¾Ð¼ > `sg_reset_state_cache()` ÐºÐ°Ð¶Ð´Ñ‹Ð¹ ÐºÐ°Ð´Ñ€ Ð¿ÐµÑ€ÐµÐ´
+  BeginScene (QPainter/blitter Ð¿Ð¾Ñ€Ñ‚ÑÑ‚ GL-ÑÐ¾ÑÑ‚Ð¾ÑÐ½Ð¸Ðµ).
+* Ð’Ð¸Ð·ÑƒÐ°Ð»ÑŒÐ½Ð°Ñ Ð¿Ñ€Ð¾Ð²ÐµÑ€ÐºÐ° GPU-ÐºÐ°Ñ€Ñ‚Ð¸Ð½ÐºÐ¸ Ñ‚Ñ€ÐµÐ±ÑƒÐµÑ‚ GUI-Ð·Ð°Ð¿ÑƒÑÐºÐ° Ñ Ð·Ð°Ð³Ñ€ÑƒÐ¶ÐµÐ½Ð½Ñ‹Ð¼ Ð¼Ð¸Ñ€Ð¾Ð¼
+  (ÐºÐ»Ð¸: Ð½ÐµÑ‚; Ð¼Ð¸Ñ€ Ð³Ñ€ÑƒÐ·Ð¸Ñ‚ÑÑ Ñ‡ÐµÑ€ÐµÐ· Ð´Ð¸Ð°Ð»Ð¾Ð³). ÐŸÐ¾ÐºÐ° Ð¿Ñ€Ð¾Ð²ÐµÑ€ÐµÐ½Ð¾: ÑÐ±Ð¾Ñ€ÐºÐ°, 39/39 Ñ‚ÐµÑÑ‚Ð¾Ð²,
+  Ð·Ð°Ð¿ÑƒÑÐº Ñ€ÐµÐ´Ð°ÐºÑ‚Ð¾Ñ€Ð° Ð±ÐµÐ· ÐºÑ€Ð°ÑˆÐ° Ð¿Ñ€Ð¸ ÑÑ‚Ð°Ñ€Ñ‚Ðµ.
+
+
+## GPU Viewport: double-free TerraInterface (crash on window close)
+
+**Symptom:** the editor crashes when closing the window if a world was loaded
+and the GPU oblique view was initialized (world loaded -> 3D view created -> close window).
+
+**Root cause:** cTileMap::~cTileMap() (Source/Render/tilemap/TileMap.cpp:196)
+calls RELEASE(terra) -- releases the TerraInterface reference stored in
+cTileMap::terra. The constructor (TileMap.cpp:175) assigns 	erra = terra_
+WITHOUT calling IncRef(), so cTileMap owns the only reference to the object.
+
+TerrainGpuView::destroyScene() also called RELEASE(terra_) -- after
+RELEASE(tileMap_) the EditorTerraInterface object is already deleted, and the
+second Release() touches freed memory (double-free / use-after-free).
+
+**Fix:** in destroyScene() check whether 	ileMap_ owned the 	erra_ reference
+(i.e. was tileMap_ non-null before releasing it). If yes -- 	erra_ is already
+deleted by the tilemap destructor, just set 	erra_ = nullptr. If 	ileMap_ was
+never created (CreateMap failed) -- release 	erra_ ourselves.
+
+**Reproduction:** MAP_EDITOR_AUTOTEST=1 with MAP_EDITOR_GAMEDIR and
+MAP_EDITOR_WORLD -- the autotest loads a world and closes the window after 25s.
+With MAP_EDITOR_TRACE=1 the log goes to %TEMP%\map_editor_trace.log.

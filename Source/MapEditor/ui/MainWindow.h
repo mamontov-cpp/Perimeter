@@ -2,6 +2,8 @@
 
 #include <QMainWindow>
 
+#include <string>
+
 #include "BrushTool.h"
 #include "MarkerStore.h"
 #include "Validation.h"
@@ -62,6 +64,11 @@ public:
 protected:
     /// Gives the user a chance to save unsaved changes before closing.
     void closeEvent(QCloseEvent *event) override;
+
+public:
+    // Repro-harness hooks (MAP_EDITOR_AUTOTEST) — not part of the UI flow.
+    void debugOpenGameDir(const std::string& dir);
+    void debugLoadWorld(const std::string& worldName);
 
 private slots:
     void onActionSelectGameDir();

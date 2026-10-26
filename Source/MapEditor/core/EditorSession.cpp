@@ -15,6 +15,8 @@
 #include <filesystem>
 #include <vector>
 
+#include "EditorTrace.h"
+
 // Terra / XTool headers — needed for vMap and content-path API.
 // _PERIMETER_ and _TX3D_LIBRARY_ are defined by CMake.
 #include "terra.h"
@@ -54,8 +56,10 @@ EditorSession::EditorSession() = default;
 
 EditorSession::~EditorSession()
 {
+    editorTrace("EditorSession: dtor start");
     // Unload any open world before destruction so Terra frees its buffers cleanly.
     unloadWorld();
+    editorTrace("EditorSession: dtor done");
 }
 
 // ---------------------------------------------------------------------------
@@ -187,25 +191,32 @@ void EditorSession::refreshWorldTable()
 
 bool EditorSession::loadWorld(size_t worldIndex)
 {
+    editorTrace("EditorSession: loadWorld(%zu) start", worldIndex);
     if (worldIndex >= worldList_.size()) {
         fprintf(stderr, "EditorSession: world index %zu out of range (%zu worlds)\n",
                 worldIndex, worldList_.size());
+        editorTrace("EditorSession: loadWorld FAILED — index out of range");
         return false;
     }
 
     // Unload the previous world if any.
     if (isWorldLoaded()) {
+        editorTrace("EditorSession: loadWorld — unloading previous world");
         unloadWorld();
     }
 
     // Ensure the content root points to the game directory.
+    editorTrace("EditorSession: loadWorld setting content root");
     fs::current_path(fs::u8path(gameDir_));
     init_content_root();
 
     // Populate Terra's world table (safe to call repeatedly).
+    editorTrace("EditorSession: loadWorld refreshWorldTable");
     refreshWorldTable();
+    editorTrace("EditorSession: loadWorld maxWorld=%d", vMap.maxWorld);
     if (vMap.maxWorld < 1) {
         fprintf(stderr, "EditorSession: no worlds found in RESOURCE/Worlds.\n");
+        editorTrace("EditorSession: loadWorld FAILED — no worlds");
         return false;
     }
 
@@ -213,15 +224,21 @@ bool EditorSession::loadWorld(size_t worldIndex)
     // matches Terra's own getWorldID logic).
     const std::string& wantedName = worldList_[worldIndex].name;
     int terraIdx = vMap.getWorldID(wantedName.c_str());
+    editorTrace("EditorSession: loadWorld getWorldID('%s')=%d", wantedName.c_str(), terraIdx);
     if (terraIdx < 0) {
         fprintf(stderr, "EditorSession: world '%s' not found in Terra wTable.\n",
                 wantedName.c_str());
+        editorTrace("EditorSession: loadWorld FAILED — getWorldID returned -1");
         return false;
     }
 
     // Load the world: analyzeINI + worldPrepare + load data.
+    editorTrace("EditorSession: selectUsedWorld(%d)", terraIdx);
     vMap.selectUsedWorld(terraIdx);
+    editorTrace("EditorSession: fullLoad('%s') start", wantedName.c_str());
     vMap.fullLoad();
+    editorTrace("EditorSession: fullLoad done (IsFullLoad=%d)",
+                vMap.IsFullLoad() ? 1 : 0);
 
     if (!vMap.IsFullLoad()) {
         fprintf(stderr, "EditorSession: fullLoad() failed for world '%s'.\n",
@@ -235,7 +252,9 @@ bool EditorSession::loadWorld(size_t worldIndex)
     // its RenderStr() loop is commented out (VMAP.cpp:924) — so without this
     // call getColor32() (viewport, cache.tga) would read uninitialised
     // lighting. See docs/context.md.
+    editorTrace("EditorSession: WorldRender start");
     vMap.WorldRender();
+    editorTrace("EditorSession: WorldRender done");
 
     clearUndoHistory();
     currentWorldIndex_ = static_cast<int32_t>(worldIndex);
@@ -246,15 +265,20 @@ bool EditorSession::loadWorld(size_t worldIndex)
     state_ = SessionState::WorldLoaded;
 
     // T5.1 — remember the on-disk output.vmp compression so Save keeps it.
+    editorTrace("EditorSession: loadWorld getting currentWorldFiles");
     if (const auto files = currentWorldFiles()) {
+        editorTrace("EditorSession: loadWorld vmpCompressionOfFile");
         vmpCompressionTarget_ = std::max(
             0, vmpCompressionOfFile(files->filePath(WorldFiles::OutputVmpFile)));
     } else {
+        editorTrace("EditorSession: loadWorld no currentWorldFiles");
         vmpCompressionTarget_ = 0;
     }
 
+    editorTrace("EditorSession: loadWorld done, world '%s' (%u x %u)",
+            wantedName.c_str(), vMap.H_SIZE, vMap.V_SIZE);
     printf("EditorSession: loaded world '%s' (%u x %u)\n",
-           wantedName.c_str(), vMap.H_SIZE, vMap.V_SIZE);
+            wantedName.c_str(), vMap.H_SIZE, vMap.V_SIZE);
     return true;
 }
 
@@ -276,9 +300,11 @@ void EditorSession::unloadWorld()
         // frees the net maps, so the voxel/surface buffers must be released here
         // (delLeveledTexture() has to run before VxDBuf goes away). The one-time
         // circular-brush tables from prepare() are deliberately kept.
+        editorTrace("EditorSession: unloadWorld (world loaded) — delLeveledTexture");
         vMap.delLeveledTexture();
         vMap.releaseMem4Buf();
         vMap.worldFree();
+        editorTrace("EditorSession: unloadWorld — vMap buffers released");
     }
     clearUndoHistory();
     currentWorldIndex_ = -1;

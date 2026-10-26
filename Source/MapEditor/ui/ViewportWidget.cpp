@@ -54,6 +54,8 @@ public:
 #include <algorithm>
 #include <cmath>
 
+#include "EditorTrace.h"
+
 namespace MapEditor {
 
 // ---------------------------------------------------------------------------
@@ -83,18 +85,27 @@ ViewportWidget::ViewportWidget(QWidget *parent)
 
 ViewportWidget::~ViewportWidget()
 {
+    editorTrace("ViewportWidget: dtor start (isValid=%d, gpuView=%p)",
+                isValid() ? 1 : 0, static_cast<void*>(gpuView_));
     // GL objects must die with a current context; skip silently when the
     // widget's window is already gone (destruction order) — the context
     // release frees the textures anyway.
     if (isValid()) {
+        editorTrace("ViewportWidget: dtor makeCurrent");
         makeCurrent();
+        editorTrace("ViewportWidget: dtor deleting gpuView_");
         delete gpuView_;
         gpuView_ = nullptr;
+        editorTrace("ViewportWidget: dtor gpuView deleted, releasing GL resources");
         releaseGLResources();
+        editorTrace("ViewportWidget: dtor doneCurrent");
         doneCurrent();
     }
+    editorTrace("ViewportWidget: dtor deleting renderer_=%p", static_cast<void*>(renderer_));
     delete renderer_;
+    editorTrace("ViewportWidget: dtor deleting view3d_=%p", static_cast<void*>(view3d_));
     delete view3d_;
+    editorTrace("ViewportWidget: dtor done");
 }
 
 void ViewportWidget::initializeGL()
@@ -103,11 +114,13 @@ void ViewportWidget::initializeGL()
     // teardown, format changes) — free the GL-backed state with it, the
     // (re)creation below rebuilds everything.
     connect(context(), &QOpenGLContext::aboutToBeDestroyed, this, [this] {
+        editorTrace("ViewportWidget: aboutToBeDestroyed hook");
         releaseGLResources();
         delete gpuView_;
         gpuView_ = nullptr;
     }, Qt::DirectConnection);
 
+    editorTrace("ViewportWidget: initializeGL start");
     glBlitter_ = new QOpenGLTextureBlitter();
     if (!glBlitter_->create()) {
         qWarning("ViewportWidget: QOpenGLTextureBlitter creation failed, "
@@ -120,6 +133,7 @@ void ViewportWidget::initializeGL()
     // same deferred path paintGL uses.
     gpuRebuildPending_ = true;
     rebuildGpuView();
+    editorTrace("ViewportWidget: initializeGL done");
 }
 
 void ViewportWidget::releaseGLResources()
@@ -148,26 +162,40 @@ void ViewportWidget::releaseGLResources()
 
 void ViewportWidget::setSession(EditorSession *session)
 {
+    editorTrace("ViewportWidget: setSession start (session=%p, worldLoaded=%d)",
+                static_cast<void*>(session),
+                (session && session->isWorldLoaded()) ? 1 : 0);
     session_ = session;
     delete renderer_;
     renderer_ = nullptr;
 
     // The GPU scene feeds from the renderer — rebuild it around whatever the
     // new session provides (deferred, no GL context here).
+    editorTrace("ViewportWidget: setSession scheduling GPU rebuild");
     scheduleGpuRebuild();
 
     if (session_ && session_->isWorldLoaded()) {
+        editorTrace("ViewportWidget: setSession creating renderer");
         renderer_ = new ViewportRenderer();
+        editorTrace("ViewportWidget: setSession bindWorld");
         if (renderer_->bindWorld()) {
+            editorTrace("ViewportWidget: setSession applyViewportSettings");
             applyViewportSettings();
+            editorTrace("ViewportWidget: setSession updateFitScale");
             updateFitScale();
+            editorTrace("ViewportWidget: setSession zoomToFit");
             zoomToFit();
+            editorTrace("ViewportWidget: setSession update");
             update();
+        } else {
+            editorTrace("ViewportWidget: setSession bindWorld FAILED");
         }
     } else {
+        editorTrace("ViewportWidget: setSession no world — updateFitScale");
         updateFitScale();
         update();
     }
+    editorTrace("ViewportWidget: setSession done");
 }
 
 void ViewportWidget::reloadWorld()
@@ -780,7 +808,9 @@ void ViewportWidget::paintGL()
     // paintGL is the first place after setSession/reloadWorld to guarantee.
     if (gpuRebuildPending_) {
         gpuRebuildPending_ = false;
+        editorTrace("ViewportWidget: paintGL deferred rebuild");
         rebuildGpuView();
+        editorTrace("ViewportWidget: paintGL deferred rebuild done");
     }
 
     // Drain dirty rects / recompute lighting before painting, so the cache is
@@ -821,6 +851,11 @@ void ViewportWidget::paintGL()
             const qreal dpr = devicePixelRatioF();
             const int fboW = qRound(size().width() * dpr);
             const int fboH = qRound(size().height() * dpr);
+            static int gpuFrameLog = 0;
+            if (gpuFrameLog < 5) {
+                editorTrace("ViewportWidget: GPU frame %d (%dx%d)", ++gpuFrameLog,
+                            fboW, fboH);
+            }
             gpuView_->renderFrame(context()->defaultFramebufferObject(),
                                   fboW, fboH);
             // sokol left its own GL state behind — restore what QPainter
@@ -1673,28 +1708,38 @@ void ViewportWidget::rebuildGpuView()
 {
     // The GL context must be current (paintGL / initializeGL).
     if (!renderer_ || !renderer_->isBound()) {
+        editorTrace("ViewportWidget: rebuildGpuView — no renderer, deleting gpuView=%p",
+                    static_cast<void*>(gpuView_));
         delete gpuView_;
         gpuView_ = nullptr;
+        editorTrace("ViewportWidget: rebuildGpuView — no renderer, dropped");
         return;
     }
     if (gpuView_) {
         // Same context, new world/color source — rebuild inside the view.
+        editorTrace("ViewportWidget: rebuildGpuView — reloadWorld path");
         gpuView_->setColorSource(renderer_);
         applyGpuCamera();
         return;
     }
+    editorTrace("ViewportWidget: rebuildGpuView — creating new TerrainGpuView");
     auto *view = new TerrainGpuView();
     view->setColorSource(renderer_);
     const qreal dpr = devicePixelRatioF();
     const QSize fbo(qRound(size().width() * dpr),
                     qRound(size().height() * dpr));
+    editorTrace("ViewportWidget: rebuildGpuView — init (%dx%d)", fbo.width(),
+                fbo.height());
     if (view->init(fbo.width(), fbo.height())) {
         gpuView_ = view;
         applyGpuCamera();
+        editorTrace("ViewportWidget: rebuildGpuView — init OK");
     } else {
+        editorTrace("ViewportWidget: rebuildGpuView — init failed, deleting view");
         delete view;
         qWarning("ViewportWidget: GPU oblique view unavailable, "
                  "the CPU renderer stays in charge");
+        editorTrace("ViewportWidget: rebuildGpuView — init FAILED");
     }
 }
 
