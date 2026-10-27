@@ -312,22 +312,37 @@ bool TerrainGpuView::pickCell(double sxPx, double syPx, int& cellX, int& cellY) 
         return false;
     }
 
-    // Screen (device px, y down) → ray input domain: [-0.5, 0.5] centered at
-    // the screen center, y up (see cCamera::ConvertorCameraToWorld).
+    // Screen (device px, y down) → ray input domain: pe in [-0.5, 0.5]
+    // centered at the screen center. The game's ConvertorCameraToWorld
+    // expects pe in screen coordinates (y=0 at top, y=1 at bottom) and
+    // negates y internally to convert to view-space y-up. We pass
+    // pe.y = syPx/deviceY - 0.5 so the game's internal negation produces
+    // the correct view-space direction without double-inversion.
     Vect2f pe(static_cast<float>(sxPx / device_->GetSizeX() - 0.5),
-              static_cast<float>(1.0 - 2.0 * syPx / device_->GetSizeY()));
+              static_cast<float>(syPx / device_->GetSizeY() - 0.5));
     Vect3f pos, dir;
     camera_->GetWorldRay(pe, pos, dir);
-    if (dir.z >= -1e-6) {
+    // dir.z is the ray's vertical component in world space. A value near 0
+    // means the ray points almost horizontally. The previous -1e-6 threshold
+    // was too tight: at extreme lean angles the ray to terrain near the
+    // horizon can have dir.z ≈ -0.001, which would be rejected. Also
+    // increase tMax so the ray reaches terrain at the far edge of the map
+    // where the GPU camera's wider FOV still sees ground but the ray is
+    // very shallow.
+    if (dir.z >= -1e-3) {
         return false; // looking away from the ground
     }
 
-    const double zZero = static_cast<double>(vMap.hZeroPlast);
-    // March to a bit past the point where the ray crosses the zeroplast
-    // plane (terrain never rises much above it in the editor).
-    double tMax = (zZero - pos.z) / dir.z * 1.05 + 32.0;
-    tMax = clampd(tMax, 32.0, 60000.0);
-    const double step = max(0.5, tMax / 2048.0);
+    // The march must continue PAST the zeroplast plane down to the lowest
+    // possible terrain. Heights are stored unsigned (SGetAlt), so the floor
+    // is 0; geo-only cells (no dam) can sit well below the zeroplast plane,
+    // and a march that stops at zeroplast height never reaches them — the
+    // ray stays above the geo surface, pickCell returns false and the brush
+    // cursor disappears over geo-only ground. March to the z=0 plane instead.
+    const double zFloor = 0.0;
+    double tMax = (zFloor - pos.z) / dir.z * 1.02 + 64.0;
+    tMax = clampd(tMax, 32.0, 200000.0);
+    const double step = max(0.25, tMax / 4096.0);
 
     double tBelow = -1.0;
     double t = 0.0;

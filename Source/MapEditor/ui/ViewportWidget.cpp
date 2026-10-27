@@ -1249,8 +1249,12 @@ void ViewportWidget::drawBrushPreview(QPainter &painter)
         // centred on the cursor and sized by the camera's approximate
         // widget-pixels-per-ground-cell (the same basis the pick uses).
         const QPointF pxPerCell = obliquePxPerCell();
-        const double rx = qMax(3.0, brushRadius_ * pxPerCell.x());
-        const double ry = qMax(3.0, brushRadius_ * pxPerCell.y());
+        // GPU path: use a smaller minimum (1.0) so the perspective ellipse
+        // is visible even for small brush radii. The 3.0 minimum was hiding
+        // the Y-stretch from the oblique camera deformation.
+        const double minDim = (gpuView_ && gpuView_->isReady()) ? 1.0 : 3.0;
+        const double rx = qMax(minDim, brushRadius_ * pxPerCell.x());
+        const double ry = qMax(minDim, brushRadius_ * pxPerCell.y());
         const QPointF center(cursorWidgetPos_);
         if (brushShape_ == BrushPreviewShape::Circle) {
             painter.drawEllipse(center, rx, ry);
@@ -1821,11 +1825,14 @@ QPoint ViewportWidget::cellAtWidgetPos(const QPoint &widgetPos) const
         const qreal dpr = devicePixelRatioF();
         int mx = -1;
         int my = -1;
-        if (!gpuView_->pickCell(widgetPos.x() * dpr, widgetPos.y() * dpr,
+        if (gpuView_->pickCell(widgetPos.x() * dpr, widgetPos.y() * dpr,
                                 mx, my)) {
-            return {-1, -1}; // sky
+            return {mx, my};
         }
-        return {mx, my};
+        // GPU pick failed (ray above horizon / sky) — the GPU camera has a
+        // wider FOV than the CPU voxel view, so edge positions can point
+        // above the terrain. Fallback to the CPU path which has a narrower
+        // FOV and can see more ground.
     }
     if (!view3d_ || view3d_->windowWidth() <= 0 || view3d_->windowHeight() <= 0) {
         return {-1, -1};
