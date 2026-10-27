@@ -912,3 +912,36 @@ never created (CreateMap failed) -- release 	erra_ ourselves.
 **Reproduction:** MAP_EDITOR_AUTOTEST=1 with MAP_EDITOR_GAMEDIR and
 MAP_EDITOR_WORLD -- the autotest loads a world and closes the window after 25s.
 With MAP_EDITOR_TRACE=1 the log goes to %TEMP%\map_editor_trace.log.
+
+
+## GPU Viewport: 2D view cut into a triangle after visiting the 3D view
+
+**Symptom:** switching TopDown -> Oblique -> TopDown on FORTOP left the top
+view rendered as a single half-quad: everything on one side of a straight
+diagonal line showed the map, the other side showed the 32,32,32 clear color.
+Resizing the window or panning moved the effect; restarting in pure 2D was
+fine.
+
+**Root cause:** sokol renders with GL_CULL_FACE enabled (the game camera's
+cull mode: SetDrawTransform, SokolRenderState.cpp:1143 sets cull CULL_CW ->
+SG_FACEWINDING_CW + front culling, SokolRenderPipeline.cpp:165-166) and never
+turns it off at pass end. Qt's QOpenGLTextureBlitter never touches cull state
+(qopengltextureblitter.cpp documents that state is the caller's
+responsibility), and its quad is two triangles with OPPOSITE windings:
+(-1,-1),(-1,1),(1,-1) is CW while (-1,1),(1,-1),(1,1) is CCW
+(qopengltextureblitter.cpp:155-162). With the sokol cull state left active the
+CW triangle is culled, so the blitter draws exactly one triangle of the map
+quad -- the image is cut along the quad diagonal (-1,1)->(1,-1). Verified
+pixel-wise: in the broken shot the right edge of the map rect stayed put while
+the left content edge retreated along x ~= const + y (the quad diagonal).
+
+**Fix:** glDisable(GL_CULL_FACE) right after the sokol frame in
+ViewportWidget::paintGL() (in the block that restores GL state for QPainter)
+and before every blit in drawTopDownGL()/drawObliqueGL(), so the blit does not
+depend on what the previous pass left behind. (An earlier glViewport reset in
+the same places was kept as a defensive measure but was NOT the cause.)
+
+**Verification:** MAP_EDITOR_SHOTS=<dir> autotest captures 01_topdown.png,
+02_oblique.png and 03_topdown_after3d.png; after the fix 01 and 03 are
+byte-identical (0 differing pixels of 880x678).
+

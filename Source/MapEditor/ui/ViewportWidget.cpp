@@ -865,6 +865,18 @@ void ViewportWidget::paintGL()
             gl->glDisable(GL_DEPTH_TEST);
             gl->glDisable(GL_BLEND);
             gl->glDisable(GL_SCISSOR_TEST);
+            // sokol renders with GL_CULL_FACE enabled (the game's camera
+            // cull mode) and never turns it off — the texture blitter never
+            // touches cull state, so its CW-wound quad triangle would be
+            // culled and the map drawn as a single half-triangle.
+            gl->glDisable(GL_CULL_FACE);
+            // Reset viewport to the full framebuffer. The sokol render
+            // pipeline may leave the viewport set to the camera's
+            // sub-region (via SetDrawTransform → SetVPMatrix). If the
+            // next draw (TopDown) does not explicitly set the viewport,
+            // the texture blitter would draw only into the old region,
+            // producing a clipped / "two triangles" image.
+            gl->glViewport(0, 0, fboW, fboH);
             gl->glActiveTexture(GL_TEXTURE0);
             baseDrawn = true;
         } else {
@@ -988,10 +1000,20 @@ bool ViewportWidget::drawTopDownGL(QOpenGLFunctions *gl,
         gl->glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
     }
 
+    // Ensure viewport covers the full widget — the GPU pass may have left
+    // a sub-region viewport from the sokol camera's SetDrawTransform.
+    gl->glViewport(0, 0, qRound(size().width() * devicePixelRatioF()),
+                   qRound(size().height() * devicePixelRatioF()));
+
     gl->glClearColor(32.0f / 255.0f, 32.0f / 255.0f, 32.0f / 255.0f, 1.0f);
     gl->glClear(GL_COLOR_BUFFER_BIT);
     gl->glDisable(GL_DEPTH_TEST);
     gl->glDisable(GL_BLEND);
+    // The blitter quad is a triangle strip whose first triangle winds CW.
+    // A sokol 3D frame leaves GL_CULL_FACE enabled (front CW, cull front),
+    // which would cull exactly that triangle and leave the map cut along
+    // the quad diagonal — make the blit independent of the previous pass.
+    gl->glDisable(GL_CULL_FACE);
 
     // Chunky shows solid blocks (nearest sampling, no filter at >1:1);
     // Smooth blends neighboring cells like the in-game camera. The same rule
@@ -1072,10 +1094,19 @@ bool ViewportWidget::drawObliqueGL(QOpenGLFunctions *gl)
         return false;
     }
 
+    // Ensure viewport covers the full widget before blitting the 3D frame.
+    gl->glViewport(0, 0, qRound(size().width() * devicePixelRatioF()),
+                   qRound(size().height() * devicePixelRatioF()));
+
     gl->glClearColor(32.0f / 255.0f, 32.0f / 255.0f, 32.0f / 255.0f, 1.0f);
     gl->glClear(GL_COLOR_BUFFER_BIT);
     gl->glDisable(GL_DEPTH_TEST);
     gl->glDisable(GL_BLEND);
+    // The blitter quad is a triangle strip whose first triangle winds CW.
+    // A sokol 3D frame leaves GL_CULL_FACE enabled (front CW, cull front),
+    // which would cull exactly that triangle and leave the map cut along
+    // the quad diagonal — make the blit independent of the previous pass.
+    gl->glDisable(GL_CULL_FACE);
 
     // The 3D window buffer is widget-size clamped to Terra's
     // MAX_XSIZE_VX_WINDOW, so it is usually upscaled to the widget: Smooth

@@ -260,6 +260,15 @@ void TerrainGpuView::applyCamera() {
     Vect2f focus(focusClip, focusClip);
     Vect2f zplane(clampd(H * 0.1, 1.0, 30.0), 1e5f);
     camera_->SetFrustum(&center, &clip, &focus, &zplane);
+
+    // Push the recomputed matrices into the device. cSokolRender::SetDrawNode
+    // early-outs when the DrawNode POINTER is unchanged, and it is the only
+    // caller of SetDrawTransform → SetVPMatrix — so with a single editor
+    // camera the view-projection would be frozen at its first-frame value
+    // (in the game the pointer alternates between the main and the
+    // reflection/shadow cameras every frame, which hides this). Feed the
+    // transform explicitly; it also refreshes viewport/clip from the camera.
+    device_->SetDrawTransform(camera_);
 }
 
 void TerrainGpuView::renderFrame(uint32_t framebuffer, int width, int height) {

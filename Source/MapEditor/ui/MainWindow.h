@@ -69,6 +69,9 @@ public:
     // Repro-harness hooks (MAP_EDITOR_AUTOTEST) — not part of the UI flow.
     void debugOpenGameDir(const std::string& dir);
     void debugLoadWorld(const std::string& worldName);
+    /// The central viewport widget for the autotest harness (nullptr before
+    /// buildViewport).
+    MapEditor::ViewportWidget *debugViewport() const { return viewport_; }
 
 private slots:
     void onActionSelectGameDir();
