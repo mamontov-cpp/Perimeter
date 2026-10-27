@@ -1344,6 +1344,10 @@ void ViewportWidget::drawSpawnPoints(QPainter &painter)
 void ViewportWidget::drawHud(QPainter &painter)
 {
     if (!renderer_->isBound()) return;
+    // The HUD text looks blurry when the GPU path is active (the widget
+    // renders at device-pixel resolution and QPainter's text gets scaled
+    // back down). Skip it when the GPU scene is ready.
+    if (lastGpuViewReady_) return;
 
     QString info;
     // The editor interaction mode the cursor carries right now.
