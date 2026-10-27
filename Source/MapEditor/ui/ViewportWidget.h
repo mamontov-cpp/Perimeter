@@ -361,6 +361,11 @@ signals:
     /// Emitted when the eyedropper is triggered (T3.3/T4.2) — provides the
     /// map cell coordinates and the current SurBuf palette index at that cell.
     void eyedropperPicked(int mapX, int mapY, unsigned char surIndex);
+    /// Emitted once after the first successful GPU terrain view init (or
+    /// after a reload that drops it back to the CPU path). MainWindow
+    /// hides the freeze-dam action (which only makes sense for the CPU path)
+    /// when the GPU path is available.
+    void gpuViewReadyChanged(bool gpuReady);
 
 protected:
     void initializeGL() override;
@@ -530,6 +535,10 @@ private:
     /// setSession/reloadWorld happen without a current GL context — the GPU
     /// scene (re)build is deferred to the next paintGL.
     bool gpuRebuildPending_ = false;
+    /// Whether the GPU scene was ready the last time we checked in paintGL.
+    /// Used to emit gpuViewReadyChanged() only on transitions (one-shot
+    /// reveal/hide of the freeze-dam action in MainWindow).
+    bool lastGpuViewReady_ = false;
 
     // --- GL presentation state (created in initializeGL, see above) --------
     QOpenGLTextureBlitter *glBlitter_ = nullptr;

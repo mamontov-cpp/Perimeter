@@ -813,6 +813,17 @@ void ViewportWidget::paintGL()
         editorTrace("ViewportWidget: paintGL deferred rebuild done");
     }
 
+    // Notify MainWindow about the GPU/CPU path so it can show/hide the
+    // freeze-dam action (a CPU-path-only fallback). Emitted once per
+    // transition, not per frame.
+    const bool gpuReadyNow = gpuView_ && gpuView_->isReady();
+    if (gpuReadyNow != lastGpuViewReady_) {
+        lastGpuViewReady_ = gpuReadyNow;
+        editorTrace("ViewportWidget: paintGL GPU path %s",
+                    gpuReadyNow ? "READY" : "fallback CPU");
+        emit gpuViewReadyChanged(gpuReadyNow);
+    }
+
     // Drain dirty rects / recompute lighting before painting, so the cache is
     // current when we upload/draw it.
     std::vector<DirtyRect> dirty;

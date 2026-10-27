@@ -703,6 +703,16 @@ void MainWindow::buildViewport()
     connect(viewport_, &MapEditor::ViewportWidget::eyedropperPicked,
             this, &MainWindow::onEyedropperPicked);
 
+    // Hide the freeze-dam action when the GPU terrain path is available —
+    // the feature is a CPU-path-only fallback (it depends on the torus
+    // repetition logic in View3DRenderer, which sokol does not implement).
+    connect(viewport_, &MapEditor::ViewportWidget::gpuViewReadyChanged, this,
+            [this](bool gpuReady) {
+                if (actFreezeDam_) {
+                    actFreezeDam_->setVisible(!gpuReady);
+                }
+            });
+
     /// Initial style button state (the viewport defaults to Smooth; post-T3.3
     /// chunky/smooth renderer toggle).
     actChunkyRender_->setChecked(viewport_->renderStyle() !=
