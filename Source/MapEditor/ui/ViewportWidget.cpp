@@ -856,6 +856,7 @@ void ViewportWidget::paintGL()
                 editorTrace("ViewportWidget: GPU frame %d (%dx%d)", ++gpuFrameLog,
                             fboW, fboH);
             }
+            gpuView_->setNearestFiltering(renderStyle_ == RenderStyle::Chunky);
             gpuView_->renderFrame(context()->defaultFramebufferObject(),
                                   fboW, fboH);
             // sokol left its own GL state behind — restore what QPainter

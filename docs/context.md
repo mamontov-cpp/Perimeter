@@ -945,3 +945,36 @@ the same places was kept as a defensive measure but was NOT the cause.)
 02_oblique.png and 03_topdown_after3d.png; after the fix 01 and 03 are
 byte-identical (0 differing pixels of 880x678).
 
+
+## GPU Viewport: chunky render style needs nearest-neighbor sampler
+
+**Symptom:** before this fix the GPU oblique viewport (`TerrainGpuView`) always
+rendered terrain with bilinear filtering (`SG_FILTER_LINEAR`), regardless of
+the editor's render style setting. The old CPU chunky path (`drawObliqueGL`)
+already used `GL_NEAREST` for magnification when `RenderStyle::Chunky` was
+selected, but the sokol GPU path never switched its sampler.
+
+**Root cause:** `TerrainGpuView` wraps the game's sokol terrain renderer
+(`cTileMap` via `scene_->Draw`). The game's sokol sampler is created with
+`SG_FILTER_LINEAR` at `cSokolRender::Init` (SokolRender.cpp:309-311) and
+assigned to every pipeline's `un_sampler0` binding (SokolRenderState.cpp:308).
+`TerrainGpuView` had no API to swap the sampler, so the tilemap was always
+linearly interpolated — no chunky look.
+
+**Fix:** add `TerrainGpuView::setNearestFiltering(bool)` and
+`setDeviceTextureFilter(device, bool)` in `EditorSokolDevice`. The editor
+device creates two samplers (`samplerLinear` and `samplerNearest`) during
+`Init`, and `setNearestFiltering` swaps the active `sampler` member that
+`sokol_render_state` binds. `TerrainGpuView::renderFrame` calls
+`setDeviceTextureFilter` before `BeginScene` based on the flag.
+`ViewportWidget::paintGL` calls `gpuView_->setNearestFiltering(renderStyle_ ==
+RenderStyle::Chunky)` before `gpuView_->renderFrame()`.
+
+**Verification:** MAP_EDITOR_SHOTS autotest captures `02_oblique.png` (smooth,
+387 KB) and `03_oblique_chunky.png` (chunky, 160 KB) in the same camera
+configuration. They differ by 193 569 pixels of 596 640. Chunky PNG is much
+smaller because nearest sampling produces large uniform regions that compress
+well. Smooth has 36.9 % gradient pixels, chunky 27.2 % — confirming less
+interpolation.
+
+

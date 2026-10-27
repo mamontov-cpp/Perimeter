@@ -76,10 +76,19 @@ public:
         targetHeight_ = height;
     }
 
+    /// Switch the active sampler for the tilemap pipeline. When `nearest` is
+    /// true, the nearest-neighbor sampler is assigned to the inherited
+    /// `sampler` member; when false the linear sampler is restored.
+    void setNearestFiltering(bool nearest) {
+        sampler = nearest ? samplerNearest : samplerLinear;
+    }
+
 private:
     uint32_t targetFramebuffer_ = 0;
     int targetWidth_ = 0;
     int targetHeight_ = 0;
+    sg_sampler samplerLinear = {};
+    sg_sampler samplerNearest = {};
 };
 
 int EditorSokolRender::Init(int xScr, int yScr, int mode, SDL_Window* wnd, int) {
@@ -142,6 +151,17 @@ int EditorSokolRender::Init(int xScr, int yScr, int mode, SDL_Window* wnd, int) 
     sampler_desc.mag_filter = SG_FILTER_LINEAR;
     sampler_desc.mipmap_filter = SG_FILTER_LINEAR;
     sampler = sg_make_sampler(sampler_desc);
+    samplerLinear = sampler;
+
+    // Nearest sampler for chunky mode — same wrap as linear, but point
+    // filtering at every level. The tilemap textures have num_mipmaps=1,
+    // so min_filter only matters for minification within a single level.
+    sg_sampler_desc nearest_desc = sampler_desc;
+    nearest_desc.label = "SamplerNearest";
+    nearest_desc.min_filter = SG_FILTER_NEAREST;
+    nearest_desc.mag_filter = SG_FILTER_NEAREST;
+    nearest_desc.mipmap_filter = SG_FILTER_NEAREST;
+    samplerNearest = sg_make_sampler(nearest_desc);
 
     sg_sampler_desc shadow_sampler_desc = {};
     shadow_sampler_desc.min_filter = SG_FILTER_LINEAR;
@@ -274,6 +294,12 @@ void setDeviceTarget(cInterfaceRenderDevice* device,
 void resetDeviceStateCache(cInterfaceRenderDevice* device) {
     if (device) {
         sg_reset_state_cache();
+    }
+}
+
+void setDeviceTextureFilter(cInterfaceRenderDevice* device, bool nearest) {
+    if (device) {
+        static_cast<EditorSokolRender*>(device)->setNearestFiltering(nearest);
     }
 }
 

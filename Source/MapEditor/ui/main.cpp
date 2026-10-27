@@ -89,13 +89,23 @@ int main(int argc, char *argv[])
                 MapEditor::editorTrace("autotest: switched to 3D (rot180 lean135 dz500 f150)");
             });
             QTimer::singleShot(17000, &window, [capture] { capture("02_oblique"); });
-            QTimer::singleShot(18000, &window, [&window] {
+            // Switch to chunky to verify GPU oblique uses nearest filtering
+            QTimer::singleShot(17500, &window, [&window] {
+                MapEditor::ViewportWidget *vp = window.debugViewport();
+                if (!vp) return;
+                vp->setRenderStyle(MapEditor::ViewportWidget::RenderStyle::Chunky);
+                MapEditor::editorTrace("autotest: switched to chunky");
+            });
+            QTimer::singleShot(18000, &window, [capture] { capture("03_oblique_chunky"); });
+            // Switch back to smooth so the 2D shot is unaffected
+            QTimer::singleShot(18300, &window, [&window] {
                 MapEditor::ViewportWidget *vp = window.debugViewport();
                 if (!vp) return;
                 vp->setViewMode(ViewMode::TopDown);
-                MapEditor::editorTrace("autotest: switched back to 2D");
+                vp->setRenderStyle(MapEditor::ViewportWidget::RenderStyle::Smooth);
+                MapEditor::editorTrace("autotest: switched back to 2D + smooth");
             });
-            QTimer::singleShot(20000, &window, [capture] { capture("03_topdown_after3d"); });
+            QTimer::singleShot(20000, &window, [capture] { capture("04_topdown_after3d"); });
         }
         QTimer::singleShot(25000, &window, [&window] {
             MapEditor::editorTrace("autotest: closing window");

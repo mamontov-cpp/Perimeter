@@ -108,6 +108,13 @@ public:
     /// Zeroplast plane height in world units (meters), for the grid plane.
     float zeroplastZ() const;
 
+    /// When true the sokol tilemap sampler uses nearest filtering (chunky
+    /// voxel look, no bilinear). When false (default) the default linear
+    /// sampler is used (smooth). Call once per frame before renderFrame().
+    void setNearestFiltering(bool nearest) { nearestFiltering_ = nearest; }
+
+    bool isNearestFiltering() const { return nearestFiltering_; }
+
 private:
     /// (Re)create scene/camera/tilemap around the current device.
     bool buildScene();
@@ -125,6 +132,7 @@ private:
 
     ViewportRenderer* colors_ = nullptr;
     CameraState cameraState_;
+    bool nearestFiltering_ = false;
 };
 
 } // namespace MapEditor

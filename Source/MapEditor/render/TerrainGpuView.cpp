@@ -291,6 +291,12 @@ void TerrainGpuView::renderFrame(uint32_t framebuffer, int width, int height) {
 
     applyCamera();
 
+    // Switch the sokol sampler to nearest-neighbor for chunky mode (no
+    // bilinear smoothing) or linear for smooth — matching the CPU path.
+    // Must happen before BeginScene so the tilemap pipeline binds the
+    // correct sampler.
+    MapEditor::setDeviceTextureFilter(device_, nearestFiltering_);
+
     // Game frame flow (Source/Game/GameShell.cpp) minus the logic side:
     device_->Fill(0, 0, 0, 255);
     device_->BeginScene();

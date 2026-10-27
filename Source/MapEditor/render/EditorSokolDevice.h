@@ -48,4 +48,10 @@ void setDeviceTarget(cInterfaceRenderDevice* device,
 /// applying only deltas over foreign state.
 void resetDeviceStateCache(cInterfaceRenderDevice* device);
 
+/// Switch the sokol sampler used for the terrain tilemap. When `nearest` is
+/// true, textures are sampled with point filtering (no bilinear) — this
+/// produces the chunky blocky look. When false, the default linear sampler
+/// is used for smooth interpolation.
+void setDeviceTextureFilter(cInterfaceRenderDevice* device, bool nearest);
+
 }
