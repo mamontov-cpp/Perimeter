@@ -4,6 +4,7 @@
 #include <QOpenGLWidget>
 #include <QPoint>
 #include <QPointF>
+#include <QPolygonF>
 #include <QRect>
 #include <QSize>
 #include <QString>
@@ -275,6 +276,18 @@ public:
     /// (pan, zoom, orbit, mode switch, resize, world load/unload).
     QRect currentViewRect() const;
 
+    /// The same region as a polygon in map cells — what MinimapWidget draws.
+    ///   - TopDown: the four corners of currentViewRect().
+    ///   - Oblique + GPU view: the ground footprint of the frustum, one ray
+    ///     per screen corner intersected with the zeroplast plane, so the
+    ///     outline keeps the camera azimuth and the perspective spread (a
+    ///     rotated trapezoid, wide at the far edge).
+    ///   - Oblique CPU fallback: the ground rectangle of the affine viewV2D
+    ///     basis, rotated by the turn angle.
+    /// Empty when nothing is loaded/visible. Changes are announced through
+    /// viewPolygonChanged() at the same points as viewRectChanged().
+    QPolygonF currentViewPolygon() const;
+
     /// Centre the viewport on the given map cell (wrapped like XCYCL/YCYCL).
     /// In Oblique mode it moves the look-at centre — the minimap click
     /// navigation (T2.4).
@@ -352,6 +365,10 @@ signals:
     /// orbit, mode switch, resize, world load/unload) — main consumers are
     /// the minimap panel (T2.4) and tool panel readouts.
     void viewRectChanged(const QRect &rect);
+    /// Emitted after a repaint when currentViewPolygon() changed —
+    /// the minimap panel consumes this for a rotated/trapezoidal 3D zone
+    /// outline instead of an axis-aligned rect.
+    void viewPolygonChanged(const QPolygonF &poly);
     /// Emitted right after a brush stamp changed the world (T3.1) so the
     /// MainWindow can refresh the modified state in the status bar.
     void worldEdited();
@@ -494,6 +511,12 @@ private:
     /// depth axis). Used by the 3D brush preview ring.
     QPointF obliquePxPerCell() const;
 
+    /// GPU oblique path: the stamp footprint projected through the perspective
+    /// camera — the boundary of the disc/square of `brushRadius_` cells centred
+    /// on cursorCell_, sampled at the terrain height. Widget pixels; empty when
+    /// the GPU view is not ready or too few points projected.
+    QPolygonF projectedBrushContour() const;
+
     EditorSession *session_ = nullptr;
     ViewportRenderer *renderer_ = nullptr;
 
@@ -581,6 +604,8 @@ private:
     /// View rectangle emitted through viewRectChanged the last time
     /// (guard against repeated identical emissions).
     QRect lastEmittedViewRect_;
+    /// Polygon emitted through viewPolygonChanged the last time.
+    QPolygonF lastEmittedViewPolygon_;
 
     std::vector<MapMarker> markers_;
     std::vector<SpawnPoint> spawns_;

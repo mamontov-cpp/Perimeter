@@ -847,11 +847,13 @@ void MainWindow::buildMinimapDock()
         viewMenu_->addAction(toggleAction);
     }
 
-    // The rectangle outline follows the viewport — whatever moves it
+    // The view outline follows the viewport — whatever moves it
     // (pan, zoom, orbit, mode switch, resize, world load/unload) ends in
-    // ViewportWidget::viewRectChanged after the next repaint.
-    connect(viewport_, &MapEditor::ViewportWidget::viewRectChanged,
-            minimap_, &MapEditor::MinimapWidget::setViewRect);
+    // ViewportWidget::viewPolygonChanged after the next repaint. The polygon
+    // carries the 3D camera azimuth/perspective that an axis-aligned rect
+    // would flatten.
+    connect(viewport_, &MapEditor::ViewportWidget::viewPolygonChanged,
+            minimap_, &MapEditor::MinimapWidget::setViewPolygon);
 
     // T7 — the "Add" marker default position follows the view centre.
     connect(viewport_, &MapEditor::ViewportWidget::viewRectChanged, this,
@@ -869,7 +871,7 @@ void MainWindow::buildMinimapDock()
     // Load the image for the world that may already be bound and push the
     // current view rectangle once (subsequent updates come from the signal).
     minimap_->setSession(session_);
-    minimap_->setViewRect(viewport_->currentViewRect());
+    minimap_->setViewPolygon(viewport_->currentViewPolygon());
 }
 
 void MainWindow::buildPaletteDock()
@@ -948,8 +950,8 @@ void MainWindow::onWorldLoaded()
     editorTrace("onWorldLoaded: setting minimap session");
     if (minimap_ && session_) {
         minimap_->setSession(session_);
-        minimap_->setViewRect(viewport_ ? viewport_->currentViewRect()
-                                        : QRect());
+        minimap_->setViewPolygon(viewport_ ? viewport_->currentViewPolygon()
+                                           : QPolygonF());
     }
     editorTrace("onWorldLoaded: setting palette session");
     // Rebuild the palette panel grids (T4.1) — the palette belongs to the
@@ -989,7 +991,7 @@ void MainWindow::onWorldUnload()
     }
     if (minimap_ && session_) {
         minimap_->setSession(session_);
-        minimap_->setViewRect(QRect());
+        minimap_->setViewPolygon(QPolygonF());
     }
     if (palettePanel_ && session_) {
         palettePanel_->setSession(session_);

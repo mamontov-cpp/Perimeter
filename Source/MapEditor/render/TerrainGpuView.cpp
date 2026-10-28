@@ -377,6 +377,74 @@ bool TerrainGpuView::pickCell(double sxPx, double syPx, int& cellX, int& cellY) 
     return true;
 }
 
+bool TerrainGpuView::groundFootprint(double planeZ, double outX[4], double outY[4]) const {
+    if (!camera_ || !device_) return false;
+    const double sizeX = device_->GetSizeX();
+    const double sizeY = device_->GetSizeY();
+    if (sizeX < 2.0 || sizeY < 2.0) return false;
+
+    // A ray that would hit the plane further than this is clamped: near the
+    // horizon the ground distance explodes to infinity, and an unbounded
+    // corner makes the minimap polygon useless (it is clipped to the map
+    // anyway). The map diagonal is a sane visual bound.
+    const double maxDist = std::hypot(static_cast<double>(vMap.H_SIZE),
+                                      static_cast<double>(vMap.V_SIZE));
+
+    // Screen corners in device pixels (y down), in screen order.
+    const double sx[4] = {0.0, sizeX, sizeX, 0.0};
+    const double sy[4] = {0.0, 0.0, sizeY, sizeY};
+
+    for (int i = 0; i < 4; ++i) {
+        // Same input domain as pickCell: pe in [-0.5, 0.5] of the screen.
+        Vect2f pe(static_cast<float>(sx[i] / sizeX - 0.5),
+                  static_cast<float>(sy[i] / sizeY - 0.5));
+        Vect3f pos, dir;
+        camera_->GetWorldRay(pe, pos, dir);
+
+        const double hlen = std::hypot(static_cast<double>(dir.x),
+                                      static_cast<double>(dir.y));
+        double t = -1.0;
+        if (dir.z < -1e-6 && pos.z > planeZ) {
+            t = (planeZ - pos.z) / dir.z; // > 0: the ray descends to the plane
+        }
+        if (!(t > 0.0)) {
+            // Parallel to / rising from the plane — take a far point instead.
+            t = hlen > 1e-6 ? maxDist / hlen : 0.0;
+        }
+        if (hlen > 1e-6 && t * hlen > maxDist) {
+            t = maxDist / hlen;
+        }
+        const Vect3f p = pos + dir * static_cast<float>(t);
+        outX[i] = p.x;
+        outY[i] = p.y;
+    }
+    return true;
+}
+
+int TerrainGpuView::projectGroundContour(const double* cellXY, int count,
+                                         double* outSx, double* outSy) const {
+    if (!camera_ || !cellXY || count <= 0) return 0;
+    int n = 0;
+    for (int i = 0; i < count; ++i) {
+        const double x = cellXY[2 * i + 0];
+        const double y = cellXY[2 * i + 1];
+        // Clamped like sampleTerrainZ: a contour a bit outside the map still
+        // projects (the stamp wraps at the seams anyway).
+        const double z = sampleTerrainZ(x, y);
+        Vect3f pw(static_cast<float>(x), static_cast<float>(y),
+                  static_cast<float>(z));
+        Vect3f pv, pe;
+        camera_->ConvertorWorldToViewPort(&pw, &pv, &pe);
+        if (pv.z <= 0) {
+            continue; // behind the camera
+        }
+        outSx[n] = pe.x;
+        outSy[n] = pe.y;
+        ++n;
+    }
+    return n;
+}
+
 bool TerrainGpuView::projectToScreen(double cellX, double cellY, double z,
                                      double& sxPx, double& syPx) const {
     if (!camera_) return false;

@@ -978,3 +978,127 @@ well. Smooth has 36.9 % gradient pixels, chunky 27.2 % — confirming less
 interpolation.
 
 
+## GPU picking: the terrain march must go to z=0, not to the zeroplast plane
+
+**Symptom:** the brush cursor/p preview disappeared over GEO cells that have no
+DAM, especially near the map edges, while it worked over dammed terrain.
+
+**Root cause:** `TerrainGpuView::pickCell()` ray-marched the terrain and stopped
+at the zeroplast plane height. Heights are stored unsigned (`SGetAlt`), so raw
+geo can sit well BELOW `hZeroPlast`; the march never reached that surface, the
+ray stayed above the terrain, `pickCell()` returned false and the cell was lost.
+A secondary factor: the descent threshold `dir.z >= -1e-6` rejected the very
+shallow rays of terrain close to the horizon, and `tMax` was too short for them.
+
+**Fix:** march down to `zFloor = 0.0` (the lowest representable terrain height)
+instead of the zeroplast plane; clamp `tMax` to [32, 200000] with a
+`max(0.25, tMax/4096)` step and reject only rays with `dir.z >= -1e-3`. In
+`ViewportWidget::cellAtWidgetPos()` a missed GPU pick no longer falls back to
+the CPU `view3d_` (the GPU camera and the CPU voxel window are different
+projections — the fallback returned cells from another view).
+
+
+## Minimap: image cropped and vertically squashed when the window is maximized
+
+**Symptom:** with the MapEditor window at its default size the minimap looked
+correct; maximizing it made the map raster squash vertically into the bottom of
+the panel with a white band above it (`MAP_EDITOR_MAXIMIZE=1` autotest).
+
+**Root cause:** `MinimapWidget::resizeEvent()` recomputed the letter-boxed
+`mapArea_` and called `update()`, but never called
+`QOpenGLWidget::resizeEvent()`. That base implementation is what recreates the
+widget FBO (`QOpenGLWidgetPrivate::recreateFbos()`, qopenglwidget.cpp:1495-1515)
+for the new size — its documentation explicitly warns against overriding the
+handler without invoking it. The paint therefore continued into the old-size
+texture (396x140), which Qt stretched over the new widget (396x191): the map
+came out vertically compressed and the never-written top strip stayed at Qt's
+clear color (white).
+
+The first hypotheses were all wrong and cost time: a stale `glViewport` after
+the sokol render (the logged viewport was correct), a bad `mapArea_` (it was
+correct), a stale scissor. The giveaway was the pixel probe: the grabbed
+framebuffer was white exactly in `newHeight - oldHeight` top rows.
+
+**Fix:** call `QOpenGLWidget::resizeEvent(event)` (after `updateMapArea()`, so a
+paint event sent from inside the base handler already sees the new layout).
+
+
+## Minimap: the 3D view zone is a rotated trapezoid, not an axis-aligned rect
+
+**Symptom:** the yellow outline in the minimap ignored the 3D camera — in the
+GPU oblique mode it was computed from the `kv` ground-scale heuristic, so it
+never rotated with the camera turn and usually degenerated into "the whole map"
+(the outline coincided with the map frame and was invisible).
+
+**Fix:** the zone is now a polygon in map cells.
+`TerrainGpuView::groundFootprint()` casts one ray per screen corner
+(`cCamera::GetWorldRay`, same `pe` domain as `pickCell`) and intersects it with
+the zeroplast plane, which keeps the azimuth and the perspective spread — the
+far edge always covers more ground than the near one. A corner whose ray is at
+or above the horizon (common: the editor's GPU camera is wide, with lean 140 the
+top edge is only ~15° below horizontal) is clamped along the ray at the map
+diagonal, so the polygon stays finite; `MinimapWidget` clips the outline to the
+map rectangle. `ViewportWidget::currentViewPolygon()` returns it (TopDown: the
+visible cell range as a quad; CPU oblique fallback: the ground rectangle of the
+viewV2D basis rotated by the turn angle, the same axes `panObliqueBy()`
+inverts), and the new `viewPolygonChanged(QPolygonF)` signal feeds
+`MinimapWidget::setViewPolygon()`. `viewRectChanged`/`currentViewRect()` stay
+for the consumers that need a rect (marker panel default position, battle-map
+centring).
+
+**Verification:** the autotest captures `10_minimap_topdown` (quad over the whole
+map), `11_minimap_oblique` (turn=180 — the band between the near and far ground
+edges) and `12_minimap_oblique_rot45` (turn=45 — the near edge visibly diagonal,
+the side edges running up to the map border). Same shots in the maximized and
+the default window size, no white band in either.
+
+
+## GPU oblique: brush preview ring was ~2.4x too large (wrong ground-scale basis)
+
+**Symptom (FORTOP, rot 15 / lean 155 / lift -500 / focus 1950, brush = filled
+circle radius 64, Dam layer):** the stamped area covered only about half of the
+yellow ellipse the preview drew — the outline did not represent the affected
+area.
+
+**Root cause:** `drawBrushPreview()` sized the 3D ring from
+`obliquePxPerCell()`, whose GPU branch returns `1 / ((focusC + cameraDZ) /
+focusC)` — the **nadir** cells-per-pixel formula of the CPU voxel window. Two
+errors compound:
+
+1. `(F+Z)/F` is not the perspective ground scale. The editor's GPU camera sits
+   at slant range `r = H / cos(theta)` from the look-at point (`H = F + Z`,
+   `theta = lean - 90°`), so the true scale there is `focal_px / r` cells per
+   pixel. For the repro camera: `H = 1450`, `theta = 65°`, `r = 3431` cells,
+   `1950 / 3431 = 0.568` widget px per cell — while the heuristic gave `1 /
+   0.744 = 1.345`, i.e. **2.37x too large** (≈5.6x in area).
+2. Even the correct nadir scale is only valid at the look-at centre. The image
+   scale grows towards the bottom of the screen (nearer ground) and shrinks
+   towards the horizon, and a ground disc projects to a *sheared, offset*
+   ellipse — an axis-aligned ring centred on the cursor cannot represent it.
+
+**Fix:** draw the actual stamp footprint instead of an approximating ellipse.
+`TerrainGpuView::projectGroundContour()` projects a contour of map-cell points
+through the camera (`ConvertorWorldToViewPort`, each point taken at the terrain
+height under it, points behind the camera dropped), and
+`ViewportWidget::projectedBrushContour()` builds the boundary of the disc/square
+of `brushRadius_` cells centred on `cursorCell_` (circle: 24..180 samples;
+square: edges subdivided so the height variation shows) and returns it in widget
+pixels. `drawBrushPreview()` draws that polygon when it has ≥3 points and keeps
+the heuristic ring only as the CPU-path / behind-camera fallback.
+
+**Note — `obliquePxPerCell()` is still the old heuristic in GPU mode.** It now
+only drives two cosmetic decisions (whether the grid lines "resolve" enough to
+be drawn, and the fallback ring), both of which are wrong by the same factor;
+the grid itself and the brush preview are projected, so the rendering is
+correct. Not fixed here to keep the change minimal.
+
+**Verification:** autotest step at 23 s sets the repro camera and the radius-64
+Dam brush, moves the cursor to 3/4 of the viewport height and captures
+`13_brush_preview`. Instrumented during the fix (before removing the trace):
+heuristic `rx=86.1 ry=48.9` (bbox 172x98) vs projected contour bbox `84.7x44.5`
+— the projected size matches `focal/slant_range` analytically. The harness does
+**not** perform a real stamp: `applyStamp()` marks the world modified and closing
+then raises the modal "Unsaved Changes" dialog, which blocks an unattended run
+(and could save over the test world).
+
+

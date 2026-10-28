@@ -72,6 +72,12 @@ public:
     /// The central viewport widget for the autotest harness (nullptr before
     /// buildViewport).
     MapEditor::ViewportWidget *debugViewport() const { return viewport_; }
+    /// The minimap panel for the autotest harness (nullptr before
+    /// buildViewport).
+    MapEditor::MinimapWidget *debugMinimap() const { return minimap_; }
+    /// The brush tool for the autotest harness (nullptr before the toolbar is
+    /// built) — lets a repro drive a real stamp through the widget handlers.
+    MapEditor::BrushTool *debugBrushTool() const { return brushTool_; }
 
 private slots:
     void onActionSelectGameDir();

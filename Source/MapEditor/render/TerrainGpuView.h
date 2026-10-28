@@ -105,6 +105,28 @@ public:
     bool projectToScreen(double cellX, double cellY, double z,
                          double& sxPx, double& syPx) const;
 
+    /// Ground footprint of the current view: where the rays through the four
+    /// screen corners hit the horizontal plane z = planeZ, in world cells.
+    /// Order follows the screen: top-left, top-right, bottom-right, bottom-left
+    /// (top = the far edge near the horizon). Unlike the axis-aligned rect a
+    /// per-corner ray cast gives, this keeps the camera azimuth and the
+    /// perspective spread — the far edge covers much more ground than the near
+    /// one, so the quad comes out as a rotated trapezoid.
+    /// A corner whose ray never reaches the plane (at/above the horizon) is
+    /// clamped to a far point along it, so the polygon stays finite.
+    /// Returns false when the view is not ready.
+    bool groundFootprint(double planeZ, double outX[4], double outY[4]) const;
+
+    /// Project a ground contour through the camera: `count` map-cell points
+    /// (cellX, cellY pairs in `cellXY`), each taken at the terrain height under
+    /// it, to screen device pixels (y down) in `outSx`/`outSy`. Points that miss
+    /// the terrain grid or fall behind the camera are dropped — the return value
+    /// is the number of valid points written (0 when the view is not ready).
+    /// Used by the brush preview, which must show the true perspective image of
+    /// the stamp footprint rather than a heuristic ellipse.
+    int projectGroundContour(const double* cellXY, int count,
+                             double* outSx, double* outSy) const;
+
     /// Zeroplast plane height in world units (meters), for the grid plane.
     float zeroplastZ() const;
 

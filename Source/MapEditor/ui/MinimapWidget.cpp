@@ -177,10 +177,15 @@ void MinimapWidget::setMinimapData(unsigned imageWidth, unsigned imageHeight,
 
 void MinimapWidget::setViewRect(const QRect &rect)
 {
-    if (viewRect_ == rect) {
+    setViewPolygon(rect.isValid() ? QPolygonF(QRectF(rect)) : QPolygonF());
+}
+
+void MinimapWidget::setViewPolygon(const QPolygonF &poly)
+{
+    if (viewPolygon_ == poly) {
         return;
     }
-    viewRect_ = rect;
+    viewPolygon_ = poly;
     update();
 }
 
@@ -231,10 +236,16 @@ QPoint MinimapWidget::widgetToMapCell(const QPointF &pos) const
 // Events
 // ---------------------------------------------------------------------------
 
-void MinimapWidget::resizeEvent(QResizeEvent * /*event*/)
+void MinimapWidget::resizeEvent(QResizeEvent *event)
 {
+    // The letter-boxed layout depends on the new size and QOpenGLWidget's
+    // implementation may send a paint event right away — recompute first.
     updateMapArea();
-    update();
+    // Mandatory: QOpenGLWidget::resizeEvent recreates the widget FBO (and the
+    // tile grid) for the new size. Skipping it leaves the old-size texture
+    // stretched over the bigger widget — the map looked vertically squashed
+    // with a white band on top after maximizing the window.
+    QOpenGLWidget::resizeEvent(event);
 }
 
 void MinimapWidget::mousePressEvent(QMouseEvent *event)
@@ -287,6 +298,7 @@ void MinimapWidget::paintGL()
 {
     QOpenGLFunctions *gl = context()->functions();
 
+
     // Native pass FIRST, before QPainter is constructed: texture upload +
     // clear + map raster blit, the same discipline ViewportWidget uses (raw
     // GL calls while a QPainter is active are only legal inside
@@ -333,17 +345,21 @@ void MinimapWidget::paintGL()
     painter.setBrush(Qt::NoBrush);
     painter.drawRect(mapArea_.adjusted(-0.5, -0.5, 0.5, 0.5));
 
-    // Current view rectangle of the viewport (T2.4), clamped to the map.
-    if (!viewRect_.isEmpty() && !mapSize_.isEmpty()) {
-        const QRect clamped = viewRect_.intersected(QRect(QPoint(0, 0), mapSize_));
-        if (!clamped.isEmpty()) {
-            const QRectF widgetRect(mapCellToWidget(clamped.x(), clamped.y()),
-                QSizeF(clamped.width() * mapArea_.width() / mapSize_.width(),
-                       clamped.height() * mapArea_.height() / mapSize_.height()));
-            painter.setPen(QPen(QColor(255, 255, 0), 2));
-            painter.setBrush(QColor(255, 255, 0, 36));
-            painter.drawRect(widgetRect);
+    // Current view of the viewport (T2.4), pushed as a polygon of map cells:
+    // an axis-aligned quad in TopDown, the rotated trapezoid of the 3D
+    // frustum's ground footprint in the oblique modes. Clipped to the map —
+    // a footprint looking towards the horizon runs far past the world edge.
+    if (!viewPolygon_.isEmpty() && !mapSize_.isEmpty()) {
+        QPolygonF widgetPoly;
+        widgetPoly.reserve(viewPolygon_.size());
+        for (const QPointF &cell : viewPolygon_) {
+            widgetPoly << mapCellToWidget(cell.x(), cell.y());
         }
+        painter.setClipRect(mapArea_);
+        painter.setPen(QPen(QColor(255, 255, 0), 2));
+        painter.setBrush(QColor(255, 255, 0, 36));
+        painter.drawPolygon(widgetPoly);
+        painter.setClipping(false);
     }
 }
 

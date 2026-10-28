@@ -41,6 +41,7 @@ public:
         return false;
     }
     float zeroplastZ() const { return 0.0f; }
+    int projectGroundContour(const double*, int, double*, double*) const { return 0; }
 };
 } // namespace MapEditor
 #endif
@@ -756,6 +757,62 @@ QRect ViewportWidget::currentViewRect() const
         .intersected(QRect(0, 0, renderer_->width(), renderer_->height()));
 }
 
+QPolygonF ViewportWidget::currentViewPolygon() const
+{
+    if (!renderer_) {
+        return {};
+    }
+    if (viewMode_ == ViewMode::TopDown) {
+        const QRect rect = visibleCellRange();
+        return rect.isEmpty() ? QPolygonF() : QPolygonF(QRectF(rect));
+    }
+
+    // Oblique, GPU path: one ray per screen corner, intersected with the
+    // zeroplast plane. This is what makes the outline a rotated trapezoid —
+    // the azimuth comes from the camera turn, and the far (top) edge covers
+    // much more ground than the near one, which an axis-aligned rect hides.
+    if (gpuActive()) {
+        double xs[4];
+        double ys[4];
+        if (gpuView_->groundFootprint(gpuView_->zeroplastZ(), xs, ys)) {
+            QPolygonF poly;
+            poly.reserve(4);
+            for (int i = 0; i < 4; ++i) {
+                poly << QPointF(xs[i], ys[i]);
+            }
+            return poly;
+        }
+    }
+
+    // Oblique, CPU fallback: the viewV2D projection is affine, so the
+    // footprint is the ground rectangle of the view basis rotated by the turn
+    // angle — the same screen→ground axes panObliqueBy() inverts.
+    const QSize buffer = obliqueBufferSize();
+    const double leanDeg = View3DRenderer::stableLeanDeg(
+        obliqueCamera_.leanDeg, obliqueCamera_.focusC, buffer.height() / 2);
+    const double kv = obliqueForwardScale(obliqueCamera_, leanDeg);
+    const double cellsPerPx =
+        (obliqueCamera_.focusC + obliqueCamera_.cameraDZ) /
+        static_cast<double>(obliqueCamera_.focusC);
+    const double theta = qDegreesToRadians(obliqueCamera_.turnAngleDeg);
+    const double cosT = std::cos(theta);
+    const double sinT = std::sin(theta);
+
+    // Corner offsets in widget pixels (screen order: TL, TR, BR, BL).
+    const double dx[4] = {-width() / 2.0, width() / 2.0,
+                          width() / 2.0, -width() / 2.0};
+    const double dy[4] = {-height() / 2.0, -height() / 2.0,
+                          height() / 2.0, height() / 2.0};
+    QPolygonF poly;
+    poly.reserve(4);
+    for (int i = 0; i < 4; ++i) {
+        poly << obliqueCenter_ + QPointF(
+            (dx[i] * cosT - dy[i] * kv * sinT) * cellsPerPx,
+            (dx[i] * sinT + dy[i] * kv * cosT) * cellsPerPx);
+    }
+    return poly;
+}
+
 void ViewportWidget::centerOnCell(const QPoint &cell)
 {
     if (!session_ || !session_->isWorldLoaded() || !renderer_) {
@@ -783,9 +840,11 @@ void ViewportWidget::emitViewRectIfChanged()
 {
     if (!session_ || !session_->isWorldLoaded() || !renderer_) {
         // World dropped — make sure the minimap hides the rectangle once.
-        if (!lastEmittedViewRect_.isEmpty()) {
+        if (!lastEmittedViewRect_.isEmpty() || !lastEmittedViewPolygon_.isEmpty()) {
             lastEmittedViewRect_ = {};
+            lastEmittedViewPolygon_ = {};
             emit viewRectChanged(lastEmittedViewRect_);
+            emit viewPolygonChanged(lastEmittedViewPolygon_);
         }
         return;
     }
@@ -793,6 +852,13 @@ void ViewportWidget::emitViewRectIfChanged()
     if (viewRect != lastEmittedViewRect_) {
         lastEmittedViewRect_ = viewRect;
         emit viewRectChanged(lastEmittedViewRect_);
+    }
+    // The polygon is what the minimap actually draws (a rotated/trapezoidal
+    // 3D zone), so it is compared and emitted on its own.
+    const QPolygonF viewPoly = currentViewPolygon();
+    if (viewPoly != lastEmittedViewPolygon_) {
+        lastEmittedViewPolygon_ = viewPoly;
+        emit viewPolygonChanged(lastEmittedViewPolygon_);
     }
 }
 
@@ -1245,6 +1311,20 @@ void ViewportWidget::drawBrushPreview(QPainter &painter)
     painter.setBrush(Qt::NoBrush);
 
     if (viewMode_ == ViewMode::Oblique) {
+        // GPU path: the perspective camera images a ground disc as a sheared,
+        // offset ellipse whose size depends on how far the cursor sits from the
+        // look-at point — the CPU view's (F+Z)/F ground scale is wrong here (it
+        // is the nadir scale of the voxel window, not this camera's), so the
+        // ring was drawn far too large. Project the real stamp footprint.
+        const QPolygonF contour = projectedBrushContour();
+        if (contour.size() >= 3) {
+            painter.drawPolygon(contour);
+            if (linePending_ && lineStartWidgetPos_.x() >= 0) {
+                painter.drawLine(QPointF(lineStartWidgetPos_),
+                                 QPointF(cursorWidgetPos_));
+            }
+            return;
+        }
         // The oblique projection has no linear cell→screen map, so the ring is
         // centred on the cursor and sized by the camera's approximate
         // widget-pixels-per-ground-cell (the same basis the pick uses).
@@ -1857,6 +1937,63 @@ QPoint ViewportWidget::cellAtWidgetPos(const QPoint &widgetPos) const
         return {-1, -1}; // sky
     }
     return {mx, my};
+}
+
+QPolygonF ViewportWidget::projectedBrushContour() const
+{
+    if (!gpuActive() || cursorCell_.x() < 0 || brushRadius_ <= 0) {
+        return {};
+    }
+    const double cx = cursorCell_.x() + 0.5;
+    const double cy = cursorCell_.y() + 0.5;
+    const double r = brushRadius_;
+
+    // Stamp boundary in map cells. The square is subdivided along its edges so
+    // the terrain height variation shows up in the projection (a straight world
+    // line is only straight on screen at a constant z).
+    std::vector<double> pts;
+    if (brushShape_ == BrushPreviewShape::Circle) {
+        const int steps = qBound(24, static_cast<int>(r) * 2, 180);
+        pts.reserve(static_cast<std::size_t>(steps) * 2);
+        for (int i = 0; i < steps; ++i) {
+            const double a = 2.0 * M_PI * i / steps;
+            pts.push_back(cx + r * std::cos(a));
+            pts.push_back(cy + r * std::sin(a));
+        }
+    } else {
+        const int seg = qBound(2, static_cast<int>(r) / 8, 16);
+        static const double kCorners[4][2] = {
+            {-1.0, -1.0}, {1.0, -1.0}, {1.0, 1.0}, {-1.0, 1.0},
+        };
+        pts.reserve(4 * static_cast<std::size_t>(seg) * 2);
+        for (int e = 0; e < 4; ++e) {
+            const double x0 = cx + kCorners[e][0] * r;
+            const double y0 = cy + kCorners[e][1] * r;
+            const double x1 = cx + kCorners[(e + 1) % 4][0] * r;
+            const double y1 = cy + kCorners[(e + 1) % 4][1] * r;
+            for (int i = 0; i < seg; ++i) {
+                const double t = i / static_cast<double>(seg);
+                pts.push_back(x0 + (x1 - x0) * t);
+                pts.push_back(y0 + (y1 - y0) * t);
+            }
+        }
+    }
+
+    const int count = static_cast<int>(pts.size() / 2);
+    std::vector<double> sx(count);
+    std::vector<double> sy(count);
+    const int n = gpuView_->projectGroundContour(pts.data(), count,
+                                                 sx.data(), sy.data());
+    if (n < 3) {
+        return {}; // mostly behind the camera — keep the heuristic ring
+    }
+    const qreal dpr = devicePixelRatioF();
+    QPolygonF poly;
+    poly.reserve(n);
+    for (int i = 0; i < n; ++i) {
+        poly << QPointF(sx[i] / dpr, sy[i] / dpr);
+    }
+    return poly;
 }
 
 QPointF ViewportWidget::obliquePxPerCell() const
