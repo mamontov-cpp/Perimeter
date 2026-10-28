@@ -988,136 +988,137 @@ Headless-С‚РµСЃС‚С‹ `map_editor_tests` (`tests/`), РїРѕ С„Р°Р№Р»Сѓ РЅР° РјРѕРґСѓ
 (РєРѕРїРёСЏ СЃРѕС…СЂР°РЅС‘РЅРЅРѕРіРѕ РјРёСЂР° + РѕР±С‰РёРµ СЂРµСЃСѓСЂСЃС‹ `RESOURCE/GeoTx` + `Perimeter.ini`),
 С‡С‚РѕР±С‹ `fullLoad()` РїСЂРѕС€С‘Р» С‚Р°Рє Р¶Рµ, РєР°Рє РІ РёРіСЂРµ.
 
-## 5.23. GPU-режим Oblique-вида: TerrainGpuView + sokol (post-plan)
 
-Пост-плановая миграция Oblique-вида с софтверного `View3DRenderer` (voxel-окно,
-CPU-пиксели) на игровой sokol-рендер. TopDown-вид и `MinimapWidget` остаются на
-точных CPU-пикселях (`QOpenGLTextureBlitter`), оверлеи — по-прежнему QPainter.
-Если GL 4.1/sokol недоступны (ANGLE, старый драйвер, сборка без
-`OPTION_SOKOL`) — автоматический фолбэк на прежний CPU-рендер.
+## 5.23. GPU-СЂРµР¶РёРј Oblique-РІРёРґР°: TerrainGpuView + sokol (post-plan)
 
-### Таргет `MapEditorRender` и линковка (CMakeLists.txt)
+РџРѕСЃС‚-РїР»Р°РЅРѕРІР°СЏ РјРёРіСЂР°С†РёСЏ Oblique-РІРёРґР° СЃ СЃРѕС„С‚РІРµСЂРЅРѕРіРѕ `View3DRenderer` (voxel-РѕРєРЅРѕ,
+CPU-РїРёРєСЃРµР»Рё) РЅР° РёРіСЂРѕРІРѕР№ sokol-СЂРµРЅРґРµСЂ. TopDown-РІРёРґ Рё `MinimapWidget` РѕСЃС‚Р°СЋС‚СЃСЏ РЅР°
+С‚РѕС‡РЅС‹С… CPU-РїРёРєСЃРµР»СЏС… (`QOpenGLTextureBlitter`), РѕРІРµСЂР»РµРё вЂ” РїРѕ-РїСЂРµР¶РЅРµРјСѓ QPainter.
+Р•СЃР»Рё GL 4.1/sokol РЅРµРґРѕСЃС‚СѓРїРЅС‹ (ANGLE, СЃС‚Р°СЂС‹Р№ РґСЂР°Р№РІРµСЂ, СЃР±РѕСЂРєР° Р±РµР·
+`OPTION_SOKOL`) вЂ” Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєРёР№ С„РѕР»Р±СЌРє РЅР° РїСЂРµР¶РЅРёР№ CPU-СЂРµРЅРґРµСЂ.
 
-* Источники: неизменённые не-D3D9-исходники `Source/Render` (src/client/
+### РўР°СЂРіРµС‚ `MapEditorRender` Рё Р»РёРЅРєРѕРІРєР° (CMakeLists.txt)
+
+* РСЃС‚РѕС‡РЅРёРєРё: РЅРµРёР·РјРµРЅС‘РЅРЅС‹Рµ РЅРµ-D3D9-РёСЃС…РѕРґРЅРёРєРё `Source/Render` (src/client/
   tracker/tilemap/gemsiii/saver + sokol/*.cpp), fetched imgui core +
-  `imgui_impl_opengl3.cpp`, и редакторские `render/EditorSokolDevice.cpp`,
+  `imgui_impl_opengl3.cpp`, Рё СЂРµРґР°РєС‚РѕСЂСЃРєРёРµ `render/EditorSokolDevice.cpp`,
   `render/EditorTerraInterface.cpp`, `render/TerrainGpuView.cpp`.
-* Define `SOKOL_GLCORE`. MSVC: `/UPERIMETER_D3D9` через AdditionalOptions —
-  `/U` попадает в командную строку после корневых `/D`, поэтому унаследованный
-  `PERIMETER_D3D9` надёжно вычитывается (в логе видно предупреждение D9025 —
-  это подтверждение работы трюка). Остальные определения (`PERIMETER_SOKOL`,
-  `_PERIMETER_`, `_TX3D_LIBRARY_`...) наследуются от корня как в игре.
-* `map_editor` линкует `MapEditorRender` и получает `MAP_EDITOR_GPU_VIEW=1`;
-  без таргета виджет собирается с инертным стабом `TerrainGpuView` (тот же
-  интерфейс, `init()` возвращает false).
-* Игровые библиотеки `Render`/`RenderSokol`/`PluginMAX`/`HT` НЕ линкуются —
-  на Windows они собраны с D3D9/D3D11 и клэшат с шимами (`logicRND`,
-  `ZIPStream`, ...). Недостающие символы стека закрыты стабами в
+* Define `SOKOL_GLCORE`. MSVC: `/UPERIMETER_D3D9` С‡РµСЂРµР· AdditionalOptions вЂ”
+  `/U` РїРѕРїР°РґР°РµС‚ РІ РєРѕРјР°РЅРґРЅСѓСЋ СЃС‚СЂРѕРєСѓ РїРѕСЃР»Рµ РєРѕСЂРЅРµРІС‹С… `/D`, РїРѕСЌС‚РѕРјСѓ СѓРЅР°СЃР»РµРґРѕРІР°РЅРЅС‹Р№
+  `PERIMETER_D3D9` РЅР°РґС‘Р¶РЅРѕ РІС‹С‡РёС‚С‹РІР°РµС‚СЃСЏ (РІ Р»РѕРіРµ РІРёРґРЅРѕ РїСЂРµРґСѓРїСЂРµР¶РґРµРЅРёРµ D9025 вЂ”
+  СЌС‚Рѕ РїРѕРґС‚РІРµСЂР¶РґРµРЅРёРµ СЂР°Р±РѕС‚С‹ С‚СЂСЋРєР°). РћСЃС‚Р°Р»СЊРЅС‹Рµ РѕРїСЂРµРґРµР»РµРЅРёСЏ (`PERIMETER_SOKOL`,
+  `_PERIMETER_`, `_TX3D_LIBRARY_`...) РЅР°СЃР»РµРґСѓСЋС‚СЃСЏ РѕС‚ РєРѕСЂРЅСЏ РєР°Рє РІ РёРіСЂРµ.
+* `map_editor` Р»РёРЅРєСѓРµС‚ `MapEditorRender` Рё РїРѕР»СѓС‡Р°РµС‚ `MAP_EDITOR_GPU_VIEW=1`;
+  Р±РµР· С‚Р°СЂРіРµС‚Р° РІРёРґР¶РµС‚ СЃРѕР±РёСЂР°РµС‚СЃСЏ СЃ РёРЅРµСЂС‚РЅС‹Рј СЃС‚Р°Р±РѕРј `TerrainGpuView` (С‚РѕС‚ Р¶Рµ
+  РёРЅС‚РµСЂС„РµР№СЃ, `init()` РІРѕР·РІСЂР°С‰Р°РµС‚ false).
+* РРіСЂРѕРІС‹Рµ Р±РёР±Р»РёРѕС‚РµРєРё `Render`/`RenderSokol`/`PluginMAX`/`HT` РќР• Р»РёРЅРєСѓСЋС‚СЃСЏ вЂ”
+  РЅР° Windows РѕРЅРё СЃРѕР±СЂР°РЅС‹ СЃ D3D9/D3D11 Рё РєР»СЌС€Р°С‚ СЃ С€РёРјР°РјРё (`logicRND`,
+  `ZIPStream`, ...). РќРµРґРѕСЃС‚Р°СЋС‰РёРµ СЃРёРјРІРѕР»С‹ СЃС‚РµРєР° Р·Р°РєСЂС‹С‚С‹ СЃС‚Р°Р±Р°РјРё РІ
   `shim/game_stubs.cpp`: `MTConfig::multithreading/setMultithreading`
-  (HT не линкуется; редактор однопоточен, `MT_IS_GRAPH()` > true),
-  `hWndVisGeneric`, и ПлагMAX-символы, на которые ссылается `ObjLibrary::LoadM3D`
-  (`ZIPIsOpen`, `cMeshFile::*`, `cMeshScene::Read`, `sSubTexmap::Release` —
-  редактор 3D-модели не грузит). Плюс линк `SDL2_image` (игровой `FileImage`
-  зовёт `IMG_*`).
+  (HT РЅРµ Р»РёРЅРєСѓРµС‚СЃСЏ; СЂРµРґР°РєС‚РѕСЂ РѕРґРЅРѕРїРѕС‚РѕС‡РµРЅ, `MT_IS_GRAPH()` > true),
+  `hWndVisGeneric`, Рё РџР»Р°РіMAX-СЃРёРјРІРѕР»С‹, РЅР° РєРѕС‚РѕСЂС‹Рµ СЃСЃС‹Р»Р°РµС‚СЃСЏ `ObjLibrary::LoadM3D`
+  (`ZIPIsOpen`, `cMeshFile::*`, `cMeshScene::Read`, `sSubTexmap::Release` вЂ”
+  СЂРµРґР°РєС‚РѕСЂ 3D-РјРѕРґРµР»Рё РЅРµ РіСЂСѓР·РёС‚). РџР»СЋСЃ Р»РёРЅРє `SDL2_image` (РёРіСЂРѕРІРѕР№ `FileImage`
+  Р·РѕРІС‘С‚ `IMG_*`).
 
-### MSVC: доступ члена в mangled-имени (shim/render_msvc_access.h)
+### MSVC: РґРѕСЃС‚СѓРї С‡Р»РµРЅР° РІ mangled-РёРјРµРЅРё (shim/render_msvc_access.h)
 
-MSVC кодирует доступ (private 'A', protected 'P', public 'Q') в mangled-имени
-метода. Хак `#define private public` в `EditorSokolDevice.cpp` делает
-обращения к приватным членам `cSokolRender` публичными (Q...), а определения в
-sokol-*.cpp остаются приватными (A...) — LNK2019. Решение: каждый TU таргета
-компилируется с forced include `/FI shim/render_msvc_access.h`
-(push_macro + `#define private/protected public`), плюс
-`_ALLOW_KEYWORD_MACROS` — иначе xkeycheck.h MSVC STL даёт #error на
-макроизацию ключевого слова. Это меняет только манглирование внутри таргета:
-он заменяет (не линкуется с) игровые Render-библиотеки. На GCC манглирование
-доступа отсутствует — там достаточно локального хака в `EditorSokolDevice.cpp`.
+MSVC РєРѕРґРёСЂСѓРµС‚ РґРѕСЃС‚СѓРї (private 'A', protected 'P', public 'Q') РІ mangled-РёРјРµРЅРё
+РјРµС‚РѕРґР°. РҐР°Рє `#define private public` РІ `EditorSokolDevice.cpp` РґРµР»Р°РµС‚
+РѕР±СЂР°С‰РµРЅРёСЏ Рє РїСЂРёРІР°С‚РЅС‹Рј С‡Р»РµРЅР°Рј `cSokolRender` РїСѓР±Р»РёС‡РЅС‹РјРё (Q...), Р° РѕРїСЂРµРґРµР»РµРЅРёСЏ РІ
+sokol-*.cpp РѕСЃС‚Р°СЋС‚СЃСЏ РїСЂРёРІР°С‚РЅС‹РјРё (A...) вЂ” LNK2019. Р РµС€РµРЅРёРµ: РєР°Р¶РґС‹Р№ TU С‚Р°СЂРіРµС‚Р°
+РєРѕРјРїРёР»РёСЂСѓРµС‚СЃСЏ СЃ forced include `/FI shim/render_msvc_access.h`
+(push_macro + `#define private/protected public`), РїР»СЋСЃ
+`_ALLOW_KEYWORD_MACROS` вЂ” РёРЅР°С‡Рµ xkeycheck.h MSVC STL РґР°С‘С‚ #error РЅР°
+РјР°РєСЂРѕРёР·Р°С†РёСЋ РєР»СЋС‡РµРІРѕРіРѕ СЃР»РѕРІР°. Р­С‚Рѕ РјРµРЅСЏРµС‚ С‚РѕР»СЊРєРѕ РјР°РЅРіР»РёСЂРѕРІР°РЅРёРµ РІРЅСѓС‚СЂРё С‚Р°СЂРіРµС‚Р°:
+РѕРЅ Р·Р°РјРµРЅСЏРµС‚ (РЅРµ Р»РёРЅРєСѓРµС‚СЃСЏ СЃ) РёРіСЂРѕРІС‹Рµ Render-Р±РёР±Р»РёРѕС‚РµРєРё. РќР° GCC РјР°РЅРіР»РёСЂРѕРІР°РЅРёРµ
+РґРѕСЃС‚СѓРїР° РѕС‚СЃСѓС‚СЃС‚РІСѓРµС‚ вЂ” С‚Р°Рј РґРѕСЃС‚Р°С‚РѕС‡РЅРѕ Р»РѕРєР°Р»СЊРЅРѕРіРѕ С…Р°РєР° РІ `EditorSokolDevice.cpp`.
 
 ### `EditorSokolRender` (render/EditorSokolDevice.{h,cpp})
 
-Подкласс игрового `cSokolRender`, создаваемый только фабрикой
-`CreateEditorSokolDevice()`; доступ к приватным членам — через ограниченный
-хак. Переопределения:
+РџРѕРґРєР»Р°СЃСЃ РёРіСЂРѕРІРѕРіРѕ `cSokolRender`, СЃРѕР·РґР°РІР°РµРјС‹Р№ С‚РѕР»СЊРєРѕ С„Р°Р±СЂРёРєРѕР№
+`CreateEditorSokolDevice()`; РґРѕСЃС‚СѓРї Рє РїСЂРёРІР°С‚РЅС‹Рј С‡Р»РµРЅР°Рј вЂ” С‡РµСЂРµР· РѕРіСЂР°РЅРёС‡РµРЅРЅС‹Р№
+С…Р°Рє. РџРµСЂРµРѕРїСЂРµРґРµР»РµРЅРёСЏ:
 
-* `Init` — базовый `Init` с нулевым SDL-окном, затем пулы/sg_setup (размер и
-  sample_count=1 от виджета), simgui_setup, `debugUIEnabled=false`, сэмплеры,
+* `Init` вЂ” Р±Р°Р·РѕРІС‹Р№ `Init` СЃ РЅСѓР»РµРІС‹Рј SDL-РѕРєРЅРѕРј, Р·Р°С‚РµРј РїСѓР»С‹/sg_setup (СЂР°Р·РјРµСЂ Рё
+  sample_count=1 РѕС‚ РІРёРґР¶РµС‚Р°), simgui_setup, `debugUIEnabled=false`, СЃСЌРјРїР»РµСЂС‹,
   `emptyTexture`, `UpdateRenderMode()`.
-* `EndScene` — перед родителем подменяет `swapchain` (ширина/высота и
-  `gl.framebuffer` = FBO виджета, ? 0).
-* `Flush(false)` — без SDL-свапа: `sg_commit()`, `ClearPooledResources`,
-  `ClearAllCommands` (Qt сам композитит виджет).
-* `Done` — родитель (пропускает sg_shutdown при нулевом окне) + свой
+* `EndScene` вЂ” РїРµСЂРµРґ СЂРѕРґРёС‚РµР»РµРј РїРѕРґРјРµРЅСЏРµС‚ `swapchain` (С€РёСЂРёРЅР°/РІС‹СЃРѕС‚Р° Рё
+  `gl.framebuffer` = FBO РІРёРґР¶РµС‚Р°, ? 0).
+* `Flush(false)` вЂ” Р±РµР· SDL-СЃРІР°РїР°: `sg_commit()`, `ClearPooledResources`,
+  `ClearAllCommands` (Qt СЃР°Рј РєРѕРјРїРѕР·РёС‚РёС‚ РІРёРґР¶РµС‚).
+* `Done` вЂ” СЂРѕРґРёС‚РµР»СЊ (РїСЂРѕРїСѓСЃРєР°РµС‚ sg_shutdown РїСЂРё РЅСѓР»РµРІРѕРј РѕРєРЅРµ) + СЃРІРѕР№
   `sg_shutdown()`.
-* Хелперы: `setDeviceTarget(device, fbo, w, h)` — кадр в FBO виджета;
-  `resetDeviceStateCache(device)` — `sg_reset_state_cache()`.
+* РҐРµР»РїРµСЂС‹: `setDeviceTarget(device, fbo, w, h)` вЂ” РєР°РґСЂ РІ FBO РІРёРґР¶РµС‚Р°;
+  `resetDeviceStateCache(device)` вЂ” `sg_reset_state_cache()`.
 
-sokol здесь НЕ владеет контекстом: между кадрами QPainter и texture blitter
-портят GL-состояние, поэтому `TerrainGpuView::renderFrame` каждый кадр зовёт
-`resetDeviceStateCache` до `BeginScene`, чтобы sokol заново применил всё своё
-состояние, а не только дельты.
+sokol Р·РґРµСЃСЊ РќР• РІР»Р°РґРµРµС‚ РєРѕРЅС‚РµРєСЃС‚РѕРј: РјРµР¶РґСѓ РєР°РґСЂР°РјРё QPainter Рё texture blitter
+РїРѕСЂС‚СЏС‚ GL-СЃРѕСЃС‚РѕСЏРЅРёРµ, РїРѕСЌС‚РѕРјСѓ `TerrainGpuView::renderFrame` РєР°Р¶РґС‹Р№ РєР°РґСЂ Р·РѕРІС‘С‚
+`resetDeviceStateCache` РґРѕ `BeginScene`, С‡С‚РѕР±С‹ sokol Р·Р°РЅРѕРІРѕ РїСЂРёРјРµРЅРёР» РІСЃС‘ СЃРІРѕС‘
+СЃРѕСЃС‚РѕСЏРЅРёРµ, Р° РЅРµ С‚РѕР»СЊРєРѕ РґРµР»СЊС‚С‹.
 
 ### `TerrainGpuView` (render/TerrainGpuView.{h,cpp})
 
-Сборка сцены (в init, контекст актуален): `CreateIVisGeneric` >
-`SetData(device)` > `SetShadowType(SHADOW_NONE,0)` (отключает per-frame
-CreateLightmap) > `CreateScene` > `DisableTileMapVisibleTest()` (до CreateMap)
+РЎР±РѕСЂРєР° СЃС†РµРЅС‹ (РІ init, РєРѕРЅС‚РµРєСЃС‚ Р°РєС‚СѓР°Р»РµРЅ): `CreateIVisGeneric` >
+`SetData(device)` > `SetShadowType(SHADOW_NONE,0)` (РѕС‚РєР»СЋС‡Р°РµС‚ per-frame
+CreateLightmap) > `CreateScene` > `DisableTileMapVisibleTest()` (РґРѕ CreateMap)
 > `CreateCamera()` + `SetAttr(ATTRCAMERA_PERSPECTIVE)` >
-`CreateMap(terra_, 0)` (SetBuffer сам создаёт tilemap и ставит полный
-UpdateMap). Разрушение — в обратном порядке при живом девайсе: tilemap >
-camera > scene > visGeneric > device (dtor cSokolRender зовёт Done).
+`CreateMap(terra_, 0)` (SetBuffer СЃР°Рј СЃРѕР·РґР°С‘С‚ tilemap Рё СЃС‚Р°РІРёС‚ РїРѕР»РЅС‹Р№
+UpdateMap). Р Р°Р·СЂСѓС€РµРЅРёРµ вЂ” РІ РѕР±СЂР°С‚РЅРѕРј РїРѕСЂСЏРґРєРµ РїСЂРё Р¶РёРІРѕРј РґРµРІР°Р№СЃРµ: tilemap >
+camera > scene > visGeneric > device (dtor cSokolRender Р·РѕРІС‘С‚ Done).
 
-* Камера — дословная копия `terCameraType::update()` + `SetCameraPosition`
-  (Source/Game/CameraManager.cpp) с параметрами psi = PI/2 + turn,
-  theta = lean ? 90°, r = H/cos(theta), H = focusC + cameraDZ (высота над
-  zeroplast-плоскостью в клетках), фокус в клип-координатах =
-  focalDevPx / ширина_экрана. Виджет передаёт focalDevPx = focusC ? DPR,
-  поэтому масштаб "клеток на виджет-пиксель" = (F+Z)/F — не зависит от DPR и
-  совпадает с формулами CPU-вида.
-* Пикинг — `cCamera::GetWorldRay` (вход pe в [?0.5,0.5], y вверх; домен тот
-  же, что у ConvertorCameraToWorld) + собственный ray-march по высотам
-  (`SGetAlt`, вход обязан быть clamped — офсет не циклический) с бисекцией.
-* `projectToScreen` — `cCamera::ConvertorWorldToViewPort` (девайс-пиксели,
-  y вниз).
-* Цвета — `EditorTerraInterface` (наследник `StandartTerraInterface`):
-  `GetTileColor` берёт пиксели из кэша `ViewportRenderer::colorAt`
-  (фильтры слоёв + приглушение geo — ровно то, что показывает TopDown);
-  альфа всегда 0xFF — сценa создаётся с zeroplastnumber=0 (зелёные
-  zeroplast-квадраты игры — рантайм-эффект, CPU-вид их тоже не рисует, а
-  маркер 0xFE проделал бы дыры в террейне).
+* РљР°РјРµСЂР° вЂ” РґРѕСЃР»РѕРІРЅР°СЏ РєРѕРїРёСЏ `terCameraType::update()` + `SetCameraPosition`
+  (Source/Game/CameraManager.cpp) СЃ РїР°СЂР°РјРµС‚СЂР°РјРё psi = PI/2 + turn,
+  theta = lean ? 90В°, r = H/cos(theta), H = focusC + cameraDZ (РІС‹СЃРѕС‚Р° РЅР°Рґ
+  zeroplast-РїР»РѕСЃРєРѕСЃС‚СЊСЋ РІ РєР»РµС‚РєР°С…), С„РѕРєСѓСЃ РІ РєР»РёРї-РєРѕРѕСЂРґРёРЅР°С‚Р°С… =
+  focalDevPx / С€РёСЂРёРЅР°_СЌРєСЂР°РЅР°. Р’РёРґР¶РµС‚ РїРµСЂРµРґР°С‘С‚ focalDevPx = focusC ? DPR,
+  РїРѕСЌС‚РѕРјСѓ РјР°СЃС€С‚Р°Р± "РєР»РµС‚РѕРє РЅР° РІРёРґР¶РµС‚-РїРёРєСЃРµР»СЊ" = (F+Z)/F вЂ” РЅРµ Р·Р°РІРёСЃРёС‚ РѕС‚ DPR Рё
+  СЃРѕРІРїР°РґР°РµС‚ СЃ С„РѕСЂРјСѓР»Р°РјРё CPU-РІРёРґР°.
+* РџРёРєРёРЅРі вЂ” `cCamera::GetWorldRay` (РІС…РѕРґ pe РІ [?0.5,0.5], y РІРІРµСЂС…; РґРѕРјРµРЅ С‚РѕС‚
+  Р¶Рµ, С‡С‚Рѕ Сѓ ConvertorCameraToWorld) + СЃРѕР±СЃС‚РІРµРЅРЅС‹Р№ ray-march РїРѕ РІС‹СЃРѕС‚Р°Рј
+  (`SGetAlt`, РІС…РѕРґ РѕР±СЏР·Р°РЅ Р±С‹С‚СЊ clamped вЂ” РѕС„СЃРµС‚ РЅРµ С†РёРєР»РёС‡РµСЃРєРёР№) СЃ Р±РёСЃРµРєС†РёРµР№.
+* `projectToScreen` вЂ” `cCamera::ConvertorWorldToViewPort` (РґРµРІР°Р№СЃ-РїРёРєСЃРµР»Рё,
+  y РІРЅРёР·).
+* Р¦РІРµС‚Р° вЂ” `EditorTerraInterface` (РЅР°СЃР»РµРґРЅРёРє `StandartTerraInterface`):
+  `GetTileColor` Р±РµСЂС‘С‚ РїРёРєСЃРµР»Рё РёР· РєСЌС€Р° `ViewportRenderer::colorAt`
+  (С„РёР»СЊС‚СЂС‹ СЃР»РѕС‘РІ + РїСЂРёРіР»СѓС€РµРЅРёРµ geo вЂ” СЂРѕРІРЅРѕ С‚Рѕ, С‡С‚Рѕ РїРѕРєР°Р·С‹РІР°РµС‚ TopDown);
+  Р°Р»СЊС„Р° РІСЃРµРіРґР° 0xFF вЂ” СЃС†РµРЅa СЃРѕР·РґР°С‘С‚СЃСЏ СЃ zeroplastnumber=0 (Р·РµР»С‘РЅС‹Рµ
+  zeroplast-РєРІР°РґСЂР°С‚С‹ РёРіСЂС‹ вЂ” СЂР°РЅС‚Р°Р№Рј-СЌС„С„РµРєС‚, CPU-РІРёРґ РёС… С‚РѕР¶Рµ РЅРµ СЂРёСЃСѓРµС‚, Р°
+  РјР°СЂРєРµСЂ 0xFE РїСЂРѕРґРµР»Р°Р» Р±С‹ РґС‹СЂС‹ РІ С‚РµСЂСЂРµР№РЅРµ).
 
-### Интеграция в `ViewportWidget`
+### РРЅС‚РµРіСЂР°С†РёСЏ РІ `ViewportWidget`
 
-* Конструктор запрашивает `QSurfaceFormat` (desktop GL ? 4.1) только для себя.
-* `setSession`/`reloadWorld`/`setGeoDimmed` зовут `scheduleGpuRebuild()` —
-  пересборка сцены выполняется в `paintGL`/`initializeGL` (контекст актуален;
-  без него sokol/тайлмапу делать нечего).
-* Dirty-прямоугольники `renderer_->update()` (штампы кисти, undo/redo)
-  раздаются и в тайлмап: `gpuView_->updateCells(...)` — та же каноника,
-  что и у 2D-кэша.
-* Пиксельная математика GPU-режима (currentViewRect / pan / pxPerCell /
-  сетка) — без клампа окна 640: cellsPerWidgetPx = (F+Z)/F прямо, kv-эвристика
-  по сырому lean; 640-кламп остаётся только в CPU-ветке.
-* Сетка в GPU-режиме — плоскость zeroplast, линии проецируются через
-  `projectToScreen` и рисуются QPainter'ом (прямая на земле остаётся прямой
-  в перспективе).
-* После sokol-кадра: вернуть FBO виджета и выключить depth/blend/scissor
-  перед QPainter.
-* Формулы MinimapWidget (вид-прямоугольник по currentViewRect) сохранены —
-  по построению они остаются согласованными.
+* РљРѕРЅСЃС‚СЂСѓРєС‚РѕСЂ Р·Р°РїСЂР°С€РёРІР°РµС‚ `QSurfaceFormat` (desktop GL ? 4.1) С‚РѕР»СЊРєРѕ РґР»СЏ СЃРµР±СЏ.
+* `setSession`/`reloadWorld`/`setGeoDimmed` Р·РѕРІСѓС‚ `scheduleGpuRebuild()` вЂ”
+  РїРµСЂРµСЃР±РѕСЂРєР° СЃС†РµРЅС‹ РІС‹РїРѕР»РЅСЏРµС‚СЃСЏ РІ `paintGL`/`initializeGL` (РєРѕРЅС‚РµРєСЃС‚ Р°РєС‚СѓР°Р»РµРЅ;
+  Р±РµР· РЅРµРіРѕ sokol/С‚Р°Р№Р»РјР°РїСѓ РґРµР»Р°С‚СЊ РЅРµС‡РµРіРѕ).
+* Dirty-РїСЂСЏРјРѕСѓРіРѕР»СЊРЅРёРєРё `renderer_->update()` (С€С‚Р°РјРїС‹ РєРёСЃС‚Рё, undo/redo)
+  СЂР°Р·РґР°СЋС‚СЃСЏ Рё РІ С‚Р°Р№Р»РјР°Рї: `gpuView_->updateCells(...)` вЂ” С‚Р° Р¶Рµ РєР°РЅРѕРЅРёРєР°,
+  С‡С‚Рѕ Рё Сѓ 2D-РєСЌС€Р°.
+* РџРёРєСЃРµР»СЊРЅР°СЏ РјР°С‚РµРјР°С‚РёРєР° GPU-СЂРµР¶РёРјР° (currentViewRect / pan / pxPerCell /
+  СЃРµС‚РєР°) вЂ” Р±РµР· РєР»Р°РјРїР° РѕРєРЅР° 640: cellsPerWidgetPx = (F+Z)/F РїСЂСЏРјРѕ, kv-СЌРІСЂРёСЃС‚РёРєР°
+  РїРѕ СЃС‹СЂРѕРјСѓ lean; 640-РєР»Р°РјРї РѕСЃС‚Р°С‘С‚СЃСЏ С‚РѕР»СЊРєРѕ РІ CPU-РІРµС‚РєРµ.
+* РЎРµС‚РєР° РІ GPU-СЂРµР¶РёРјРµ вЂ” РїР»РѕСЃРєРѕСЃС‚СЊ zeroplast, Р»РёРЅРёРё РїСЂРѕРµС†РёСЂСѓСЋС‚СЃСЏ С‡РµСЂРµР·
+  `projectToScreen` Рё СЂРёСЃСѓСЋС‚СЃСЏ QPainter'РѕРј (РїСЂСЏРјР°СЏ РЅР° Р·РµРјР»Рµ РѕСЃС‚Р°С‘С‚СЃСЏ РїСЂСЏРјРѕР№
+  РІ РїРµСЂСЃРїРµРєС‚РёРІРµ).
+* РџРѕСЃР»Рµ sokol-РєР°РґСЂР°: РІРµСЂРЅСѓС‚СЊ FBO РІРёРґР¶РµС‚Р° Рё РІС‹РєР»СЋС‡РёС‚СЊ depth/blend/scissor
+  РїРµСЂРµРґ QPainter.
+* Р¤РѕСЂРјСѓР»С‹ MinimapWidget (РІРёРґ-РїСЂСЏРјРѕСѓРіРѕР»СЊРЅРёРє РїРѕ currentViewRect) СЃРѕС…СЂР°РЅРµРЅС‹ вЂ”
+  РїРѕ РїРѕСЃС‚СЂРѕРµРЅРёСЋ РѕРЅРё РѕСЃС‚Р°СЋС‚СЃСЏ СЃРѕРіР»Р°СЃРѕРІР°РЅРЅС‹РјРё.
 
-### `MinimapWidget`: дисциплина native-first
+### `MinimapWidget`: РґРёСЃС†РёРїР»РёРЅР° native-first
 
-Раньше `ensureMinimapTexture()` делал raw-GL между конструированием QPainter
-и `beginNativePainting()` — UB для GL paint engine. Теперь загрузка текстуры,
-clear и blit выполняются до конструирования QPainter (как в ViewportWidget),
-QPainter рисует только оверлеи. Контекст-хук `aboutToBeDestroyed` освобождает
-GL-объекты при пересоздании контекста.
+Р Р°РЅСЊС€Рµ `ensureMinimapTexture()` РґРµР»Р°Р» raw-GL РјРµР¶РґСѓ РєРѕРЅСЃС‚СЂСѓРёСЂРѕРІР°РЅРёРµРј QPainter
+Рё `beginNativePainting()` вЂ” UB РґР»СЏ GL paint engine. РўРµРїРµСЂСЊ Р·Р°РіСЂСѓР·РєР° С‚РµРєСЃС‚СѓСЂС‹,
+clear Рё blit РІС‹РїРѕР»РЅСЏСЋС‚СЃСЏ РґРѕ РєРѕРЅСЃС‚СЂСѓРёСЂРѕРІР°РЅРёСЏ QPainter (РєР°Рє РІ ViewportWidget),
+QPainter СЂРёСЃСѓРµС‚ С‚РѕР»СЊРєРѕ РѕРІРµСЂР»РµРё. РљРѕРЅС‚РµРєСЃС‚-С…СѓРє `aboutToBeDestroyed` РѕСЃРІРѕР±РѕР¶РґР°РµС‚
+GL-РѕР±СЉРµРєС‚С‹ РїСЂРё РїРµСЂРµСЃРѕР·РґР°РЅРёРё РєРѕРЅС‚РµРєСЃС‚Р°.
 
-### Известные ограничения GPU-режима
+### РР·РІРµСЃС‚РЅС‹Рµ РѕРіСЂР°РЅРёС‡РµРЅРёСЏ GPU-СЂРµР¶РёРјР°
 
-* Dam-фичи CPU-рендера (`damFrozen` — торцевые повторы, террасность) в
-  GPU-виде игнорируются: рендерится одна карта, как в игре.
-* Рендер каждый кадр без кэша кадра (стоимость как в игре, ~единичный
-  tilemap-проход; рисование только по update()).
-* Вид "как в игре": пулы текстур дают лёгкое сглаживание, которого нет в
-  Chunky-режиме TopDown; это ожидаемое отличие от CPU Oblique.
+* Dam-С„РёС‡Рё CPU-СЂРµРЅРґРµСЂР° (`damFrozen` вЂ” С‚РѕСЂС†РµРІС‹Рµ РїРѕРІС‚РѕСЂС‹, С‚РµСЂСЂР°СЃРЅРѕСЃС‚СЊ) РІ
+  GPU-РІРёРґРµ РёРіРЅРѕСЂРёСЂСѓСЋС‚СЃСЏ: СЂРµРЅРґРµСЂРёС‚СЃСЏ РѕРґРЅР° РєР°СЂС‚Р°, РєР°Рє РІ РёРіСЂРµ.
+* Р РµРЅРґРµСЂ РєР°Р¶РґС‹Р№ РєР°РґСЂ Р±РµР· РєСЌС€Р° РєР°РґСЂР° (СЃС‚РѕРёРјРѕСЃС‚СЊ РєР°Рє РІ РёРіСЂРµ, ~РµРґРёРЅРёС‡РЅС‹Р№
+  tilemap-РїСЂРѕС…РѕРґ; СЂРёСЃРѕРІР°РЅРёРµ С‚РѕР»СЊРєРѕ РїРѕ update()).
+* Р’РёРґ "РєР°Рє РІ РёРіСЂРµ": РїСѓР»С‹ С‚РµРєСЃС‚СѓСЂ РґР°СЋС‚ Р»С‘РіРєРѕРµ СЃРіР»Р°Р¶РёРІР°РЅРёРµ, РєРѕС‚РѕСЂРѕРіРѕ РЅРµС‚ РІ
+  Chunky-СЂРµР¶РёРјРµ TopDown; СЌС‚Рѕ РѕР¶РёРґР°РµРјРѕРµ РѕС‚Р»РёС‡РёРµ РѕС‚ CPU Oblique.
