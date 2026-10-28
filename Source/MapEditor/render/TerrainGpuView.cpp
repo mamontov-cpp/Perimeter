@@ -81,6 +81,11 @@ float TerrainGpuView::zeroplastZ() const {
     return static_cast<float>(vMap.hZeroPlast);
 }
 
+float TerrainGpuView::nearPlaneZ() const {
+    if (!camera_) return 1.0f;
+    return camera_->GetZPlane().x;
+}
+
 bool TerrainGpuView::init(int width, int height) {
     editorTrace("TerrainGpuView: init(%d,%d) start", width, height);
     shutdown();
@@ -443,6 +448,19 @@ int TerrainGpuView::projectGroundContour(const double* cellXY, int count,
         ++n;
     }
     return n;
+}
+
+bool TerrainGpuView::projectToScreenZ(double cellX, double cellY, double z,
+                                      double& camZ, double& sxPx, double& syPx) const {
+    if (!camera_) return false;
+    Vect3f pw(static_cast<float>(cellX), static_cast<float>(cellY),
+              static_cast<float>(z));
+    Vect3f pv, pe;
+    camera_->ConvertorWorldToViewPort(&pw, &pv, &pe);
+    camZ = pv.z;
+    sxPx = pe.x;
+    syPx = pe.y;
+    return true;
 }
 
 bool TerrainGpuView::projectToScreen(double cellX, double cellY, double z,

@@ -1087,10 +1087,9 @@ pixels. `drawBrushPreview()` draws that polygon when it has ≥3 points and keep
 the heuristic ring only as the CPU-path / behind-camera fallback.
 
 **Note — `obliquePxPerCell()` is still the old heuristic in GPU mode.** It now
-only drives two cosmetic decisions (whether the grid lines "resolve" enough to
-be drawn, and the fallback ring), both of which are wrong by the same factor;
-the grid itself and the brush preview are projected, so the rendering is
-correct. Not fixed here to keep the change minimal.
+only drives the fallback brush ring (and the CPU `drawGridOverlay` step guard),
+both cosmetic; the grid itself and the brush preview are projected, so the
+rendering is correct. Not fixed here to keep the change minimal.
 
 **Verification:** autotest step at 23 s sets the repro camera and the radius-64
 Dam brush, moves the cursor to 3/4 of the viewport height and captures
@@ -1100,5 +1099,67 @@ heuristic `rx=86.1 ry=48.9` (bbox 172x98) vs projected contour bbox `84.7x44.5`
 **not** perform a real stamp: `applyStamp()` marks the world modified and closing
 then raises the modal "Unsaved Changes" dialog, which blocks an unattended run
 (and could save over the test world).
+
+
+## GPU oblique: grid was drawn on the zeroplast plane, grey 1px, and vanished at tilt
+
+**Symptom:** in the GPU oblique view the grid was a faint dark-grey 1px overlay
+that sat above the terrain surface (it floated over hills and clipped into
+valleys), and at steep tilt/low cameras it disappeared completely.
+
+**Root cause — three independent issues:**
+
+1. **Wrong plane.** `drawGrid3D()` projected every line at `z = zeroplastZ()`
+   (the game's zeroplast height, `hZeroPlast << VX_FRACTION` in world units),
+   not at the bottom ground plane `z = 0`. On FORTOP the zeroplast sits well
+   above the lowest terrain, so the grid hovered in the air.
+2. **Wrong style.** The pen was `QColor(70,70,70,90)` with the default 1px
+   width — invisible against the terrain.
+3. **No near-plane clipping.** Grid lines ran from one edge of the ground rect
+   to the other as single `QLineF`s. When the camera tilted low, part of the
+   line fell *behind* the camera: `projectToScreen()` rejected any point with
+   `pv.z <= 0` (behind the eye) and returned false, so the **whole** line was
+   dropped — not just the part behind the eye. A single line crossing the near
+   plane therefore deleted itself entirely, which is why the grid "vanished at
+   tilt" rather than fading.
+
+   A secondary guard bug: the "do the lines resolve on screen?" test used
+   `obliquePxPerCell()` — the CPU nadir heuristic (`F/(F+Z)`), wrong by ~2.4x
+   in perspective (see the brush-preview section above).
+
+**Fix:**
+
+- Project every grid vertex on the plane `z = 0` (the bottom ground), and draw
+  with `QPen(QColor(255,255,255), 4.0)` (4 widget px; DPR=1 in the autotest so
+  the captured lines measure 4-6 device px including antialiasing).
+- `TerrainGpuView::projectToScreenZ()` — like `projectToScreen()` but it also
+  returns the camera-space depth `pv.z` and does **not** reject points behind
+  the camera. `drawGrid3D()` uses it to clip each grid segment against the
+  camera near plane (`TerrainGpuView::nearPlaneZ()` = `cCamera::GetZPlane().x`,
+  the same bound the terrain rasterizer uses): interpolate the endpoint that is
+  behind the plane to the crossing point, then project. If both endpoints are
+  behind it, the segment is skipped.
+- The resolution guard now projects real points instead of using the heuristic:
+  it measures the projected px-spacing of one `gridStepX_`/`gridStepY_` cell at
+  the **near edge** of the ground footprint (where lines are largest), and only
+  hides the grid when both axes fall under `kMinGridSpacingPx` (4 px) — the
+  same threshold the 2D grid uses.
+- The visible ground area comes from `groundFootprint(0.0, …)` (the exact
+  frustum footprint) instead of the old `currentViewRect()` kv-heuristic rect.
+
+The line phase is unchanged from 2D: lines sit at multiples of
+`gridStepX_`/`gridStepY_` world units aligned to the map origin, so the step
+spinboxes (`setGridStep`) keep working identically in both views.
+
+**Verification (autotest, maximized window):** steps at 27 s / 29.5 s / 32 s set
+the step to 32 / 128 / 4 and capture `15_grid3d_step32`, `17_grid3d_step128`,
+`16_grid3d_step4`; `13_brush_preview` (grid hidden) is the baseline. step32 and
+step128 differ from the baseline over the ground area (white-pixel counts
+206 541 vs 63 531 — the sparser step draws fewer lines) and from each other;
+line runs measure 4-6 px. step4 stays hidden — at the near edge its lines are
+2.25 px apart (`MAP_EDITOR_TRACE=1` logs
+`grid step=4x4 hidden (pxX=2.25 pxY=1.18 at near edge)`), below the 4 px
+threshold, which matches the 2D grid's behaviour at the same zoom.
+`01_topdown` vs `04_topdown_after3d` is still byte-identical (no 2D regression).
 
 

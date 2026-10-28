@@ -105,6 +105,14 @@ public:
     bool projectToScreen(double cellX, double cellY, double z,
                          double& sxPx, double& syPx) const;
 
+    /// Like projectToScreen but also fills `camZ` with the camera-space depth
+    /// (pv.z — positive in front of the camera). Returns false when the view
+    /// is not ready. Unlike projectToScreen it does NOT reject points behind
+    /// the camera (pv.z <= 0) — callers need the raw depth for near-plane
+    /// clipping of grid lines.
+    bool projectToScreenZ(double cellX, double cellY, double z,
+                          double& camZ, double& sxPx, double& syPx) const;
+
     /// Ground footprint of the current view: where the rays through the four
     /// screen corners hit the horizontal plane z = planeZ, in world cells.
     /// Order follows the screen: top-left, top-right, bottom-right, bottom-left
@@ -129,6 +137,11 @@ public:
 
     /// Zeroplast plane height in world units (meters), for the grid plane.
     float zeroplastZ() const;
+
+    /// Camera near-plane distance in world units (cells). Terrain closer than
+    /// this is not rasterized, so QPainter overlays (the grid) must clip their
+    /// lines against the same bound.
+    float nearPlaneZ() const;
 
     /// When true the sokol tilemap sampler uses nearest filtering (chunky
     /// voxel look, no bilinear). When false (default) the default linear

@@ -40,7 +40,16 @@ public:
     {
         return false;
     }
+    bool projectToScreenZ(double, double, double, double &, double &,
+                          double &) const { return false; }
+    bool groundFootprint(double, double out[4], double outY[4]) const
+    {
+        static_cast<void>(out);
+        static_cast<void>(outY);
+        return false;
+    }
     float zeroplastZ() const { return 0.0f; }
+    float nearPlaneZ() const { return 1.0f; }
     int projectGroundContour(const double*, int, double*, double*) const { return 0; }
 };
 } // namespace MapEditor
@@ -1212,52 +1221,109 @@ bool ViewportWidget::drawObliqueGL(QOpenGLFunctions *gl)
 // Grid overlay
 // ---------------------------------------------------------------------------
 
-/// GPU-mode grid: the same flat reference-plane grid the CPU 3D view bakes
-/// into its frame (zeroplast height, OXY offsets), but projected per line
-/// through the sokol camera and drawn with QPainter. A straight ground line
-/// stays straight under the perspective projection, so the projection of the
-/// two end points is the whole line. Lines running behind the camera are
-/// skipped whole (partial clipping is not worth the complexity here).
+/// GPU-mode grid: a flat reference-plane grid at ground height zero (the
+/// bottom of the terrain, NOT the zeroplast plane — the zeroplast sits above
+/// the lowest geo, so a grid drawn on it floats over the landscape), projected
+/// through the sokol camera and drawn with QPainter as white 4 px lines.
+///
+/// A straight ground line stays straight under the perspective projection, so
+/// two end points define it — but the camera looks along the ground, so most
+/// lines leave through the near plane rather than the map edge. Each line is
+/// therefore clipped against the camera near plane (the segment parameter at
+/// which the view-space depth crosses it), and only the visible part is drawn.
 void ViewportWidget::drawGrid3D(QPainter &painter)
 {
-    if (!gpuActive()) return;
-
-    const QPointF pxPerCell = obliquePxPerCell();
-    if (gridStepX_ > 0 && gridStepX_ * pxPerCell.x() < kMinGridSpacingPx
-        && !(gridStepY_ > 0 && gridStepY_ * pxPerCell.y() >= kMinGridSpacingPx)) {
-        return; // neither axis resolves on screen yet
-    }
-
-    const QRect vis = currentViewRect();
-    if (vis.isEmpty()) return;
+    if (!gpuActive() || gridStepX_ <= 0 || gridStepY_ <= 0) return;
 
     const int mapW = renderer_->width();
     const int mapH = renderer_->height();
-    const double z = gpuView_->zeroplastZ();
-    painter.setPen(QColor(70, 70, 70, 90));
+    const double z = 0.0;   // the bottom ground plane
+    const qreal dpr = devicePixelRatioF();
+
+    // Visible ground area: the frustum footprint on the plane (exact, unlike
+    // the old kv-heuristic rect), clamped to the map.
+    double fx[4], fy[4];
+    if (!gpuView_->groundFootprint(z, fx, fy)) return;
+    double minX = fx[0], maxX = fx[0], minY = fy[0], maxY = fy[0];
+    for (int i = 1; i < 4; ++i) {
+        minX = std::min(minX, fx[i]);
+        maxX = std::max(maxX, fx[i]);
+        minY = std::min(minY, fy[i]);
+        maxY = std::max(maxY, fy[i]);
+    }
+    const int xBegin = qMax(0, static_cast<int>(std::floor(minX)));
+    const int xEnd = qMin(mapW, static_cast<int>(std::ceil(maxX)));
+    const int yBegin = qMax(0, static_cast<int>(std::floor(minY)));
+    const int yEnd = qMin(mapH, static_cast<int>(std::ceil(maxY)));
+    if (xEnd <= xBegin || yEnd <= yBegin) return;
+
+    // Resolution guard: lines are drawn every gridStepX_/gridStepY_ world
+    // units, exactly as in the 2D grid. The perspective scale varies across
+    // the view, so measure the spacing where the grid is largest on screen —
+    // at the near edge of the footprint. Below the minimum spacing the lines
+    // would merge into a white field, so the grid stays hidden.
+    const double nearY = static_cast<double>(yBegin);
+    const double midX = 0.5 * (xBegin + xEnd);
+    double camZ0, sx0, sy0, camZ1, sx1, sy1, camZ2, sx2, sy2;
+    if (!gpuView_->projectToScreenZ(midX, nearY, z, camZ0, sx0, sy0)
+        || !gpuView_->projectToScreenZ(midX + gridStepX_, nearY, z, camZ1, sx1, sy1)
+        || !gpuView_->projectToScreenZ(midX, nearY + gridStepY_, z, camZ2, sx2, sy2)
+        || camZ0 <= 0.0) {
+        return;
+    }
+    const double stepPxX = std::hypot(sx1 - sx0, sy1 - sy0) / dpr;
+    const double stepPxY = std::hypot(sx2 - sx0, sy2 - sy0) / dpr;
+    if (stepPxX < kMinGridSpacingPx && stepPxY < kMinGridSpacingPx) {
+        editorTrace("ViewportWidget: grid step=%dx%d hidden (pxX=%.2f pxY=%.2f at near edge)",
+                    gridStepX_, gridStepY_, stepPxX, stepPxY);
+        return;
+    }
+
+    // Near-plane clipping constant: the camera's own near plane — terrain
+    // closer than this is not rasterized, and the grid must use the same
+    // bound so its lines do not intrude into the sky region.
+    const double nearPlane = gpuView_->nearPlaneZ();
+    const auto clipToNear = [this, z, nearPlane, dpr](
+                                double ax, double ay, double bx, double by) {
+        double za, sa, ta, zb, sb, tb;
+        if (!gpuView_->projectToScreenZ(ax, ay, z, za, sa, ta)
+            || !gpuView_->projectToScreenZ(bx, by, z, zb, sb, tb)) {
+            return QLineF();
+        }
+        if (za <= nearPlane && zb <= nearPlane) {
+            return QLineF();   // the whole segment is behind the near plane
+        }
+        if (za <= nearPlane) {
+            const double t = (nearPlane - za) / (zb - za);
+            ax += (bx - ax) * t;
+            ay += (by - ay) * t;
+            if (!gpuView_->projectToScreenZ(ax, ay, z, za, sa, ta)) {
+                return QLineF();
+            }
+        }
+        if (zb <= nearPlane) {
+            const double t = (nearPlane - zb) / (za - zb);
+            bx += (ax - bx) * t;
+            by += (ay - by) * t;
+            if (!gpuView_->projectToScreenZ(bx, by, z, zb, sb, tb)) {
+                return QLineF();
+            }
+        }
+        return QLineF(sa / dpr, ta / dpr, sb / dpr, tb / dpr);
+    };
+
+    painter.setPen(QPen(QColor(255, 255, 255), 4.0));
 
     // Align to the grid origin, not to the first visible cell (as in 2D).
-    const int x0f = (qMax(0, vis.x()) / gridStepX_) * gridStepX_;
-    for (int x = x0f; x <= qMin(mapW, vis.x() + vis.width()); x += gridStepX_) {
-        double sx1, sy1, sx2, sy2;
-        if (gpuView_->projectToScreen(x, 0, z, sx1, sy1)
-            && gpuView_->projectToScreen(x, mapH, z, sx2, sy2)) {
-            painter.drawLine(QPointF(sx1 / devicePixelRatioF(),
-                                     sy1 / devicePixelRatioF()),
-                             QPointF(sx2 / devicePixelRatioF(),
-                                     sy2 / devicePixelRatioF()));
-        }
+    const int x0f = (xBegin / gridStepX_) * gridStepX_;
+    for (int x = x0f; x <= xEnd; x += gridStepX_) {
+        const QLineF line = clipToNear(x, yBegin, x, yEnd);
+        if (!line.isNull()) painter.drawLine(line);
     }
-    const int y0f = (qMax(0, vis.y()) / gridStepY_) * gridStepY_;
-    for (int y = y0f; y <= qMin(mapH, vis.y() + vis.height()); y += gridStepY_) {
-        double sx1, sy1, sx2, sy2;
-        if (gpuView_->projectToScreen(0, y, z, sx1, sy1)
-            && gpuView_->projectToScreen(mapW, y, z, sx2, sy2)) {
-            painter.drawLine(QPointF(sx1 / devicePixelRatioF(),
-                                     sy1 / devicePixelRatioF()),
-                             QPointF(sx2 / devicePixelRatioF(),
-                                     sy2 / devicePixelRatioF()));
-        }
+    const int y0f = (yBegin / gridStepY_) * gridStepY_;
+    for (int y = y0f; y <= yEnd; y += gridStepY_) {
+        const QLineF line = clipToNear(xBegin, y, xEnd, y);
+        if (!line.isNull()) painter.drawLine(line);
     }
 }
 

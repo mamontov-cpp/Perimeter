@@ -190,6 +190,9 @@ int main(int argc, char *argv[])
                 vp->setEditorMode(MapEditor::ViewportWidget::EditorMode::Brush);
                 vp->setBrushPreview(MapEditor::BrushPreviewShape::Circle, 64);
                 vp->setBrushPreviewVisible(true);
+                // Deterministic state for the preview shot: the grid overlay is
+                // exercised by the later steps and must not leak into this one.
+                vp->setGridVisible(false);
                 // The GPU camera matrix is pushed inside renderFrame — paint once
                 // before picking, otherwise the pick (and the preview built from
                 // it) still uses the previous camera.
@@ -206,14 +209,39 @@ int main(int argc, char *argv[])
                                        pos.x(), pos.y(), vp->cursorCell().x(),
                                        vp->cursorCell().y());
             });
-            QTimer::singleShot(23600, &window, [capture] {
+            // The captures below run far apart on purpose: each of them paints
+            // synchronously (repaint + grabFramebuffer), and that nested paint
+            // processes the timer queue — steps scheduled closely would run
+            // reentrantly and capture each other's state.
+            QTimer::singleShot(24500, &window, [capture] {
                 capture("13_brush_preview");
             });
             // NOTE: no real stamp here on purpose — applyStamp() marks the world
             // modified, and closing then raises the modal "Unsaved Changes"
             // dialog, which blocks an unattended run.
+            // Grid overlay in the GPU 3D view at the repro camera: the step is
+            // user-editable, so three sizes are captured to prove it is honoured.
+            const auto captureGrid = [&window, capture](const char *name, int step) {
+                MapEditor::ViewportWidget *vp = window.debugViewport();
+                if (!vp) return;
+                vp->setGridStep(step, step);
+                vp->setGridVisible(true);
+                vp->repaint();
+                MapEditor::editorTrace("autotest: grid capture '%s' step=%d", name, step);
+                capture(name);
+                vp->setGridVisible(false);
+            };
+            QTimer::singleShot(27000, &window, [captureGrid] {
+                captureGrid("15_grid3d_step32", 32);
+            });
+            QTimer::singleShot(29500, &window, [captureGrid] {
+                captureGrid("17_grid3d_step128", 128);
+            });
+            QTimer::singleShot(32000, &window, [captureGrid] {
+                captureGrid("16_grid3d_step4", 4);
+            });
         }
-        QTimer::singleShot(25000, &window, [&window] {
+        QTimer::singleShot(34500, &window, [&window] {
             MapEditor::editorTrace("autotest: closing window");
             window.close();
         });
