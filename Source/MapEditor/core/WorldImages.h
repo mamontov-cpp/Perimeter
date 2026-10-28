@@ -52,6 +52,17 @@ void downscaleNearest(const std::vector<unsigned char>& source,
 bool renderToBgr(std::vector<unsigned char>& bgr, unsigned& width,
                  unsigned& height);
 
+/// Live minimap raster of the loaded world: `width x height` BGR pixels where
+/// pixel (x, y) takes the composite color of cell
+/// (x * vMap.H_SIZE / width, y * vMap.V_SIZE / height) — the very cell
+/// downscaleNearest() picks from the full renderToBgr() raster. The result is
+/// pixel-identical to downscaleNearest(renderToBgr(), width, height) (what
+/// generateMapTga() writes into map.tga) but never builds the full-size
+/// intermediate, so the minimap panel can re-sample its whole overview after
+/// every brush stamp or undo/redo. Returns false when no world is loaded.
+bool renderMinimapToBgr(unsigned width, unsigned height,
+                        std::vector<unsigned char>& bgr);
+
 /// cache.tga — 24-bit H_SIZE x V_SIZE snapshot of the whole surface. Terra's
 /// fullLoad() xasserts on this file, so it must be (re)generated on every save.
 bool generateCacheTga(const std::filesystem::path& worldDir);

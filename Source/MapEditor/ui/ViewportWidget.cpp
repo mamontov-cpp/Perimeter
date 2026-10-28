@@ -906,6 +906,16 @@ void ViewportWidget::paintGL()
         dirty = renderer_->update();
     }
 
+    // Terrain cells were actually repainted (brush stamp, undo/redo, image
+    // import, palette edit) — their composite colors are final now, so the
+    // minimap can re-sample its overview from the live terrain. The signal is
+    // deliberately emitted here rather than from the edit itself: at stamp time
+    // renderQuant() has not run yet and the edited cells would be sampled with
+    // their old lighting.
+    if (!dirty.empty()) {
+        emit terrainRepainted();
+    }
+
     // The GPU tilemap consumes the same changed-cell rectangles the 2D cache
     // got (brush stamps, undo/redo) — queue them for the next terrain frame.
     if (gpuView_) {

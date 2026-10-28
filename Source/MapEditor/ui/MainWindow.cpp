@@ -877,6 +877,13 @@ void MainWindow::buildMinimapDock()
     connect(viewport_, &MapEditor::ViewportWidget::viewPolygonChanged,
             minimap_, &MapEditor::MinimapWidget::setViewPolygon);
 
+    // The top view follows the terrain: every viewport repaint that repainted
+    // cells (brush stamp, undo/redo, image import, palette edit) re-samples the
+    // panel's raster from the live world — map.tga on disk only catches up on
+    // save, so reading the file back after an edit would show the old surface.
+    connect(viewport_, &MapEditor::ViewportWidget::terrainRepainted,
+            minimap_, &MapEditor::MinimapWidget::refreshFromLiveTerrain);
+
     // T7 — the "Add" marker default position follows the view centre.
     connect(viewport_, &MapEditor::ViewportWidget::viewRectChanged, this,
             [this](const QRect &rect) {

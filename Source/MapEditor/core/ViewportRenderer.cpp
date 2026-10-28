@@ -195,7 +195,10 @@ std::uint32_t ViewportRenderer::colorAt(int x, int y) const
     }
     case LayerFilter::Composite:
     default: {
-        const unsigned int col = color32WithLighting(off, vMap.RnrBuf[off]);
+        // The composite look is exactly the static helper's pixel — shared so
+        // the minimap's live re-sample can never drift from this cache.
+        std::uint32_t col = 0;
+        compositeColorAt(x, y, col);
         // The in-game look: cells without a dam dim to grey shades (the dam
         // areas keep their palette colors).
         if (geoDimmed_ && vMap.VxDBuf[off] == 0) {
@@ -204,6 +207,19 @@ std::uint32_t ViewportRenderer::colorAt(int x, int y) const
         return kOpaque | col;
     }
     }
+}
+
+bool ViewportRenderer::compositeColorAt(int x, int y, std::uint32_t &rgb)
+{
+    rgb = 0;
+    if (!worldBuffersPresent() || x < 0 || y < 0 ||
+        x >= static_cast<int>(vMap.H_SIZE) ||
+        y >= static_cast<int>(vMap.V_SIZE)) {
+        return false;
+    }
+    const int off = vMap.offsetBuf(x, y);
+    rgb = color32WithLighting(off, vMap.RnrBuf[off]);
+    return true;
 }
 
 std::uint32_t ViewportRenderer::applyOverlay(std::uint32_t col, int x, int y) const

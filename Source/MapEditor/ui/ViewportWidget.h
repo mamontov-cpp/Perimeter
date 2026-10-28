@@ -372,6 +372,12 @@ signals:
     /// Emitted right after a brush stamp changed the world (T3.1) so the
     /// MainWindow can refresh the modified state in the status bar.
     void worldEdited();
+    /// Emitted after a repaint that repainted terrain cells into the 2D cache
+    /// (a brush stamp, undo/redo, an image import, a palette edit). Lighting
+    /// has been recomputed (renderQuant) and the cache is final at this point,
+    /// so the overview panels can re-sample the world from the live terrain.
+    /// Consumed by MinimapWidget — map.tga only catches up on save.
+    void terrainRepainted();
     /// Emitted after setEditorMode() — MainWindow keeps its mode buttons in
     /// sync with it (the interactions can also switch the mode internally).
     void editorModeChanged(MapEditor::ViewportWidget::EditorMode mode);

@@ -166,6 +166,37 @@ bool renderToBgr(std::vector<unsigned char>& bgr, unsigned& width,
     return true;
 }
 
+bool renderMinimapToBgr(unsigned width, unsigned height,
+                        std::vector<unsigned char>& bgr)
+{
+    bgr.clear();
+    if (width == 0 || height == 0 || vMap.H_SIZE <= 0 || vMap.V_SIZE <= 0) {
+        return false;
+    }
+
+    // The same integer mapping downscaleNearest() applies to the full raster,
+    // so sampling cells directly here cannot drift from the saved map.tga.
+    const unsigned sourceWidth = static_cast<unsigned>(vMap.H_SIZE);
+    const unsigned sourceHeight = static_cast<unsigned>(vMap.V_SIZE);
+    bgr.assign(static_cast<std::size_t>(width) * height * 3, 0);
+    for (unsigned y = 0; y < height; ++y) {
+        const unsigned sy = std::min(y * sourceHeight / height, sourceHeight - 1);
+        std::size_t dst = static_cast<std::size_t>(y) * width * 3;
+        for (unsigned x = 0; x < width; ++x, dst += 3) {
+            const unsigned sx = std::min(x * sourceWidth / width, sourceWidth - 1);
+            std::uint32_t rgb = 0;
+            if (!ViewportRenderer::compositeColorAt(static_cast<int>(sx),
+                                                    static_cast<int>(sy), rgb)) {
+                continue; // no world under the sampler — keep the pixel black
+            }
+            bgr[dst + 0] = static_cast<unsigned char>(rgb & 0xFF);
+            bgr[dst + 1] = static_cast<unsigned char>((rgb >> 8) & 0xFF);
+            bgr[dst + 2] = static_cast<unsigned char>((rgb >> 16) & 0xFF);
+        }
+    }
+    return true;
+}
+
 bool generateCacheTga(const std::filesystem::path& worldDir)
 {
     std::vector<unsigned char> bgr;

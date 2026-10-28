@@ -160,6 +160,16 @@ public:
     /// Handy for tests and for the eyedropper.
     std::uint32_t colorAt(int x, int y) const;
 
+    /// Composite color of a single cell (0x00RRGGBB) WITHOUT a bound cache:
+    /// exactly what the LayerFilter::Composite branch of colorAt() returns for
+    /// the cell, i.e. the pixel WorldImages::renderToBgr()/cache.tga/map.tga
+    /// store for it. Static on purpose — the minimap panel re-samples single
+    /// cells of its own downscaled raster after every terrain edit and must not
+    /// bind a second full-size cache (bindWorld() drains vMap.changedAreas,
+    /// which would starve the viewport's repaint). Returns false when no world
+    /// is loaded or the cell is outside the map.
+    static bool compositeColorAt(int x, int y, std::uint32_t &rgb);
+
     /// --- Color/height mip pyramid (post-T3.3, smooth 3D view) -----------
     ///
     /// Build the pyramid lazily: ViewportWidget only pays the memory and

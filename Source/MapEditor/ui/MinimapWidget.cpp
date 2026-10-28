@@ -105,6 +105,7 @@ void MinimapWidget::reload()
     unsigned imageWidth = 0;
     unsigned imageHeight = 0;
     bool loaded = false;
+    bool liveRaster = false;
     const std::filesystem::path mapTga =
         worldFiles->filePath(WorldFiles::MapTgaFile);
     if (std::filesystem::exists(mapTga)) {
@@ -112,10 +113,16 @@ void MinimapWidget::reload()
     }
 
     // Fallback: a fresh world (new-world wizard, never saved) has no map.tga
-    // yet and a stale/foreign one may not parse — render the same raster the
-    // on-screen viewport cache shows instead.
+    // yet and a stale/foreign one may not parse — render the live surface
+    // instead, sampled directly at the size generateMapTga() writes on save
+    // (the panel is an overview, not the full raster).
     if (!loaded && session_->isWorldLoaded()) {
-        loaded = WorldImages::renderToBgr(bgr, imageWidth, imageHeight);
+        liveRaster = true;
+        imageWidth = std::min<unsigned>(session_->mapWidth(),
+                                        WorldImages::kMinimapMaxSize);
+        imageHeight = std::min<unsigned>(session_->mapHeight(),
+                                         WorldImages::kMinimapMaxSize);
+        loaded = WorldImages::renderMinimapToBgr(imageWidth, imageHeight, bgr);
     }
 
     if (!loaded) {
@@ -128,6 +135,10 @@ void MinimapWidget::reload()
     QSize worldSize;
     if (const auto power = worldFiles->readMapPower()) {
         worldSize = QSize(1 << power->first, 1 << power->second);
+    } else if (liveRaster) {
+        // The live raster is a downscale of the loaded world's cells.
+        worldSize = QSize(static_cast<int>(session_->mapWidth()),
+                          static_cast<int>(session_->mapHeight()));
     } else {
         // No world.ini data — assume the raster maps 1:1 onto the cells.
         worldSize = QSize(static_cast<int>(imageWidth),
@@ -137,15 +148,46 @@ void MinimapWidget::reload()
     setMinimapData(imageWidth, imageHeight, bgr, worldSize);
 }
 
-void MinimapWidget::setMinimapData(unsigned imageWidth, unsigned imageHeight,
-                                  const std::vector<unsigned char> &bgr,
-                                  const QSize &worldSize)
+void MinimapWidget::refreshFromLiveTerrain()
+{
+    if (!session_ || !session_->isWorldLoaded()) {
+        return;
+    }
+    // No raster yet (the panel was bound before the world was loaded) — take
+    // the normal load path first, it establishes both the raster and the size.
+    if (minimapImage_.isNull() || mapSize_.isEmpty()) {
+        reload();
+    }
+    // Without unsaved changes the file on disk is exactly what the next save
+    // would write, so it stays the panel's source: a repaint that merely
+    // rebuilt the viewport cache (world load, layer filter, view options) must
+    // not replace a hand-made radar picture with the live render.
+    if (!session_->hasUnsavedChanges() || minimapImage_.isNull()) {
+        return;
+    }
+
+    const unsigned imageWidth = static_cast<unsigned>(minimapImage_.width());
+    const unsigned imageHeight = static_cast<unsigned>(minimapImage_.height());
+    std::vector<unsigned char> bgr;
+    if (!WorldImages::renderMinimapToBgr(imageWidth, imageHeight, bgr)) {
+        return;
+    }
+    const QImage image = imageFromBgr(imageWidth, imageHeight, bgr);
+    if (image.isNull()) {
+        return;
+    }
+
+    minimapImage_ = image;
+    minimapTextureStale_ = true;
+    update();
+}
+
+QImage MinimapWidget::imageFromBgr(unsigned imageWidth, unsigned imageHeight,
+                                   const std::vector<unsigned char> &bgr)
 {
     if (imageWidth == 0 || imageHeight == 0 ||
-        worldSize.width() <= 0 || worldSize.height() <= 0 ||
         bgr.size() < static_cast<std::size_t>(imageWidth) * imageHeight * 3) {
-        update();
-        return;
+        return QImage();
     }
 
     // BGR byte triples → QImage::Format_RGB32 (little-endian byte order:
@@ -162,6 +204,23 @@ void MinimapWidget::setMinimapData(unsigned imageWidth, unsigned imageHeight,
             dst[x * 4 + 2] = src[x * 3 + 2];                   // R
             dst[x * 4 + 3] = 0xFF;                             // A
         }
+    }
+    return image;
+}
+
+void MinimapWidget::setMinimapData(unsigned imageWidth, unsigned imageHeight,
+                                  const std::vector<unsigned char> &bgr,
+                                  const QSize &worldSize)
+{
+    if (worldSize.width() <= 0 || worldSize.height() <= 0) {
+        update();
+        return;
+    }
+
+    const QImage image = imageFromBgr(imageWidth, imageHeight, bgr);
+    if (image.isNull()) {
+        update();
+        return;
     }
 
     minimapImage_ = std::move(image);

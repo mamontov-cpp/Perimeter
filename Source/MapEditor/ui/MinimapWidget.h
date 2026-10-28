@@ -24,8 +24,11 @@ class EditorSession;
 //   * Image — the map.tga radar/minimap texture of the current world (the
 //     file the game shell uses). When the file is missing or in a format the
 //     editor never produces (fresh / never-saved worlds), the widget falls
-//     back to a live render through WorldImages::renderToBgr() — the same
-//     raster the viewport cache shows.
+//     back to a live render through WorldImages::renderMinimapToBgr() — the
+//     same raster the viewport cache shows. While the world has unsaved
+//     changes the panel cannot show the file anyway (it is only regenerated
+//     on save), so refreshFromLiveTerrain() re-samples the whole overview from
+//     the live terrain after every viewport repaint that changed cells.
 //   * View polygon — the outline of the region the central ViewportWidget is
 //     looking at, pushed in via setViewPolygon() from the viewport's
 //     viewPolygonChanged signal. In TopDown it is the real visible cell range;
@@ -63,6 +66,21 @@ public:
     /// Re-read map.tga (the file is regenerated on save — keep the panel in
     /// sync after EditorSession::saveWorld() succeeded).
     void reload();
+
+    /// Re-sample the panel's raster from the live terrain.
+    ///
+    /// map.tga only reflects the last save, so after a brush stamp or an
+    /// undo/redo the file — and the panel showing it — lags behind the world.
+    /// MainWindow wires this to ViewportWidget::terrainRepainted(), i.e. to the
+    /// repaint that has already recomputed the lighting (renderQuant) of the
+    /// edited cells, so the overview shows final colors.
+    ///
+    /// While the world has no unsaved changes the panel keeps the file: the
+    /// cache rebuild that follows a world load / a layer-filter change is not
+    /// a terrain edit, and a shipped world's map.tga is the game's own radar
+    /// picture — it must not be thrown away just because the viewport
+    /// re-painted its cache.
+    void refreshFromLiveTerrain();
 
     /// True when a minimap image is loaded.
     bool hasMinimapImage() const { return !minimapImage_.isNull(); }
@@ -117,9 +135,15 @@ private:
                         const std::vector<unsigned char> &bgr,
                         const QSize &worldSize);
 
+    /// BGR byte triples → QImage::Format_RGB32 (little-endian byte order:
+    /// blue, green, red, opaque). Null when the buffer is too small for the
+    /// size — shared by the file/live load and the terrain refresh.
+    static QImage imageFromBgr(unsigned imageWidth, unsigned imageHeight,
+                               const std::vector<unsigned char> &bgr);
+
     EditorSession *session_ = nullptr;
 
-    QImage minimapImage_; ///< map.tga pixels (or the live fallback render).
+    QImage minimapImage_; ///< map.tga pixels (or the live terrain render).
     QSize mapSize_;       ///< world size in map cells.
     QPolygonF viewPolygon_; ///< viewport's current view, in map cells.
 
