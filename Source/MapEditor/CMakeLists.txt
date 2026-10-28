@@ -48,6 +48,7 @@ ADD_LIBRARY(MapEditorCore STATIC
         core/WorldImages.cpp
         core/EditorSession.cpp
         core/BrushTool.cpp
+        core/ImageDecal.cpp
         core/PaletteOps.cpp
         core/ColorMipmap.cpp
         core/ViewportRenderer.cpp

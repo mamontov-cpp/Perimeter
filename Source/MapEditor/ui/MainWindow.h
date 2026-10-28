@@ -5,6 +5,7 @@
 #include <string>
 
 #include "BrushTool.h"
+#include "ImageDecal.h"
 #include "MarkerStore.h"
 #include "Validation.h"
 #include "spg/SpgFile.h"
@@ -124,6 +125,11 @@ private slots:
 
     /// T3.5 — open a file dialog, load an image as brush mask.
     void onLoadBrushImage();
+
+    /// ImageDecal — open a file dialog, convert the image into a Dam-palette
+    /// limited decal (ImageDecal::prepare), add the new colours to the Dam
+    /// palette and make the decal the stamp of the ImageDecal brush.
+    void onLoadDecalImage();
 
     // T6 — image import/export.
     /// T6.3 — paint SurBuf from an image (RGB -> nearest palette index,
@@ -316,6 +322,9 @@ private:
     // every terrain effect (BrushParams::useImageMask) until a stamp shape
     // is picked explicitly.
     QAction *actLoadBrushImage_ = nullptr;
+    // ImageDecal — palette-limited image stamp: picks the image, converts it
+    // to Dam palette indices and paints them with the SetColor semantics.
+    QAction *actBrushImageDecal_ = nullptr;
     // T3.1 — brush form (stamp shape) actions: filled circle/square, the two
     // outlines and the two-point line. Exclusive group, mirrored in the
     // viewport preview and in BrushParams::shape.
@@ -342,6 +351,10 @@ private:
     // interpolation blur.
     QSpinBox *brushMaskScaleSpin_ = nullptr;
     MapEditor::BrushMask brushMaskOriginal_;
+
+    // ImageDecal — the un-scaled palette-index decal: the scale spinbox
+    // recomputes the stamp from it, exactly like the brush-image mask above.
+    MapEditor::ImageDecal::DecalImage decalOriginal_;
 
     // Toolbar readout of the current 3D camera.
     QLabel *viewReadout_ = nullptr;

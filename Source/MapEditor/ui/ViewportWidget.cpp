@@ -1614,7 +1614,8 @@ void ViewportWidget::mousePressEvent(QMouseEvent *event)
         if (cell.x() >= 0) {
             cursorWidgetPos_ = pos;
             cursorCell_ = cell;
-            if (brushTool_ && brushTool_->params().shape == BrushShape::Line) {
+            if (brushTool_ && brushTool_->params().shape == BrushShape::Line &&
+                brushTool_->params().effect != BrushEffect::ImageDecal) {
                 // The Line form is a two-point stroke: press marks the start,
                 // the release draws the whole line as ONE undo entry.
                 linePending_ = true;

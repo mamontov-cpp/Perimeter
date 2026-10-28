@@ -237,6 +237,7 @@ bool BrushTool::effectSupported(BrushEffect effect)
     case BrushEffect::Align4ZP:     // T3.4: level to zeroplast + mark it
     case BrushEffect::AlignVariableH: // T3.2 smooth/level to height
     case BrushEffect::SetColor:     // T3.3 paint SurBuf with palette index
+    case BrushEffect::ImageDecal:   // palette-limited image stamp (Dam only)
     case BrushEffect::PickColor:    // T4.2 eyedropper: sample SurBuf pixel
     case BrushEffect::EraseZeroplast:  // T3.4 remove zeroplast flag
     case BrushEffect::PlotSoot:        // T3.4 mark soot
@@ -255,6 +256,11 @@ void BrushTool::setParams(const BrushParams& params)
 void BrushTool::setImageMask(const BrushMask& mask)
 {
     imageMask_ = mask;
+}
+
+void BrushTool::setDecalImage(const ImageDecal::DecalImage& decal)
+{
+    decal_ = decal;
 }
 
 int BrushTool::heightDeltaMagnitude(const BrushParams& params, unsigned char influence)
@@ -294,6 +300,31 @@ bool BrushTool::applyStamp(int cx, int cy, const BrushParams& params)
     if (clamped.effect == BrushEffect::PickColor) {
         return pickColorAt(cx, cy);
     }
+    // ImageDecal: the decal image IS the stamp geometry — its pixels are
+    // palette indices, not an influence mask, and the brush only owns the Dam
+    // layer. The stamp is centred on the click cell and covers exactly the
+    // image; every fully opaque pixel paints its palette entry.
+    if (clamped.effect == BrushEffect::ImageDecal) {
+        if (decal_.empty() || clamped.mode != BrushMode::Dam) {
+            return false; // nothing loaded / wrong layer for a dam decal
+        }
+        decalOriginX_ = cx - decal_.width / 2;
+        decalOriginY_ = cy - decal_.height / 2;
+        BrushMask mask;
+        mask.x = decalOriginX_;
+        mask.y = decalOriginY_;
+        mask.sx = decal_.width;
+        mask.sy = decal_.height;
+        mask.influence.assign(static_cast<std::size_t>(mask.sx) * mask.sy, 0);
+        for (int dy = 0; dy < mask.sy; ++dy) {
+            for (int dx = 0; dx < mask.sx; ++dx) {
+                if (decal_.at(dx, dy) >= 0) {
+                    mask.influence[static_cast<std::size_t>(dy) * mask.sx + dx] = 255;
+                }
+            }
+        }
+        return applyMask(mask, clamped);
+    }
     // T3.5: the loaded image mask replaces the shape stamp as the brush
     // geometry for every effect — the image pixel value is the per-cell
     // influence (raised/lowered/levelled/painted through the current effect).
@@ -327,6 +358,11 @@ bool BrushTool::applyLine(int x0, int y0, int x1, int y1, const BrushParams& par
     // T4.2: picking is a point operation — stroking a "line" of samples makes
     // no sense, so the Line shape refuses the PickColor effect.
     if (clamped.effect == BrushEffect::PickColor) {
+        return false;
+    }
+    // The decal is a rectangular image stamp with its own geometry: a line
+    // stroke has no meaning for it (the viewport does not start one either).
+    if (clamped.effect == BrushEffect::ImageDecal) {
         return false;
     }
     const int stampRadius = clampRadius(clamped.radius);
@@ -713,6 +749,29 @@ void BrushTool::applyEffectToCell(const BrushParams& params, int x, int y, unsig
             break; // wrong layer for this cell — skip, keep SurBuf as-is
         }
         vMap.SetTer(x, y, static_cast<unsigned char>(params.colorIndex));
+        break;
+    }
+    case BrushEffect::ImageDecal: {
+        // The decal works exactly like SetColor, one pixel at a time: the
+        // palette index of the matching decal pixel goes into SurBuf and no
+        // height buffer is touched. Two extra rules:
+        //   * the decal owns the Dam layer only — geo cells are skipped (the
+        //     index would be resolved through the wrong palette);
+        //   * transparent decal pixels are never applied (the mask already
+        //     dropped them; the -1 check keeps a stale origin harmless).
+        const int dx = x - decalOriginX_;
+        const int dy = y - decalOriginY_;
+        if (dx < 0 || dy < 0 || dx >= decal_.width || dy >= decal_.height) {
+            break;
+        }
+        const int index = decal_.at(dx, dy);
+        if (index < 0) {
+            break;
+        }
+        if (vMap.VxDBuf[off] == 0) {
+            break; // Dam layer only
+        }
+        vMap.SetTer(x, y, static_cast<unsigned char>(index));
         break;
     }
     case BrushEffect::EraseZeroplast: {

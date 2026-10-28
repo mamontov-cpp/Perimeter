@@ -23,6 +23,7 @@ ADD_EXECUTABLE(map_editor_tests
         BrushSetHeightTests.cpp
         BrushColorToolTests.cpp
         BrushPickColorTests.cpp
+        ImageDecalTests.cpp
         PaletteOpsTests.cpp
         WorldImagesTests.cpp
         ViewportRendererTests.cpp

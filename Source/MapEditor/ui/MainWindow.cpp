@@ -6,6 +6,7 @@
 #include <GameDirManager.h>
 #include <BattleMapPanel.h>
 #include <HelpWindow.h>
+#include <ImageDecal.h>
 #include <MinimapWidget.h>
 #include <NewWorldWizard.h>
 #include <MarkerPanel.h>
@@ -427,6 +428,27 @@ QIcon makeLoadImageIcon()
     QPolygonF arrow;
     arrow << QPointF(11.0, 16.5) << QPointF(8.5, 13.5) << QPointF(13.5, 13.5);
     p.drawPolygon(arrow);
+    return QIcon(pm);
+}
+
+/// ImageDecal — a framed picture glyph: the stamp is a palette-limited image,
+/// so the button shows a small landscape in a frame.
+QIcon makeDecalIcon()
+{
+    QPixmap pm(22, 22);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setPen(QPen(kInk, 1.5));
+    p.setBrush(QColor(235, 235, 235));
+    p.drawRect(QRectF(3.5, 4.5, 15.0, 13.0));
+    p.setPen(Qt::NoPen);
+    p.setBrush(QColor(120, 170, 220));
+    p.drawRect(QRectF(5.0, 6.0, 12.0, 6.0));
+    p.setBrush(QColor(90, 150, 90));
+    p.drawRect(QRectF(5.0, 12.0, 12.0, 4.0));
+    p.setBrush(QColor(245, 220, 120));
+    p.drawEllipse(QPointF(8.0, 8.0), 1.6, 1.6);
     return QIcon(pm);
 }
 
@@ -1306,6 +1328,8 @@ void MainWindow::buildEditMenu(QMenuBar *menuBar)
     brushMenu->addAction(actBrushColor_);
     brushMenu->addAction(actBrushPickColor_);
     brushMenu->addSeparator();
+    brushMenu->addAction(actBrushImageDecal_);
+    brushMenu->addSeparator();
     brushMenu->addAction(actBrushEraseZP_);
     brushMenu->addAction(actBrushSoot_);
     brushMenu->addAction(actBrushVeryLightDam_);
@@ -1714,6 +1738,39 @@ void MainWindow::createBrushActions()
     connect(actLoadBrushImage_, &QAction::triggered,
             this, &MainWindow::onLoadBrushImage);
 
+    // ImageDecal — a palette-limited image stamp. The button is both the brush
+    // type and the image picker: selecting it switches to the decal brush,
+    // forces the Dam layer (the decal colours come from the Dam palette) and
+    // opens the file dialog. Cancelling keeps the previously loaded decal.
+    actBrushImageDecal_ = addType(
+        makeDecalIcon(), tr("Image Decal"),
+        tr("Stamps a picture into the dam surface colours: the image is "
+           "converted to a limited set of Dam palette colours (k-means), the "
+           "new colours are added to the Dam palette and every pixel paints "
+           "its palette index. Dam layer only; transparent pixels are never "
+           "painted. Click to choose a PNG/TGA/BMP image (max 512x512)."),
+        MapEditor::BrushEffect::ImageDecal, 0);
+    connect(actBrushImageDecal_, &QAction::triggered, this, [this] {
+        MapEditor::BrushParams params = brushTool_->params();
+        params.effect = MapEditor::BrushEffect::ImageDecal;
+        params.mode = MapEditor::BrushMode::Dam; // the decal owns the Dam layer
+        params.useImageMask = false;
+        brushTool_->setParams(params);
+        if (viewport_) {
+            viewport_->setEditorMode(
+                MapEditor::ViewportWidget::EditorMode::Brush);
+        }
+        onLoadDecalImage();
+        // Cancelled with no decal loaded: do not leave a brush that paints
+        // nothing selected.
+        if (!brushTool_->hasDecalImage()) {
+            params.effect = MapEditor::BrushEffect::ChangeHeight;
+            params.direction = 1;
+            brushTool_->setParams(params);
+        }
+        syncBrushControls();
+    });
+
     // --- Mode: which terrain layer the height tools drive -------------
     QActionGroup *modeGroup = new QActionGroup(this);
     const auto addMode = [this, modeGroup](QIcon icon, const QString &text,
@@ -1732,7 +1789,8 @@ void MainWindow::createBrushActions()
             // plain raise.
             if (mode == MapEditor::BrushMode::Geo &&
                 (params.effect == MapEditor::BrushEffect::Align4ZP ||
-                 params.effect == MapEditor::BrushEffect::EraseZeroplast)) {
+                 params.effect == MapEditor::BrushEffect::EraseZeroplast ||
+                 params.effect == MapEditor::BrushEffect::ImageDecal)) {
                 params.effect = MapEditor::BrushEffect::ChangeHeight;
                 params.direction = 1;
             }
@@ -1961,6 +2019,9 @@ void MainWindow::buildBrushToolbar()
     bar->addAction(actBrushColor_);
     bar->addAction(actBrushPickColor_);
 
+    // ImageDecal — the palette-limited image stamp (Dam layer only).
+    bar->addAction(actBrushImageDecal_);
+
     bar->addSeparator();
 
     // T3.4 — zeroplast/soot/very-light-dam buttons (the zeroplast brushes
@@ -1985,11 +2046,22 @@ void MainWindow::buildBrushToolbar()
         tr("Scale of the loaded brush image relative to its original pixel "
            "size (the mask stays centred under the cursor)."));
     connect(brushMaskScaleSpin_, &QSpinBox::valueChanged, this, [this](int value) {
-        if (!brushTool_ || brushMaskOriginal_.empty()) {
+        if (!brushTool_) {
             return;
         }
-        brushTool_->setImageMask(scaleBrushMask(
-            brushMaskOriginal_, value / 100.0));
+        const double factor = value / 100.0;
+        // The same control scales whichever image stamp is active: the
+        // influence mask of the terrain tools (T3.5) or the palette-index
+        // decal image (ImageDecal). Both are recomputed from the un-scaled
+        // original, so repeated changes never accumulate blur.
+        if (brushTool_->params().effect == MapEditor::BrushEffect::ImageDecal) {
+            if (!decalOriginal_.empty()) {
+                brushTool_->setDecalImage(
+                    MapEditor::ImageDecal::scaleNearest(decalOriginal_, factor));
+            }
+        } else if (!brushMaskOriginal_.empty()) {
+            brushTool_->setImageMask(scaleBrushMask(brushMaskOriginal_, factor));
+        }
         syncBrushControls();
     });
     bar->addWidget(brushMaskScaleSpin_);
@@ -2018,6 +2090,8 @@ void MainWindow::syncBrushControls()
     syncType(actBrushLevelHeight_,
              params.effect == MapEditor::BrushEffect::AlignVariableH);
     syncType(actBrushColor_, params.effect == MapEditor::BrushEffect::SetColor);
+    syncType(actBrushImageDecal_,
+             params.effect == MapEditor::BrushEffect::ImageDecal);
     syncType(actBrushPickColor_,
              params.effect == MapEditor::BrushEffect::PickColor);
     syncType(actBrushEraseZP_,
@@ -2048,10 +2122,20 @@ void MainWindow::syncBrushControls()
         }
     }
 
+    // The brush mode buttons are mirrored too: some brush types force a layer
+    // (the zeroplast brushes and the ImageDecal decal are Dam-only), so a
+    // programmatic mode change has to reach the exclusive group.
+    if (actBrushGeo_) {
+        actBrushGeo_->setChecked(params.mode == MapEditor::BrushMode::Geo);
+    }
+    if (actBrushDam_) {
+        actBrushDam_->setChecked(params.mode == MapEditor::BrushMode::Dam);
+    }
+
     // T3.1 — the stamp form drives the cursor preview silhouette; T3.5 — a
     // loaded image mask replaces the shapes (no shape button is checked
-    // then); T4.2 — the eyedropper is a point operation, the radius then
-    // does not matter.
+    // then); ImageDecal has its own rectangular geometry; T4.2 — the
+    // eyedropper is a point operation, the radius then does not matter.
     if (brushRadiusSpin_) {
         if (brushRadiusSpin_->value() != params.radius) {
             brushRadiusSpin_->blockSignals(true);
@@ -2060,15 +2144,17 @@ void MainWindow::syncBrushControls()
         }
     }
     const bool imageMaskActive = params.useImageMask && brushTool_->hasImageMask();
-    if (actShapeCircle_) actShapeCircle_->setChecked(!imageMaskActive &&
+    const bool decalActive = params.effect == MapEditor::BrushEffect::ImageDecal &&
+                             brushTool_->hasDecalImage();
+    if (actShapeCircle_) actShapeCircle_->setChecked(!imageMaskActive && !decalActive &&
         params.shape == MapEditor::BrushShape::FilledCircle);
-    if (actShapeSquare_) actShapeSquare_->setChecked(!imageMaskActive &&
+    if (actShapeSquare_) actShapeSquare_->setChecked(!imageMaskActive && !decalActive &&
         params.shape == MapEditor::BrushShape::FilledSquare);
-    if (actShapeCircleOutline_) actShapeCircleOutline_->setChecked(!imageMaskActive &&
+    if (actShapeCircleOutline_) actShapeCircleOutline_->setChecked(!imageMaskActive && !decalActive &&
         params.shape == MapEditor::BrushShape::CircleOutline);
-    if (actShapeSquareOutline_) actShapeSquareOutline_->setChecked(!imageMaskActive &&
+    if (actShapeSquareOutline_) actShapeSquareOutline_->setChecked(!imageMaskActive && !decalActive &&
         params.shape == MapEditor::BrushShape::SquareOutline);
-    if (actShapeLine_) actShapeLine_->setChecked(!imageMaskActive &&
+    if (actShapeLine_) actShapeLine_->setChecked(!imageMaskActive && !decalActive &&
         params.shape == MapEditor::BrushShape::Line);
 
     // T3.3/T4.2 — the color index spinbox paints (SetColor) and displays the
@@ -2087,13 +2173,16 @@ void MainWindow::syncBrushControls()
     // preview only follows the brush — the View/Eyedropper modes hide it in
     // the viewport (drawBrushPreview) anyway.
     if (viewport_) {
-        const bool squarePreview = imageMaskActive ||
+        const bool squarePreview = imageMaskActive || decalActive ||
             params.shape == MapEditor::BrushShape::FilledSquare ||
             params.shape == MapEditor::BrushShape::SquareOutline;
         int previewRadius = params.radius;
         if (imageMaskActive) {
             previewRadius = std::max(brushTool_->imageMask().sx,
                                      brushTool_->imageMask().sy) / 2;
+        } else if (decalActive) {
+            previewRadius = std::max(brushTool_->decalImage().width,
+                                     brushTool_->decalImage().height) / 2;
         }
         viewport_->setBrushPreview(
             squarePreview ? MapEditor::BrushPreviewShape::Square
@@ -2924,6 +3013,119 @@ void MainWindow::onLoadBrushImage()
         5000);
 }
 
+void MainWindow::onLoadDecalImage()
+{
+    if (!session_ || !session_->isWorldLoaded() || !brushTool_) {
+        return;
+    }
+
+    const QString filter =
+        tr("Images (*.png *.tga *.bmp);;All Files (*)");
+    const QString filePath = QFileDialog::getOpenFileName(
+        this, tr("Load Image Decal"), QString(), filter);
+    if (filePath.isEmpty()) {
+        return;
+    }
+
+    QImageReader reader(filePath);
+    reader.setAutoTransform(true);
+    const QImage img = reader.read();
+    if (img.isNull()) {
+        QMessageBox::warning(this, tr("Image Load Failed"),
+            tr("Cannot load image '%1':\n%2")
+                .arg(filePath, reader.errorString()));
+        return;
+    }
+
+    // The decal is a brush stamp, not a map import: a huge image would make
+    // one click repaint a large part of the map, so the size is capped.
+    if (img.width() > MapEditor::ImageDecal::kMaxImageSize ||
+        img.height() > MapEditor::ImageDecal::kMaxImageSize) {
+        QMessageBox::warning(this, tr("Image Too Large"),
+            tr("The image is too large (%1x%2 px).\n"
+               "The maximum size of an image is %3 px on each side.")
+                .arg(img.width())
+                .arg(img.height())
+                .arg(MapEditor::ImageDecal::kMaxImageSize));
+        return;
+    }
+
+    // Exact, un-premultiplied RGBA: the conversion matches the colours
+    // against the palette and skips anything that is not fully opaque.
+    const QImage rgbaImage = img.convertToFormat(QImage::Format_ARGB32);
+    const int width = rgbaImage.width();
+    const int height = rgbaImage.height();
+    std::vector<unsigned char> rgba(
+        static_cast<std::size_t>(width) * height * 4, 0);
+    for (int y = 0; y < height; ++y) {
+        const QRgb *line =
+            reinterpret_cast<const QRgb *>(rgbaImage.constScanLine(y));
+        for (int x = 0; x < width; ++x) {
+            const std::size_t base =
+                (static_cast<std::size_t>(y) * width + x) * 4;
+            rgba[base + 0] = static_cast<unsigned char>(qRed(line[x]));
+            rgba[base + 1] = static_cast<unsigned char>(qGreen(line[x]));
+            rgba[base + 2] = static_cast<unsigned char>(qBlue(line[x]));
+            rgba[base + 3] = static_cast<unsigned char>(qAlpha(line[x]));
+        }
+    }
+
+    const std::vector<unsigned char> palette =
+        session_->paletteBytes(MapEditor::EditorSession::PaletteLayer::Dam);
+    const std::vector<unsigned char> usage = session_->damPaletteUsage();
+    const MapEditor::ImageDecal::PrepareResult prepared =
+        MapEditor::ImageDecal::prepare(rgba.data(), width, height,
+                                       palette.data(), usage.data());
+    if (!prepared.ok) {
+        QMessageBox::warning(this, tr("Image Decal"),
+                             QString::fromStdString(prepared.error));
+        return;
+    }
+
+    // Step 5 — the new colours go into the Dam palette and every palette view
+    // (panel, renderer) is refreshed with them.
+    for (const MapEditor::ImageDecal::PaletteWrite &write :
+         prepared.paletteWrites) {
+        session_->setPaletteRgb(MapEditor::EditorSession::PaletteLayer::Dam,
+                                write.index, write.rgb);
+    }
+    session_->applyPalettes();
+    if (palettePanel_) {
+        palettePanel_->refresh();
+    }
+    refreshPaletteRenderers();
+
+    // Step 8 — the decal becomes the stamp of the ImageDecal brush.
+    decalOriginal_ = prepared.image;
+    brushTool_->setDecalImage(prepared.image);
+    if (brushMaskScaleSpin_) {
+        brushMaskScaleSpin_->blockSignals(true);
+        brushMaskScaleSpin_->setValue(100);
+        brushMaskScaleSpin_->blockSignals(false);
+    }
+
+    MapEditor::BrushParams params = brushTool_->params();
+    params.effect = MapEditor::BrushEffect::ImageDecal;
+    params.mode = MapEditor::BrushMode::Dam;
+    params.useImageMask = false;
+    brushTool_->setParams(params);
+    if (viewport_) {
+        viewport_->setEditorMode(MapEditor::ViewportWidget::EditorMode::Brush);
+    }
+    syncBrushControls();
+
+    statusBar()->showMessage(
+        tr("Image decal ready: %1x%2 px, %3 palette colour(s), %4 new, "
+           "%5 free Dam entr(y/ies).")
+            .arg(width)
+            .arg(height)
+            .arg(prepared.resultColors)
+            .arg(prepared.paletteWrites.size())
+            .arg(prepared.unusedDamColors -
+                 static_cast<int>(prepared.paletteWrites.size())),
+        8000);
+}
+
 // ---------------------------------------------------------------------------
 // Unsaved changes / Save As helpers (T1.4)
 // ---------------------------------------------------------------------------
@@ -3102,6 +3304,7 @@ void MainWindow::updateActionStates()
         brushTool_->params().mode == MapEditor::BrushMode::Dam;
     for (QAction *action : {actBrushRaise_, actBrushLower_, actBrushLevelZP_,
                             actBrushLevelHeight_, actBrushColor_,
+                            actBrushImageDecal_,
                             actBrushPickColor_,
                             actBrushGeo_, actBrushDam_,
                             actBrushSoot_, actBrushVeryLightDam_,
@@ -3118,21 +3321,37 @@ void MainWindow::updateActionStates()
             action->setEnabled(worldLoaded && damMode);
         }
     }
-    // T3.1 — the stamp radius applies to every form except the image mask
-    // (which carries its own size) and the point-operated pick, and only with
-    // a loaded world.
+    // ImageDecal paints Dam palette indices only: the Geo layer is not
+    // available while the decal brush is selected (switching to Geo falls back
+    // to a plain raise, see the mode action).
+    const bool decalEffect = brushTool_ &&
+        brushTool_->params().effect == MapEditor::BrushEffect::ImageDecal;
+    if (actBrushGeo_) {
+        actBrushGeo_->setEnabled(worldLoaded && !decalEffect);
+    }
+    // T3.1 — the stamp radius applies to every form except the image stamps
+    // (the brush image and the decal carry their own size) and the
+    // point-operated pick, and only with a loaded world.
     if (brushRadiusSpin_) {
         brushRadiusSpin_->setEnabled(
             worldLoaded && brushTool_ &&
-            !brushTool_->params().useImageMask &&
+            !brushTool_->params().useImageMask && !decalEffect &&
             brushTool_->params().effect != MapEditor::BrushEffect::PickColor);
     }
-    // T3.5 — the image-mask scale applies only while the image mask is the
-    // active stamp geometry.
+    // T3.5 — the image scale applies to whichever image stamp is active: the
+    // influence mask or the ImageDecal decal.
     if (brushMaskScaleSpin_) {
-        brushMaskScaleSpin_->setEnabled(
-            worldLoaded && brushTool_ && brushTool_->params().useImageMask &&
-            brushTool_->hasImageMask());
+        const bool imageMaskActive = brushTool_ &&
+            brushTool_->params().useImageMask && brushTool_->hasImageMask();
+        const bool decalActive = decalEffect && brushTool_->hasDecalImage();
+        brushMaskScaleSpin_->setEnabled(worldLoaded &&
+                                        (imageMaskActive || decalActive));
+        brushMaskScaleSpin_->setToolTip(
+            decalActive
+                ? tr("Scale of the loaded image decal relative to its original "
+                     "pixel size (the stamp stays centred under the cursor).")
+                : tr("Scale of the loaded brush image relative to its original "
+                     "pixel size (the mask stays centred under the cursor)."));
     }
     // T3.3/T4.2 — color spinbox: painting and pick readout.
     if (brushColorIndexSpin_) {

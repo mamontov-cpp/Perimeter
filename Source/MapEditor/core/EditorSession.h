@@ -313,6 +313,17 @@ public:
     /// Returns 0 when the world is not loaded or the index is out of range.
     unsigned int paletteRgb(PaletteLayer layer, int paletteIndex) const;
 
+    /// The raw palette bytes of one layer (768 RGB bytes, the layout of
+    /// vrtMap::GeoPal/DamPal — `palette[i*3+0]` is red). Empty when no world
+    /// is loaded. Used by ImageDecal::prepare(), which needs the whole table.
+    std::vector<unsigned char> paletteBytes(PaletteLayer layer) const;
+
+    /// ImageDecal — 256 flags: 1 when the loaded world's dam layer paints at
+    /// least one cell with that Dam palette entry. The decal conversion never
+    /// overwrites a colour that is in use, and needs to know how many entries
+    /// are free before it can add new ones. All zeros when no world is loaded.
+    std::vector<unsigned char> damPaletteUsage() const;
+
     /// The layer whose palette the SurBuf value at the cell belongs to
     /// (dam ⇔ VxDBuf != 0). Returns false / Geo when out of range/not loaded.
     bool cellIsDam(int x, int y) const;

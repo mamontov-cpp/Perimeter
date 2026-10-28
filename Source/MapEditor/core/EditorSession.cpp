@@ -920,6 +920,31 @@ unsigned int EditorSession::paletteRgb(PaletteLayer layer, int paletteIndex) con
            static_cast<unsigned int>(pal[off + 2]);
 }
 
+std::vector<unsigned char> EditorSession::paletteBytes(PaletteLayer layer) const
+{
+    if (!isWorldLoaded()) {
+        return {};
+    }
+    const unsigned char* pal = paletteBuffer(layer);
+    return std::vector<unsigned char>(pal, pal + 256 * 3);
+}
+
+std::vector<unsigned char> EditorSession::damPaletteUsage() const
+{
+    std::vector<unsigned char> used(256, 0);
+    if (!isWorldLoaded()) {
+        return used;
+    }
+    const std::size_t cells =
+        static_cast<std::size_t>(vMap.H_SIZE) * vMap.V_SIZE;
+    for (std::size_t i = 0; i < cells; ++i) {
+        if (vMap.VxDBuf[i] != 0) {
+            used[vMap.SurBuf[i]] = 1;
+        }
+    }
+    return used;
+}
+
 bool EditorSession::cellIsDam(int x, int y) const
 {
     if (!isWorldLoaded()) {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "EditorSession.h"
+#include "ImageDecal.h"
 
 #include <cstdint>
 #include <vector>
@@ -79,6 +80,11 @@ enum class BrushEffect
 
     // --- routing entry points for later tasks (not applied) ---------------
     SetColor,       ///< T3.3: SurBuf := params.colorIndex, height untouched.
+    ImageDecal,     ///< Palette-limited image stamp: SurBuf := the palette index
+                    ///< of the matching pixel of the decal image
+                    ///< (BrushTool::setDecalImage), Dam layer only. Works like
+                    ///< SetColor per pixel; transparent decal pixels are
+                    ///< skipped entirely.
     PickColor,      ///< T4.2: eyedropper — sample the Geo/Dam surface pixel
                     ///< (SurBuf index) at the stamp centre into the color
                     ///< brush; no buffer is written.
@@ -249,6 +255,17 @@ public:
     /// Whether a non-empty image mask is loaded.
     bool hasImageMask() const { return !imageMask_.empty(); }
 
+    // --- ImageDecal brush --------------------------------------------------
+    /// Set the palette-index image the ImageDecal effect stamps. The decal is
+    /// produced by ImageDecal::prepare() (the Qt UI converts the user image and
+    /// writes the new colours into the Dam palette) and carries Dam palette
+    /// indices, -1 = transparent. The stamp is centred on the click cell.
+    void setDecalImage(const ImageDecal::DecalImage& decal);
+    /// The current decal image (empty when none is loaded).
+    const ImageDecal::DecalImage& decalImage() const { return decal_; }
+    /// Whether a non-empty decal image is loaded.
+    bool hasDecalImage() const { return !decal_.empty(); }
+
     /// The per-cell delta the ChangeHeight effect uses: the direction times
     /// the strength in 1/32 m voxel units scaled by the mask influence
     /// (0..255); rounded half away from zero. Exposed for the tests.
@@ -275,6 +292,13 @@ private:
 
     /// T3.5: brush-image mask loaded from file (pixel values → influence 0..255).
     BrushMask imageMask_;
+
+    /// ImageDecal: the palette-index image the effect stamps, plus the
+    /// absolute map origin of the stamp currently being applied (the effect
+    /// handler reads the pixel from (x - decalOriginX_, y - decalOriginY_)).
+    ImageDecal::DecalImage decal_;
+    int decalOriginX_ = 0;
+    int decalOriginY_ = 0;
 
     /// T4.2: the last index pickColorAt() sampled (SurBuf at the click cell).
     unsigned char lastPickedColorIndex_ = 0;
