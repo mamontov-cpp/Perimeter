@@ -2,13 +2,16 @@
 // T3.2 — height brushes: the two alignment tools and the Geo/Dam brush modes.
 //
 // Test 59 (align):
-//   * Align4ZP and AlignVariableH route through Terra's own alignment
-//     toolzers; every mask cell levels exactly per the Terra math
-//     (raise capped at the target, lower attenuated by the GRIDAT hardness
-//     the same integer way tVoxSet does, both capped at the target);
-//   * cells that reach the target carry At_LEVELED in the At_ZPMASK bits,
-//     cells short of it lose the old attribute bits (Terra overwrites
-//     AtrBuf with the fraction);
+//   * Align4ZP keeps Terra's incremental game math (raise capped at the
+//     target, lower attenuated by the GRIDAT hardness the same integer way
+//     tVoxSet does, both capped at the target);
+//   * AlignVariableH ("Level to Height") is an absolute set: every mask cell
+//     moves by the whole remaining distance to the target in one stamp, so
+//     even a much lower surface reaches it immediately;
+//   * Align4ZP cells that reach the target carry At_LEVELED in the At_ZPMASK
+//     bits, cells short of it lose the old attribute bits (Terra overwrites
+//     AtrBuf with the fraction); the absolute AlignVariableH writes only the
+//     fraction bits;
 //   * cells marked At_ZEROPLAST are left byte-exact (game behaviour);
 //   * each align application is one undo entry (byte-exact restore).
 //
@@ -262,11 +265,12 @@ bool checkAlignStamp(const MapEditor::BrushMask& mask, int stampX, int stampY,
                      int radius, int magnitude, int target,
                      const StampPre& pre,
                      const std::function<bool(int, int)>& skip = nullptr,
-                     bool markZeroPlast = false)
+                     bool markZeroPlast = false, bool absoluteSet = false)
 {
     // markZeroPlast — the merged Align4ZP brush additionally marks every
     // cell that sits at the target At_ZEROPLAST (Terra's plotCircleZL);
-    // the plain AlignVariableH leaves them At_LEVELED.
+    // the incremental Align4ZP marks it At_LEVELED, while the absolute
+    // AlignVariableH toolzer writes only the fraction bits.
     const unsigned char reachedMark = markZeroPlast ? At_ZEROPLAST : At_LEVELED;
     for (int dy = -radius; dy <= radius; ++dy) {
         for (int dx = -radius; dx <= radius; ++dx) {
@@ -287,16 +291,22 @@ bool checkAlignStamp(const MapEditor::BrushMask& mask, int stampX, int stampY,
             }
 
             // Terra's alignment paths (tools.h:545-631):
-            //   dV = +magnitude when below the target      -> capped at it;
-            //   dV = -magnitude scaled by GRIDAT hardness  -> capped at it;
-            //   exactly at the target                      -> no height change,
-            //                                                 At_LEVELED marking.
+            //   Align4ZP: dV = +magnitude when below the target -> capped at
+            //             it; dV = -magnitude scaled by GRIDAT hardness ->
+            //             capped at it;
+            //   AlignVariableH (absolute set): the whole remaining distance
+            //             target - height, so every cell below/above the
+            //             target reaches it in one stamp;
+            //   exactly at the target -> no height change.
             // All moving paths re-derive SurBuf via GetGeoType for geo-layer
             // cells and rebuild AtrBuf from the fraction bits. This check
             // runs in a dam-free area, so cells stay on the geo layer.
             int expected = before.height;
-            bool changed = false;
-            if (before.height < target) {
+            if (absoluteSet) {
+                if (before.height != target) {
+                    expected = target;
+                }
+            } else if (before.height < target) {
                 expected = std::min(before.height + magnitude, target);
             } else if (before.height > target) {
                 const int dV = hardnessAttenuation(px, py, -magnitude);
@@ -304,7 +314,7 @@ bool checkAlignStamp(const MapEditor::BrushMask& mask, int stampX, int stampY,
                     expected = std::max(before.height + dV, target);
                 }
             }
-            changed = expected != before.height;
+            const bool changed = expected != before.height;
 
             if (changed) {
                 TEST_REQUIRE(post.height == expected,
@@ -320,15 +330,15 @@ bool checkAlignStamp(const MapEditor::BrushMask& mask, int stampX, int stampY,
                 TEST_REQUIRE(post.sur == vMap.GetGeoType(mapOffset(px, py),
                                                         expected),
                              "align must re-derive SurBuf == GetGeoType().");
-                if (expected == target) {
+                if (expected == target && !absoluteSet) {
                     TEST_REQUIRE((post.atr & At_ZPMASK) == reachedMark,
                                  "cells that reach the target must be marked "
                                  "At_LEVELED (or At_ZEROPLAST for the merged "
                                  "zeroplast brush).");
                 } else {
                     TEST_REQUIRE((post.atr & At_ZPMASK) == 0,
-                                 "cells short of the target must lose the "
-                                 "At_ZPMASK bits (AtrBuf := fraction only).");
+                                 "cells that move must lose the At_ZPMASK "
+                                 "bits (AtrBuf := fraction only).");
                 }
                 TEST_REQUIRE((post.atr & VX_FRACTION_MASK) ==
                                  (expected & VX_FRACTION_MASK),
@@ -339,10 +349,11 @@ bool checkAlignStamp(const MapEditor::BrushMask& mask, int stampX, int stampY,
                                  post.geo == before.geo,
                              "a no-op align cell (%d,%d) must keep its "
                              "layers.", dx, dy);
-                if (before.height == target) {
+                if (before.height == target && !absoluteSet) {
                     // tVoxSetAll marks v == hAppr with At_LEVELED even when
                     // the height itself does not move (the merged zeroplast
-                    // brush marks At_ZEROPLAST instead).
+                    // brush marks At_ZEROPLAST instead). The absolute
+                    // AlignVariableH toolzer writes nothing at dV == 0.
                     TEST_REQUIRE((post.atr & At_ZPMASK) == reachedMark,
                                  "a cell already at the target must be "
                                  "marked At_LEVELED (or At_ZEROPLAST for the "
@@ -497,7 +508,9 @@ bool runBrushAlignTests()
         TEST_REQUIRE(brush.applyStamp(stampX, stampY, params),
                      "the AlignVariableH stamp was refused.");
         TEST_REQUIRE(checkAlignStamp(mask, stampX, stampY, radius,
-                                     magnitude, target, pre),
+                                     magnitude, target, pre, nullptr,
+                                     /*markZeroPlast=*/false,
+                                     /*absoluteSet=*/true),
                      "AlignVariableH cell-level math failed.");
         TEST_REQUIRE(session.undo(), "AlignVariableH undo failed.");
         TEST_REQUIRE(checkUndoRestores(pre, stampX, stampY),

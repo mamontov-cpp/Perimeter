@@ -71,9 +71,11 @@ enum class BrushEffect
                     ///< former Align4ZP and PlotZeroplast brushes in one tool
                     ///< (Terra's T2TE_ALIGNMENT_TERRAIN_4ZP +
                     ///< T2TE_PLOTTING_ZEROPLAST per cell).
-    AlignVariableH, ///< T3.2: smooth/level to an arbitrary height — Terra's
-                    ///< T2TE_ALIGNMENT_TERRAIN_VARIABLE_H (target =
-                    ///< params.heightLevel).
+    AlignVariableH, ///< T3.2: set to an arbitrary height in one stamp — a
+                    ///< full-influence cell moves by the whole remaining
+                    ///< distance to params.heightLevel (absolute set, not an
+                    ///< incremental step). Routes through Terra's
+                    ///< T2TE_ALIGNMENT_TERRAIN_VARIABLE_H.
 
     // --- routing entry points for later tasks (not applied) ---------------
     SetColor,       ///< T3.3: SurBuf := params.colorIndex, height untouched.
@@ -254,8 +256,9 @@ public:
 
     /// The ChangeHeight magnitude the direction is applied to: strength in
     /// 1/32 m voxel units scaled by the mask influence, rounded half away
-    /// from zero. The alignment effects reuse it for their per-cell deltas
-    /// (the direction there comes from the height geometry).
+    /// from zero. Align4ZP reuses it for its per-cell incremental delta (the
+    /// direction there comes from the height geometry); AlignVariableH is an
+    /// absolute set and does not use the strength.
     static int heightDeltaMagnitude(const BrushParams& params, unsigned char influence);
 
 private:

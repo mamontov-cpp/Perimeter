@@ -459,17 +459,27 @@ Terra-тулзы без правок Terra:
 | Эффект | Terra-тулза | Цель |
 |---|---|---|
 | `ChangeHeight` | `T2TE_CHANGING_TERRAIN_HEIGHT` | raise/lower на `direction × strength` |
-| `Align4ZP` | `T2TE_ALIGNMENT_TERRAIN_4ZP` | уровень к `vMap.hZeroPlast` («выровнять относительно зеропласта») |
-| `AlignVariableH` | `T2TE_ALIGNMENT_TERRAIN_VARIABLE_H` | уровень к произвольной высоте `BrushParams::heightLevel` («сгладить/выровнять») |
+| `Align4ZP` | `T2TE_ALIGNMENT_TERRAIN_4ZP` | уровень к `vMap.hZeroPlast` («выровнять относительно зеропласта»), игровой шаг `strength` за штамп |
+| `AlignVariableH` | `T2TE_ALIGNMENT_TERRAIN_VARIABLE_H` | абсолютная установка высоты `BrushParams::heightLevel` за один штамп |
 
 **Выравнивание.** Цель (`hAppr`) синхронизируется перед КАЖДОЙ клеткой
 (`setHAppoximation(целое)`): статическая тулза иначе удерживала бы
-`hZeroPlast` предыдущего мира. Знак дельты на клетку — по геометрии
-(`SGetAlt < цель → поднять, иначе опустить`), модуль — тот же
-`strength-×-влияние`, что у ChangeHeight (`heightDeltaMagnitude`);
-`direction` кисти игнорируется: тулза сама каппит результат на `hAppr`
-с обеих сторон и помечает дошедшие клетки `At_LEVELED` (клетки с
-`At_ZEROPLAST` скипаются — поведение игры).
+`hZeroPlast` предыдущего мира. `direction` кисти игнорируется: знак дельты
+берётся по геометрии (к цели), тулза каппит результат на `hAppr` с обеих
+сторон.
+
+- **`Align4ZP`** сохраняет игровую инкрементальную семантику: модуль дельты
+  — `strength-×-влияние` (`heightDeltaMagnitude`), клетки, дошедшие до цели,
+  помечаются `At_LEVELED` (клетки с `At_ZEROPLAST` скипаются — поведение
+  игры).
+- **`AlignVariableH`** («Level to Height») — абсолютная установка: дельта
+  клетки равна всему оставшемуся расстоянию `target − SGetAlt`, умноженному
+  на влияние маски (255 → точная цель). Один штамп ставит даже сильно
+  заниженный дамб/гео ровно на выбранную высоту; перекрывающиеся штампы не
+  могут подняться выше цели. Используется `tVoxSetAll` (не `tVoxSet`),
+  чтобы GRIDAT-затухание при понижении не оставляло клетку ниже цели.
+  Тулза `T2TE_ALIGNMENT_TERRAIN_VARIABLE_H` пишет только дробные биты
+  `AtrBuf` — `At_LEVELED` она не ставит.
 
 **Режимы Geo/Dam.** Terra-тулза ChangeHeight всегда правит активный (верхний)
 слой; выборка слоя редактором сделана ВОКРУГ тулзы, в `BrushTool.cpp`:
@@ -500,11 +510,14 @@ Terra-тулзы без правок Terra:
   Опущение клетки без дамба в режиме Dam игнорируется (гео не трогается).
 
 Для выравнивающих инструментов режим трактуется так же: в Geo клетки с
-`VxDBuf != 0` скипаются (правим только гео), в Dam работает стандартный
-переход слоёв самой тулзы.
+`VxDBuf != 0` двигают гео под дамбом через `geoAlignUnderDam` (с
+ограничением «гео ≤ дамба», §5.14), в Dam дамба сначала сеется
+(`seedDamLayer`), дальше работает стандартный переход слоёв самой тулзы.
 
-`BrushTool::heightDeltaMagnitude(params, influence)` — модуль дельты,
-вынесен для обоих эффектов и переиспользуется тестами.
+`BrushTool::heightDeltaMagnitude(params, influence)` — модуль дельты
+ChangeHeight и инкрементального `Align4ZP`, вынесен для тестов. Абсолютный
+`AlignVariableH` его не использует: его дельта — всё оставшееся расстояние
+до цели, умноженное на влияние маски.
 
 **GUI (T3.2).** Тулбар «Brush»: 4 типа кисти (Raise/Lower/Level-4ZP/Level-H,
 взаимоисключающие), спинбокс цели высоты `Level to Height` (0..255 вокселей,
@@ -982,6 +995,7 @@ Headless-тесты `map_editor_tests` (`tests/`), по файлу на моду
 | 55–57 | `WorldParamsTests` | чтение `WorldParams` против `world.ini`/`Perimeter.ini` + round-trip записи в scratch-копию (включая ZP-цвет и ключ `[Storage]`); S2T0→S2T1→S2T0 конвертация `output.vmp` байт-в-байт, идемпотентность, отказы; интеграция `applyWorldSettings`/`saveWorld`: живой `hZeroPlast`, `f3d` в живую + в ini, ZP-цвет в `Perimeter.ini` копии, S2T1 переживает сохранение (T5.1) |
 | 78 | `BrushAlignDamOnGeoTests` | `AlignVariableH`/`Align4ZP` в Dam-режиме на гео-клетках (`VxDBuf == 0`) сеют дамбу (`seedDamLayer`), затем тулзер ведёт её к цели; `VxGBuf` неизменен, `SurBuf == veryLightDam`; bump `VxDBuf = 1` при `VxGBuf == 0`; undo байт-в-байт (T3.2) |
 | 79 | `BrushAlignVariableHZPTests` | `AlignVariableH` в Dam-режиме на клетке с `At_ZEROPLAST`: при `heightLevel != hZeroPlast` бит `At_ZPMASK` очищается, тулзер Terra двигает дамбу (down/up), метка снимается; при `heightLevel == hZeroPlast` метка сохраняется (gate не снимается); undo байт-в-байт (T3.2) |
+| 80 | `BrushSetHeightTests` | `AlignVariableH` — абсолютная установка: Dam-режим на гео и на низком дамбе, Geo-режим — один штамп ставит ровно 180 вокселей; дамба выше цели опускается до 180; два перекрывающихся штампа радиуса 64 с центрами в 3 клетках дают весь union ровно 180 (максимум не выше цели); undo (T3.2 fix) |
 
 Тесты пишут только во временный content-root (`%TEMP%/map_editor_roundtrip`),
 исходный мир не изменяется. `SaveWorldTests` строит изолированный content-root

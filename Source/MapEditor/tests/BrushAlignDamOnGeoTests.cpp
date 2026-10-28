@@ -9,7 +9,9 @@
 // The check follows the exact Terra alignment math:
 //   after seedDamLayer, VxDBuf = VxGBuf (dam at geo height);
 //   the toolzer drives the dam layer:
-//     damTop = min(geoTop + magnitude, target)  when geoTop < target;
+//     AlignVariableH — absolute set: damTop = target in one stamp;
+//     Align4ZP       — game-like step:
+//                      damTop = min(geoTop + magnitude, target);
 //   VxGBuf stays unchanged (the geo layer is owned by Geo mode);
 //   SurBuf = veryLightDam (the seed writes the dam material);
 //   undo restores the pre-stamp geo-only state byte-exact.
@@ -169,13 +171,14 @@ bool prepareBrushTestSession(const char* subdirName,
 /// For every mask cell the expected result follows Terra's exact sequence:
 ///   1. seedDamLayer sets VxDBuf := VxGBuf, SurBuf := veryLightDam;
 ///   2. the toolzer (VD != 0 branch) drives the dam layer:
-///        damTop = min(geoTop + magnitude, target)  when geoTop < target;
-///        damTop = geoTop                            otherwise;
+///        AlignVariableH — damTop = target (absolute set);
+///        Align4ZP       — damTop = min(geoTop + magnitude, target) when
+///                         geoTop < target, otherwise damTop = geoTop;
 ///   3. VxGBuf is unchanged (Geo mode owns it);
 ///   4. AtrBuf := damTop & VX_FRACTION_MASK (fraction bits of the dam top).
 ///
-/// `isAlign4ZP` selects the At_ZEROPLAST marking (Align4ZP) vs At_LEVELED
-/// (AlignVariableH) when the cell reaches the target.
+/// `isAlign4ZP` selects the At_ZEROPLAST marking of the cells that reach the
+/// target; the absolute AlignVariableH toolzer writes only the fraction bits.
 bool checkDamSeededStamp(const MapEditor::BrushMask& mask, int stampX,
                          int stampY, int radius, int magnitude, int target,
                          const StampPre& pre, bool isAlign4ZP)
@@ -199,9 +202,14 @@ bool checkDamSeededStamp(const MapEditor::BrushMask& mask, int stampX,
             const int effectiveTop = (before.geo == 0)
                 ? (geoTop + (1 << VX_FRACTION))
                 : geoTop;
-            const int expectedDamTop = (effectiveTop < target)
-                ? std::min(effectiveTop + magnitude, target)
-                : effectiveTop;
+            // AlignVariableH ("Level to Height") is an absolute set: one
+            // stamp moves the seeded dam by the whole remaining distance.
+            // Align4ZP keeps the game-like strength-scaled step.
+            const int expectedDamTop = isAlign4ZP
+                ? ((effectiveTop < target)
+                       ? std::min(effectiveTop + magnitude, target)
+                       : effectiveTop)
+                : target;
 
             const int actualDamTop =
                 (static_cast<int>(post.dam) << VX_FRACTION) +
@@ -222,20 +230,16 @@ bool checkDamSeededStamp(const MapEditor::BrushMask& mask, int stampX,
                          "(seedDamLayer writes).",
                          dx, dy);
 
-            if (expectedDamTop == target) {
-                if (isAlign4ZP) {
-                    TEST_REQUIRE((post.atr & At_ZPMASK) == At_ZEROPLAST,
-                                 "cells at target must be At_ZEROPLAST "
-                                 "(Align4ZP) at (%d,%d).", dx, dy);
-                } else {
-                    TEST_REQUIRE((post.atr & At_ZPMASK) == At_LEVELED,
-                                 "cells at target must be At_LEVELED "
-                                 "(AlignVariableH) at (%d,%d).", dx, dy);
-                }
+            if (expectedDamTop == target && isAlign4ZP) {
+                TEST_REQUIRE((post.atr & At_ZPMASK) == At_ZEROPLAST,
+                             "cells at target must be At_ZEROPLAST "
+                             "(Align4ZP) at (%d,%d).", dx, dy);
             } else {
+                // AlignVariableH's Terra toolzer writes only the fraction
+                // bits when it moves; it never sets At_LEVELED.
                 TEST_REQUIRE((post.atr & At_ZPMASK) == 0,
-                             "cells below target must have zero At_ZPMASK "
-                             "bits (AtrBuf := fraction only) at (%d,%d).",
+                             "moving cells must have zero At_ZPMASK bits "
+                             "(AtrBuf := fraction only) at (%d,%d).",
                              dx, dy);
             }
         }

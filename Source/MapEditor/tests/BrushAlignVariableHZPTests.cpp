@@ -271,10 +271,9 @@ bool runBrushAlignVariableHZPTests()
                 const CellState& before = pre.at(dx, dy);
                 const CellState post = CellState::read(px, py);
 
-                // Dam height: should drop by magnitude (hardness 3 → no
-                // attenuation), capped at target.
-                const int expectedDamTop =
-                    std::max(before.height - (100 << VX_FRACTION), target);
+                // Dam height: AlignVariableH is an absolute set, so the dam
+                // drops exactly to the target in one stamp.
+                const int expectedDamTop = target;
                 const int actualDamTop =
                     (static_cast<int>(post.dam) << VX_FRACTION) +
                     (post.atr & VX_FRACTION_MASK);
@@ -350,9 +349,9 @@ bool runBrushAlignVariableHZPTests()
                 const CellState& before = pre.at(dx, dy);
                 const CellState post = CellState::read(px, py);
 
-                // Dam height: should rise by magnitude, capped at target.
-                const int expectedDamTop =
-                    std::min(before.height + (100 << VX_FRACTION), target);
+                // Dam height: AlignVariableH is an absolute set, so the dam
+                // rises exactly to the target in one stamp.
+                const int expectedDamTop = target;
                 const int actualDamTop =
                     (static_cast<int>(post.dam) << VX_FRACTION) +
                     (post.atr & VX_FRACTION_MASK);
