@@ -1469,7 +1469,7 @@ void MainWindow::buildViewMenu(QMenuBar *menuBar)
     actLiftUp_->setToolTip(tr("Lift the 3D camera one step (Page Up)"));
     actLiftUp_->setShortcut(QKeySequence(Qt::Key_PageUp));
     connect(actLiftUp_, &QAction::triggered, this, [this] {
-        if (viewport_) viewport_->adjustObliqueLift(100);
+        if (viewport_) viewport_->adjustObliqueLift(25);
     });
 
     actLiftDown_ = create();
@@ -1478,7 +1478,7 @@ void MainWindow::buildViewMenu(QMenuBar *menuBar)
     actLiftDown_->setToolTip(tr("Lower the 3D camera one step (Page Down)"));
     actLiftDown_->setShortcut(QKeySequence(Qt::Key_PageDown));
     connect(actLiftDown_, &QAction::triggered, this, [this] {
-        if (viewport_) viewport_->adjustObliqueLift(-100);
+        if (viewport_) viewport_->adjustObliqueLift(-25);
     });
 
     viewMenu->addSeparator();

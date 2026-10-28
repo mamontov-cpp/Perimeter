@@ -490,7 +490,7 @@ void ViewportWidget::setObliqueCamera(const View3DCamera &camera)
 {
     obliqueCamera_.turnAngleDeg = wrapDegrees(camera.turnAngleDeg);
     obliqueCamera_.leanDeg = camera.leanDeg;
-    obliqueCamera_.cameraDZ = View3DRenderer::clampCameraDZ(camera.cameraDZ);
+    obliqueCamera_.cameraDZ = View3DRenderer::clampCameraDZ(camera.cameraDZ, gpuView_ != nullptr);
     obliqueCamera_.focusC = View3DRenderer::clampFocus(camera.focusC);
     needs3DRedraw_ = true;
     applyGpuCamera();
@@ -523,7 +523,7 @@ void ViewportWidget::adjustObliqueTilt(double deltaDeg)
 void ViewportWidget::adjustObliqueLift(int deltaCells)
 {
     const int next = View3DRenderer::clampCameraDZ(
-        obliqueCamera_.cameraDZ + deltaCells);
+        obliqueCamera_.cameraDZ + deltaCells, gpuView_ != nullptr);
     if (next == obliqueCamera_.cameraDZ) {
         return;
     }
@@ -1123,6 +1123,9 @@ bool ViewportWidget::drawObliqueGL(QOpenGLFunctions *gl)
     // matches the frame about to be drawn.
     if (!view3d_) {
         view3d_ = new View3DRenderer();
+    }
+    if (gpuActive()) {
+        view3d_->toggleGPUIsAvailable();
     }
     const QSize buffer = obliqueBufferSize();
     view3d_->resizeWindow(buffer.width(), buffer.height());
