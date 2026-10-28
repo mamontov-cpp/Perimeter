@@ -8,11 +8,63 @@
 #include "EditorSession.h"
 #include "ViewportRenderer.h"
 
+#ifdef MAP_EDITOR_GPU_VIEW
+#include "TerrainGpuView.h"
+#else
+// The MapEditorRender target is not built (OPTION_SOKOL off or sokol deps
+// missing): the GPU oblique path is disabled and the CPU voxel renderer
+// (T2.3) stays authoritative. The stub keeps the widget code identical.
+namespace MapEditor {
+class TerrainGpuView
+{
+public:
+    struct CameraState
+    {
+        double centerX = 0;
+        double centerY = 0;
+        double turnAngleDeg = 0;
+        double leanDeg = 140;
+        double heightCells = 700;
+        double focalDevPx = 600;
+    };
+    bool isReady() const { return false; }
+    void setColorSource(ViewportRenderer *) {}
+    void setCamera(const CameraState &) {}
+    bool init(int, int) { return false; }
+    void shutdown() {}
+    void updateCells(int, int, int, int) {}
+    void reloadWorld() {}
+    void renderFrame(unsigned, int, int) {}
+    bool pickCell(double, double, int &, int &) const { return false; }
+    bool projectToScreen(double, double, double, double &, double &) const
+    {
+        return false;
+    }
+    bool projectToScreenZ(double, double, double, double &, double &,
+                          double &) const { return false; }
+    bool groundFootprint(double, double out[4], double outY[4]) const
+    {
+        static_cast<void>(out);
+        static_cast<void>(outY);
+        return false;
+    }
+    float zeroplastZ() const { return 0.0f; }
+    float nearPlaneZ() const { return 1.0f; }
+    int projectGroundContour(const double*, int, double*, double*) const { return 0; }
+};
+} // namespace MapEditor
+#endif
+
+#include <QOpenGLContext>
+#include <QOpenGLFunctions>
+#include <QOpenGLTextureBlitter>
 #include <QPainter>
 #include <QWheelEvent>
 #include <QtMath>
 #include <algorithm>
 #include <cmath>
+
+#include "EditorTrace.h"
 
 namespace MapEditor {
 
@@ -21,17 +73,97 @@ namespace MapEditor {
 // ---------------------------------------------------------------------------
 
 ViewportWidget::ViewportWidget(QWidget *parent)
-    : QWidget(parent)
+    : QOpenGLWidget(parent)
 {
     setMinimumSize(320, 240);
     setFocusPolicy(Qt::StrongFocus);
     setMouseTracking(true);
+
+    // The GPU oblique path needs a desktop GL context sokol's GLCORE backend
+    // can run on (GL >= 3.3/4.1). Request it on THIS widget only — the
+    // default application format (and the MinimapWidget) stays untouched, so
+    // the CPU-rendered rasters keep their plain blit contexts. Without sokol
+    // (MAP_EDITOR_GPU_VIEW off) the request is harmless: the CPU fallback
+    // renders in whatever context Qt hands out.
+    QSurfaceFormat format = QSurfaceFormat::defaultFormat();
+    if (format.renderableType() == QSurfaceFormat::OpenGL
+        && (format.version() < qMakePair(4, 1))) {
+        format.setVersion(4, 1);
+        setFormat(format);
+    }
 }
 
 ViewportWidget::~ViewportWidget()
 {
+    editorTrace("ViewportWidget: dtor start (isValid=%d, gpuView=%p)",
+                isValid() ? 1 : 0, static_cast<void*>(gpuView_));
+    // GL objects must die with a current context; skip silently when the
+    // widget's window is already gone (destruction order) — the context
+    // release frees the textures anyway.
+    if (isValid()) {
+        editorTrace("ViewportWidget: dtor makeCurrent");
+        makeCurrent();
+        editorTrace("ViewportWidget: dtor deleting gpuView_");
+        delete gpuView_;
+        gpuView_ = nullptr;
+        editorTrace("ViewportWidget: dtor gpuView deleted, releasing GL resources");
+        releaseGLResources();
+        editorTrace("ViewportWidget: dtor doneCurrent");
+        doneCurrent();
+    }
+    editorTrace("ViewportWidget: dtor deleting renderer_=%p", static_cast<void*>(renderer_));
     delete renderer_;
+    editorTrace("ViewportWidget: dtor deleting view3d_=%p", static_cast<void*>(view3d_));
     delete view3d_;
+    editorTrace("ViewportWidget: dtor done");
+}
+
+void ViewportWidget::initializeGL()
+{
+    // The context may be destroyed/recreated behind our back (window
+    // teardown, format changes) — free the GL-backed state with it, the
+    // (re)creation below rebuilds everything.
+    connect(context(), &QOpenGLContext::aboutToBeDestroyed, this, [this] {
+        editorTrace("ViewportWidget: aboutToBeDestroyed hook");
+        releaseGLResources();
+        delete gpuView_;
+        gpuView_ = nullptr;
+    }, Qt::DirectConnection);
+
+    editorTrace("ViewportWidget: initializeGL start");
+    glBlitter_ = new QOpenGLTextureBlitter();
+    if (!glBlitter_->create()) {
+        qWarning("ViewportWidget: QOpenGLTextureBlitter creation failed, "
+                 "the base rasters will not be drawn");
+        delete glBlitter_;
+        glBlitter_ = nullptr;
+    }
+
+    // Build (or rebuild) the GPU scene now that the context is current —
+    // same deferred path paintGL uses.
+    gpuRebuildPending_ = true;
+    rebuildGpuView();
+    editorTrace("ViewportWidget: initializeGL done");
+}
+
+void ViewportWidget::releaseGLResources()
+{
+    if (glBlitter_) {
+        delete glBlitter_;
+        glBlitter_ = nullptr;
+    }
+    if (QOpenGLFunctions *gl = context()->functions()) {
+        if (mapTexture_ != 0) {
+            gl->glDeleteTextures(1, &mapTexture_);
+        }
+        if (frameTexture_ != 0) {
+            gl->glDeleteTextures(1, &frameTexture_);
+        }
+    }
+    mapTexture_ = 0;
+    mapTextureSize_ = QSize();
+    frameTexture_ = 0;
+    frameTextureSize_ = QSize();
 }
 
 // ---------------------------------------------------------------------------
@@ -40,22 +172,40 @@ ViewportWidget::~ViewportWidget()
 
 void ViewportWidget::setSession(EditorSession *session)
 {
+    editorTrace("ViewportWidget: setSession start (session=%p, worldLoaded=%d)",
+                static_cast<void*>(session),
+                (session && session->isWorldLoaded()) ? 1 : 0);
     session_ = session;
     delete renderer_;
     renderer_ = nullptr;
 
+    // The GPU scene feeds from the renderer — rebuild it around whatever the
+    // new session provides (deferred, no GL context here).
+    editorTrace("ViewportWidget: setSession scheduling GPU rebuild");
+    scheduleGpuRebuild();
+
     if (session_ && session_->isWorldLoaded()) {
+        editorTrace("ViewportWidget: setSession creating renderer");
         renderer_ = new ViewportRenderer();
+        editorTrace("ViewportWidget: setSession bindWorld");
         if (renderer_->bindWorld()) {
+            editorTrace("ViewportWidget: setSession applyViewportSettings");
             applyViewportSettings();
+            editorTrace("ViewportWidget: setSession updateFitScale");
             updateFitScale();
+            editorTrace("ViewportWidget: setSession zoomToFit");
             zoomToFit();
+            editorTrace("ViewportWidget: setSession update");
             update();
+        } else {
+            editorTrace("ViewportWidget: setSession bindWorld FAILED");
         }
     } else {
+        editorTrace("ViewportWidget: setSession no world — updateFitScale");
         updateFitScale();
         update();
     }
+    editorTrace("ViewportWidget: setSession done");
 }
 
 void ViewportWidget::reloadWorld()
@@ -65,6 +215,7 @@ void ViewportWidget::reloadWorld()
         renderer_ = nullptr;
         updateFitScale();
         needs3DRedraw_ = true;
+        scheduleGpuRebuild();
         update();
         return;
     }
@@ -77,6 +228,7 @@ void ViewportWidget::reloadWorld()
             updateFitScale();
             zoomToFit();
             needs3DRedraw_ = true;
+            scheduleGpuRebuild();
             update();
         }
     }
@@ -347,9 +499,10 @@ void ViewportWidget::setObliqueCamera(const View3DCamera &camera)
 {
     obliqueCamera_.turnAngleDeg = wrapDegrees(camera.turnAngleDeg);
     obliqueCamera_.leanDeg = camera.leanDeg;
-    obliqueCamera_.cameraDZ = View3DRenderer::clampCameraDZ(camera.cameraDZ);
+    obliqueCamera_.cameraDZ = View3DRenderer::clampCameraDZ(camera.cameraDZ, gpuView_ != nullptr);
     obliqueCamera_.focusC = View3DRenderer::clampFocus(camera.focusC);
     needs3DRedraw_ = true;
+    applyGpuCamera();
     emit obliqueCameraChanged(obliqueCamera_);
     update();
 }
@@ -362,6 +515,7 @@ void ViewportWidget::adjustObliqueRotation(double deltaDeg)
     }
     obliqueCamera_.turnAngleDeg = next;
     needs3DRedraw_ = true;
+    applyGpuCamera();
     emit obliqueCameraChanged(obliqueCamera_);
     update();
 }
@@ -370,6 +524,7 @@ void ViewportWidget::adjustObliqueTilt(double deltaDeg)
 {
     obliqueCamera_.leanDeg += deltaDeg;
     needs3DRedraw_ = true;
+    applyGpuCamera();
     emit obliqueCameraChanged(obliqueCamera_);
     update();
 }
@@ -377,12 +532,13 @@ void ViewportWidget::adjustObliqueTilt(double deltaDeg)
 void ViewportWidget::adjustObliqueLift(int deltaCells)
 {
     const int next = View3DRenderer::clampCameraDZ(
-        obliqueCamera_.cameraDZ + deltaCells);
+        obliqueCamera_.cameraDZ + deltaCells, gpuView_ != nullptr);
     if (next == obliqueCamera_.cameraDZ) {
         return;
     }
     obliqueCamera_.cameraDZ = next;
     needs3DRedraw_ = true;
+    applyGpuCamera();
     emit obliqueCameraChanged(obliqueCamera_);
     update();
 }
@@ -396,6 +552,7 @@ void ViewportWidget::adjustObliqueFocus(int deltaCells)
     }
     obliqueCamera_.focusC = next;
     needs3DRedraw_ = true;
+    applyGpuCamera();
     emit obliqueCameraChanged(obliqueCamera_);
     update();
 }
@@ -407,6 +564,7 @@ void ViewportWidget::resetObliqueView()
                                          renderer_->height() / 2.0)
                                : QPointF();
     needs3DRedraw_ = true;
+    applyGpuCamera();
     setViewMode(ViewMode::Oblique); // no-op when already Oblique
     emit obliqueCameraChanged(obliqueCamera_);
     update();
@@ -456,6 +614,8 @@ void ViewportWidget::setGeoDimmed(bool dimmed)
     if (renderer_) {
         renderer_->setGeoDimmed(dimmed); // marks the whole cache + mips dirty
     }
+    // The GPU tilemap baked colors from the cache — full rebuild.
+    scheduleGpuRebuild();
     needs3DRedraw_ = true;
     update();
 }
@@ -566,7 +726,23 @@ QRect ViewportWidget::currentViewRect() const
         return visibleCellRange();
     }
 
-    // Oblique: the 3D window is not a linear map projection — approximate the
+    if (gpuActive()) {
+        // GPU mode: the view maps 1:1 onto the widget (device pixels), no
+        // 640-cell window clamp — the ground scale per widget pixel is
+        // (F+Z)/F, the depth (rows) stretch uses the same kv heuristic as
+        // the CPU path but on the raw lean.
+        const double kv = obliqueForwardScale(obliqueCamera_,
+                                              obliqueCamera_.leanDeg);
+        const double cellsPerPx = obliqueCellsPerWidgetPx();
+        const double groundWidth = width() * cellsPerPx;
+        const double groundHeight = height() * kv * cellsPerPx;
+        const int x0 = qRound(obliqueCenter_.x() - groundWidth / 2.0);
+        const int y0 = qRound(obliqueCenter_.y() - groundHeight / 2.0);
+        return QRect(x0, y0, qRound(groundWidth), qRound(groundHeight))
+            .intersected(QRect(0, 0, renderer_->width(), renderer_->height()));
+    }
+
+    // Oblique CPU: the 3D window is not a linear map projection — approximate the
     // ground footprint by the viewV2D axes at the look-at centre
     // (basis from VMAP.cpp:2096-2099): each rendered column spans
     // (focusC + cameraDZ) / focusC ground cells, each row the same distance
@@ -590,6 +766,62 @@ QRect ViewportWidget::currentViewRect() const
         .intersected(QRect(0, 0, renderer_->width(), renderer_->height()));
 }
 
+QPolygonF ViewportWidget::currentViewPolygon() const
+{
+    if (!renderer_) {
+        return {};
+    }
+    if (viewMode_ == ViewMode::TopDown) {
+        const QRect rect = visibleCellRange();
+        return rect.isEmpty() ? QPolygonF() : QPolygonF(QRectF(rect));
+    }
+
+    // Oblique, GPU path: one ray per screen corner, intersected with the
+    // zeroplast plane. This is what makes the outline a rotated trapezoid —
+    // the azimuth comes from the camera turn, and the far (top) edge covers
+    // much more ground than the near one, which an axis-aligned rect hides.
+    if (gpuActive()) {
+        double xs[4];
+        double ys[4];
+        if (gpuView_->groundFootprint(gpuView_->zeroplastZ(), xs, ys)) {
+            QPolygonF poly;
+            poly.reserve(4);
+            for (int i = 0; i < 4; ++i) {
+                poly << QPointF(xs[i], ys[i]);
+            }
+            return poly;
+        }
+    }
+
+    // Oblique, CPU fallback: the viewV2D projection is affine, so the
+    // footprint is the ground rectangle of the view basis rotated by the turn
+    // angle — the same screen→ground axes panObliqueBy() inverts.
+    const QSize buffer = obliqueBufferSize();
+    const double leanDeg = View3DRenderer::stableLeanDeg(
+        obliqueCamera_.leanDeg, obliqueCamera_.focusC, buffer.height() / 2);
+    const double kv = obliqueForwardScale(obliqueCamera_, leanDeg);
+    const double cellsPerPx =
+        (obliqueCamera_.focusC + obliqueCamera_.cameraDZ) /
+        static_cast<double>(obliqueCamera_.focusC);
+    const double theta = qDegreesToRadians(obliqueCamera_.turnAngleDeg);
+    const double cosT = std::cos(theta);
+    const double sinT = std::sin(theta);
+
+    // Corner offsets in widget pixels (screen order: TL, TR, BR, BL).
+    const double dx[4] = {-width() / 2.0, width() / 2.0,
+                          width() / 2.0, -width() / 2.0};
+    const double dy[4] = {-height() / 2.0, -height() / 2.0,
+                          height() / 2.0, height() / 2.0};
+    QPolygonF poly;
+    poly.reserve(4);
+    for (int i = 0; i < 4; ++i) {
+        poly << obliqueCenter_ + QPointF(
+            (dx[i] * cosT - dy[i] * kv * sinT) * cellsPerPx,
+            (dx[i] * sinT + dy[i] * kv * cosT) * cellsPerPx);
+    }
+    return poly;
+}
+
 void ViewportWidget::centerOnCell(const QPoint &cell)
 {
     if (!session_ || !session_->isWorldLoaded() || !renderer_) {
@@ -604,6 +836,7 @@ void ViewportWidget::centerOnCell(const QPoint &cell)
     if (viewMode_ == ViewMode::Oblique) {
         obliqueCenter_ = QPointF(px, py);
         needs3DRedraw_ = true;
+        applyGpuCamera();
     } else {
         panOffset_ = QPointF(width() / 2.0 - px * zoom_,
                              height() / 2.0 - py * zoom_);
@@ -616,9 +849,11 @@ void ViewportWidget::emitViewRectIfChanged()
 {
     if (!session_ || !session_->isWorldLoaded() || !renderer_) {
         // World dropped — make sure the minimap hides the rectangle once.
-        if (!lastEmittedViewRect_.isEmpty()) {
+        if (!lastEmittedViewRect_.isEmpty() || !lastEmittedViewPolygon_.isEmpty()) {
             lastEmittedViewRect_ = {};
+            lastEmittedViewPolygon_ = {};
             emit viewRectChanged(lastEmittedViewRect_);
+            emit viewPolygonChanged(lastEmittedViewPolygon_);
         }
         return;
     }
@@ -627,27 +862,61 @@ void ViewportWidget::emitViewRectIfChanged()
         lastEmittedViewRect_ = viewRect;
         emit viewRectChanged(lastEmittedViewRect_);
     }
+    // The polygon is what the minimap actually draws (a rotated/trapezoidal
+    // 3D zone), so it is compared and emitted on its own.
+    const QPolygonF viewPoly = currentViewPolygon();
+    if (viewPoly != lastEmittedViewPolygon_) {
+        lastEmittedViewPolygon_ = viewPoly;
+        emit viewPolygonChanged(lastEmittedViewPolygon_);
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Paint
 // ---------------------------------------------------------------------------
 
-void ViewportWidget::paintEvent(QPaintEvent * /*event*/)
+void ViewportWidget::paintGL()
 {
-    // Drain dirty rects / recompute lighting before painting, so the cache is
-    // current when we blit it.
-    if (renderer_) {
-        renderer_->update();
+    QOpenGLFunctions *gl = context()->functions();
+
+    // Deferred GPU scene (re)build — needs the context current, which
+    // paintGL is the first place after setSession/reloadWorld to guarantee.
+    if (gpuRebuildPending_) {
+        gpuRebuildPending_ = false;
+        editorTrace("ViewportWidget: paintGL deferred rebuild");
+        rebuildGpuView();
+        editorTrace("ViewportWidget: paintGL deferred rebuild done");
     }
 
-    QPainter painter(this);
-    painter.setRenderHint(QPainter::Antialiasing);
+    // Notify MainWindow about the GPU/CPU path so it can show/hide the
+    // freeze-dam action (a CPU-path-only fallback). Emitted once per
+    // transition, not per frame.
+    const bool gpuReadyNow = gpuView_ && gpuView_->isReady();
+    if (gpuReadyNow != lastGpuViewReady_) {
+        lastGpuViewReady_ = gpuReadyNow;
+        editorTrace("ViewportWidget: paintGL GPU path %s",
+                    gpuReadyNow ? "READY" : "fallback CPU");
+        emit gpuViewReadyChanged(gpuReadyNow);
+    }
 
-    // Background
-    painter.fillRect(rect(), QColor(32, 32, 32));
+    // Drain dirty rects / recompute lighting before painting, so the cache is
+    // current when we upload/draw it.
+    std::vector<DirtyRect> dirty;
+    if (renderer_) {
+        dirty = renderer_->update();
+    }
+
+    // The GPU tilemap consumes the same changed-cell rectangles the 2D cache
+    // got (brush stamps, undo/redo) — queue them for the next terrain frame.
+    if (gpuView_) {
+        for (const DirtyRect &r : dirty) {
+            gpuView_->updateCells(r.x, r.y, r.x + r.w - 1, r.y + r.h - 1);
+        }
+    }
 
     if (!renderer_ || !renderer_->isBound()) {
+        QPainter painter(this);
+        painter.fillRect(rect(), QColor(32, 32, 32));
         painter.setPen(QColor(160, 160, 160));
         painter.drawText(rect(), Qt::AlignCenter,
                          tr("No world loaded.\n"
@@ -655,90 +924,217 @@ void ViewportWidget::paintEvent(QPaintEvent * /*event*/)
         return;
     }
 
+    // Base raster on the GPU (clear + textured quad), then the QPainter
+    // overlays on the same framebuffer. The blit works like the old
+    // painter.drawImage(): the whole texture is mapped onto the target
+    // rectangle, GL handles the linear/nearest sampling per the render style.
+    bool baseDrawn = false;
     if (viewMode_ == ViewMode::Oblique) {
-        // Only re-render the 3D frame when the camera moved, terrain was
-        // stamped, or the window resized. The preview ring and HUD are drawn
-        // on top of the cached frame regardless.
-        if (needs3DRedraw_) {
-            draw3DRaster(painter);
-            needs3DRedraw_ = false;
+        if (gpuActive()) {
+            // The game's sokol terrain renderer draws the oblique view
+            // straight into this widget's framebuffer; no intermediate
+            // texture, no CPU raster involved.
+            const qreal dpr = devicePixelRatioF();
+            const int fboW = qRound(size().width() * dpr);
+            const int fboH = qRound(size().height() * dpr);
+            static int gpuFrameLog = 0;
+            if (gpuFrameLog < 5) {
+                editorTrace("ViewportWidget: GPU frame %d (%dx%d)", ++gpuFrameLog,
+                            fboW, fboH);
+            }
+            gpuView_->setNearestFiltering(renderStyle_ == RenderStyle::Chunky);
+            gpuView_->renderFrame(context()->defaultFramebufferObject(),
+                                  fboW, fboH);
+            // sokol left its own GL state behind — restore what QPainter
+            // needs (its engine sets the rest itself).
+            gl->glBindFramebuffer(GL_FRAMEBUFFER,
+                                  context()->defaultFramebufferObject());
+            gl->glDisable(GL_DEPTH_TEST);
+            gl->glDisable(GL_BLEND);
+            gl->glDisable(GL_SCISSOR_TEST);
+            // sokol renders with GL_CULL_FACE enabled (the game's camera
+            // cull mode) and never turns it off — the texture blitter never
+            // touches cull state, so its CW-wound quad triangle would be
+            // culled and the map drawn as a single half-triangle.
+            gl->glDisable(GL_CULL_FACE);
+            // Reset viewport to the full framebuffer. The sokol render
+            // pipeline may leave the viewport set to the camera's
+            // sub-region (via SetDrawTransform → SetVPMatrix). If the
+            // next draw (TopDown) does not explicitly set the viewport,
+            // the texture blitter would draw only into the old region,
+            // producing a clipped / "two triangles" image.
+            gl->glViewport(0, 0, fboW, fboH);
+            gl->glActiveTexture(GL_TEXTURE0);
+            baseDrawn = true;
         } else {
-            blit3DFrame(painter);
+            baseDrawn = drawObliqueGL(gl);
         }
+    } else {
+        baseDrawn = drawTopDownGL(gl, dirty);
+    }
+
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    if (!baseDrawn) {
+        painter.fillRect(rect(), QColor(32, 32, 32));
+    }
+
+    if (viewMode_ == ViewMode::Oblique) {
         // The brush works in the 3D view as well — the preview ring and the
         // pending line stroke are drawn in screen space at the cursor.
+        if (gridVisible_) drawGrid3D(painter);
         if (brushPreviewVisible_) drawBrushPreview(painter);
         drawHud(painter);
         emitViewRectIfChanged();
         return;
     }
 
-    // --- 1. Zero-copy QImage from renderer cache ---
-    drawBaseRaster(painter);
-
-    // --- 2. Grid ---
+    // --- Overlays (QPainter on top of the GL-drawn base raster) ---
     if (gridVisible_) drawGrid(painter);
-
-    // --- 3. Brush preview ---
     if (brushPreviewVisible_) drawBrushPreview(painter);
-
-    // --- 4. Markers ---
     drawMarkers(painter);
-
-    // --- 5. Spawn points ---
     drawSpawnPoints(painter);
-
-    // --- 6. HUD (cursor info, zoom) ---
     drawHud(painter);
 
-    // --- 7. Announce the view rectangle for the minimap (T2.4) ---
+    // --- Announce the view rectangle for the minimap (T2.4) ---
     emitViewRectIfChanged();
 }
 
 // ---------------------------------------------------------------------------
-// Base raster: zero-copy QImage
+// GL state helpers
 // ---------------------------------------------------------------------------
 
-void ViewportWidget::drawBaseRaster(QPainter &painter)
+bool ViewportWidget::ensureMapTexture(QOpenGLFunctions *gl, int mapW, int mapH)
 {
-    const std::uint32_t *pixels = renderer_->pixels();
-    if (!pixels) return;
+    if (mapTexture_ != 0 && mapTextureSize_ == QSize(mapW, mapH)) {
+        return false;
+    }
+    if (mapTexture_ != 0) {
+        gl->glDeleteTextures(1, &mapTexture_);
+        mapTexture_ = 0;
+    }
+    gl->glGenTextures(1, &mapTexture_);
+    gl->glBindTexture(GL_TEXTURE_2D, mapTexture_);
+    // Sampling params are per-texture: default to the Smooth look, every
+    // frame's draw sets the active style anyway.
+    gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    mapTextureSize_ = QSize(mapW, mapH);
+    return true;
+}
 
-    int mw = renderer_->width();
-    int mh = renderer_->height();
-
-    // Wrap the renderer cache zero-copy. Layout matches QImage::Format_ARGB32
-    // (0xFFRRGGBB, row-major).
-    const QImage image(
-        reinterpret_cast<const uchar *>(pixels),
-        mw, mh, mw * 4,
-        QImage::Format_ARGB32);
-
-    // Position and size of the whole map in widget coords.
-    QRectF targetRect(panOffset_, QSizeF(mw * zoom_, mh * zoom_));
-    QRectF sourceRect(0, 0, mw, mh);
-
-    // Chunky shows solid blocks (nearest sampling, no filter at >1:1);
-    // Smooth blends neighboring cells like the in-game camera.
-    painter.setRenderHint(
-        QPainter::SmoothPixmapTransform,
-        zoom_ < 1.0 || renderStyle_ == RenderStyle::Smooth);
-    painter.setClipRect(rect());
-    painter.drawImage(targetRect, image, sourceRect);
+void ViewportWidget::uploadFrameTexture(QOpenGLFunctions *gl)
+{
+    if (!view3d_ || view3d_->pixels() == nullptr) {
+        return;
+    }
+    const QSize size(view3d_->windowWidth(), view3d_->windowHeight());
+    if (frameTexture_ != 0 && frameTextureSize_ != size) {
+        gl->glDeleteTextures(1, &frameTexture_);
+        frameTexture_ = 0;
+    }
+    if (frameTexture_ == 0) {
+        gl->glGenTextures(1, &frameTexture_);
+        gl->glBindTexture(GL_TEXTURE_2D, frameTexture_);
+        gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        frameTextureSize_ = size;
+    } else {
+        gl->glBindTexture(GL_TEXTURE_2D, frameTexture_);
+    }
+    // RGB565 rows: the window width is kept even by resizeWindow(), so every
+    // row is 4-byte aligned (the default GL_UNPACK_ALIGNMENT holds).
+    gl->glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB,
+                     size.width(), size.height(), 0,
+                     GL_RGB, GL_UNSIGNED_SHORT_5_6_5,
+                     reinterpret_cast<const GLvoid *>(view3d_->pixels()));
 }
 
 // ---------------------------------------------------------------------------
-// Base raster: oblique 3D view (T2.3)
+// GL base rasters
 // ---------------------------------------------------------------------------
 
-void ViewportWidget::draw3DRaster(QPainter &painter)
+bool ViewportWidget::drawTopDownGL(QOpenGLFunctions *gl,
+                                   const std::vector<DirtyRect> &dirty)
 {
+    const int mapW = renderer_->width();
+    const int mapH = renderer_->height();
+    if (!glBlitter_ || !renderer_->pixels() || mapW <= 0 || mapH <= 0) {
+        return false;
+    }
+
+    const bool fresh = ensureMapTexture(gl, mapW, mapH);
+    gl->glBindTexture(GL_TEXTURE_2D, mapTexture_);
+    if (fresh) {
+        // Memory layout of the cache is Format_ARGB32: byte order B,G,R,A —
+        // GL_BGRA feeds the channels straight through.
+        gl->glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, mapW, mapH, 0,
+                         GL_BGRA, GL_UNSIGNED_BYTE,
+                         reinterpret_cast<const GLvoid *>(renderer_->pixels()));
+    } else {
+        gl->glPixelStorei(GL_UNPACK_ROW_LENGTH, mapW);
+        for (const DirtyRect &r : dirty) {
+            gl->glTexSubImage2D(
+                GL_TEXTURE_2D, 0, r.x, r.y, r.w, r.h,
+                GL_BGRA, GL_UNSIGNED_BYTE,
+                reinterpret_cast<const GLvoid *>(renderer_->pixels() +
+                                                 r.y * mapW + r.x));
+        }
+        gl->glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    }
+
+    // Ensure viewport covers the full widget — the GPU pass may have left
+    // a sub-region viewport from the sokol camera's SetDrawTransform.
+    gl->glViewport(0, 0, qRound(size().width() * devicePixelRatioF()),
+                   qRound(size().height() * devicePixelRatioF()));
+
+    gl->glClearColor(32.0f / 255.0f, 32.0f / 255.0f, 32.0f / 255.0f, 1.0f);
+    gl->glClear(GL_COLOR_BUFFER_BIT);
+    gl->glDisable(GL_DEPTH_TEST);
+    gl->glDisable(GL_BLEND);
+    // The blitter quad is a triangle strip whose first triangle winds CW.
+    // A sokol 3D frame leaves GL_CULL_FACE enabled (front CW, cull front),
+    // which would cull exactly that triangle and leave the map cut along
+    // the quad diagonal — make the blit independent of the previous pass.
+    gl->glDisable(GL_CULL_FACE);
+
+    // Chunky shows solid blocks (nearest sampling, no filter at >1:1);
+    // Smooth blends neighboring cells like the in-game camera. The same rule
+    // the old raster path used for QPainter::SmoothPixmapTransform.
+    const GLint filter = (zoom_ < 1.0 || renderStyle_ == RenderStyle::Smooth)
+                             ? GL_LINEAR : GL_NEAREST;
+    gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
+    gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
+
+    const QRectF targetRect(panOffset_, QSizeF(mapW * zoom_, mapH * zoom_));
+    glBlitter_->bind();
+    glBlitter_->blit(mapTexture_,
+                     QOpenGLTextureBlitter::targetTransform(
+                         targetRect, QRect(QPoint(0, 0), size())),
+                     QOpenGLTextureBlitter::OriginTopLeft);
+    glBlitter_->release();
+    return true;
+}
+
+bool ViewportWidget::drawObliqueGL(QOpenGLFunctions *gl)
+{
+    if (!glBlitter_ || !renderer_ || !renderer_->isBound()) {
+        return false;
+    }
+
     // Resize the brain-free window: full widget size, clamped by Terra's own
     // MAX_XSIZE_VX_WINDOW (the widget then scales the frame back up). The
     // same buffer size drives currentViewRect(), so the minimap footprint
     // matches the frame about to be drawn.
     if (!view3d_) {
         view3d_ = new View3DRenderer();
+    }
+    if (gpuActive()) {
+        view3d_->toggleGPUIsAvailable();
     }
     const QSize buffer = obliqueBufferSize();
     view3d_->resizeWindow(buffer.width(), buffer.height());
@@ -752,61 +1148,184 @@ void ViewportWidget::draw3DRaster(QPainter &painter)
     // The chunky path greys Terra's 16-bit tables on the fly; the smooth
     // path bakes the dimming into the mip pyramid (same widget flag).
     view3d_->setGeoDimmed(geoDimmed_);
-    // Post-T3.3: the smooth style filters the voxel view through the mip
-    // pyramid kept by the 2D renderer; chunky keeps Terra's point-sampled
-    // viewV2D output byte-for-byte.
+    // The smooth style filters the voxel view through the mip pyramid kept by
+    // the 2D renderer; chunky keeps Terra's point-sampled viewV2D output.
     view3d_->setColorSource(renderer_);
     view3d_->setSmooth(renderStyle_ == RenderStyle::Smooth);
-    view3d_->render(static_cast<int>(std::floor(obliqueCenter_.x())),
-                    static_cast<int>(std::floor(obliqueCenter_.y())));
 
-    // The one grid overlays the 3D frame like the 2D raster's: a flat
-    // reference-plane grid at the zeroplast height (OXY offsets, independent
-    // of the terrain shape), white lines two pixels thick (enumerated line
-    // crossings — continuous, no sampling gaps toward the horizon), drawn
-    // once its lines resolve on screen.
-    if (gridVisible_) {
-        const QPointF pxPerCell = obliquePxPerCell();
-        const double bufferScaleX =
-            width() > 0 && buffer.width() > 0
-                ? buffer.width() / static_cast<double>(width()) : 1.0;
-        const double cellPx = qMin(pxPerCell.x(), pxPerCell.y()) *
-                              bufferScaleX;
-        if (gridStepX_ > 0 &&
-            gridStepX_ * cellPx >= kMinGridSpacingPx * 0.75) {
-            view3d_->drawGridOverlay(gridStepX_, gridStepY_, 0xFFFF);
+    // Only re-render the 3D frame when the camera moved, terrain was
+    // stamped, or the window resized; otherwise the frame texture is
+    // already current and just gets blitted again.
+    if (needs3DRedraw_) {
+        view3d_->render(static_cast<int>(std::floor(obliqueCenter_.x())),
+                        static_cast<int>(std::floor(obliqueCenter_.y())));
+
+        // The one grid overlays the 3D frame like the 2D raster's: a flat
+        // reference-plane grid at the zeroplast height (OXY offsets,
+        // independent of the terrain shape), white lines two pixels thick,
+        // drawn once its lines resolve on screen.
+        if (gridVisible_) {
+            const QPointF pxPerCell = obliquePxPerCell();
+            const double bufferScaleX =
+                width() > 0 && buffer.width() > 0
+                    ? buffer.width() / static_cast<double>(width()) : 1.0;
+            const double cellPx = qMin(pxPerCell.x(), pxPerCell.y()) *
+                                  bufferScaleX;
+            if (gridStepX_ > 0 &&
+                gridStepX_ * cellPx >= kMinGridSpacingPx * 0.75) {
+                view3d_->drawGridOverlay(gridStepX_, gridStepY_, 0xFFFF);
+            }
         }
+
+        uploadFrameTexture(gl);
+        needs3DRedraw_ = false;
+    }
+    if (frameTexture_ == 0) {
+        return false;
     }
 
-    blit3DFrame(painter);
-}
+    // Ensure viewport covers the full widget before blitting the 3D frame.
+    gl->glViewport(0, 0, qRound(size().width() * devicePixelRatioF()),
+                   qRound(size().height() * devicePixelRatioF()));
 
-void ViewportWidget::blit3DFrame(QPainter &painter)
-{
-    if (!view3d_ || view3d_->pixels() == nullptr) {
-        return;
-    }
-    // Zero-copy RGB16 (565) frame — exactly QImage::Format_RGB16 layout,
-    // since Sur2Col cubes that pixel order (VMAP.cpp:1367-1370).
-    const QImage image(
-        reinterpret_cast<const uchar *>(view3d_->pixels()),
-        view3d_->windowWidth(), view3d_->windowHeight(),
-        view3d_->windowWidth() * 2,
-        QImage::Format_RGB16);
-    painter.setClipRect(rect());
+    gl->glClearColor(32.0f / 255.0f, 32.0f / 255.0f, 32.0f / 255.0f, 1.0f);
+    gl->glClear(GL_COLOR_BUFFER_BIT);
+    gl->glDisable(GL_DEPTH_TEST);
+    gl->glDisable(GL_BLEND);
+    // The blitter quad is a triangle strip whose first triangle winds CW.
+    // A sokol 3D frame leaves GL_CULL_FACE enabled (front CW, cull front),
+    // which would cull exactly that triangle and leave the map cut along
+    // the quad diagonal — make the blit independent of the previous pass.
+    gl->glDisable(GL_CULL_FACE);
+
     // The 3D window buffer is widget-size clamped to Terra's
     // MAX_XSIZE_VX_WINDOW, so it is usually upscaled to the widget: Smooth
-    // style interpolates the frame (as always before, T2.3), Chunky draws
-    // the raw pixels — the voxels keep their hard edges.
-    painter.setRenderHint(QPainter::SmoothPixmapTransform,
-                          renderStyle_ == RenderStyle::Smooth);
-    painter.drawImage(rect(), image, QRectF(0, 0, view3d_->windowWidth(),
-                                            view3d_->windowHeight()));
+    // style interpolates the frame, Chunky draws the raw pixels — the voxels
+    // keep their hard edges.
+    const GLint filter = renderStyle_ == RenderStyle::Smooth
+                             ? GL_LINEAR : GL_NEAREST;
+    gl->glBindTexture(GL_TEXTURE_2D, frameTexture_);
+    gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
+    gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
+
+    glBlitter_->bind();
+    glBlitter_->blit(frameTexture_,
+                     QOpenGLTextureBlitter::targetTransform(
+                         QRectF(rect()), QRect(QPoint(0, 0), size())),
+                     QOpenGLTextureBlitter::OriginTopLeft);
+    glBlitter_->release();
+    return true;
 }
 
 // ---------------------------------------------------------------------------
 // Grid overlay
 // ---------------------------------------------------------------------------
+
+/// GPU-mode grid: a flat reference-plane grid at ground height zero (the
+/// bottom of the terrain, NOT the zeroplast plane — the zeroplast sits above
+/// the lowest geo, so a grid drawn on it floats over the landscape), projected
+/// through the sokol camera and drawn with QPainter as white 4 px lines.
+///
+/// A straight ground line stays straight under the perspective projection, so
+/// two end points define it — but the camera looks along the ground, so most
+/// lines leave through the near plane rather than the map edge. Each line is
+/// therefore clipped against the camera near plane (the segment parameter at
+/// which the view-space depth crosses it), and only the visible part is drawn.
+void ViewportWidget::drawGrid3D(QPainter &painter)
+{
+    if (!gpuActive() || gridStepX_ <= 0 || gridStepY_ <= 0) return;
+
+    const int mapW = renderer_->width();
+    const int mapH = renderer_->height();
+    const double z = 0.0;   // the bottom ground plane
+    const qreal dpr = devicePixelRatioF();
+
+    // Visible ground area: the frustum footprint on the plane (exact, unlike
+    // the old kv-heuristic rect), clamped to the map.
+    double fx[4], fy[4];
+    if (!gpuView_->groundFootprint(z, fx, fy)) return;
+    double minX = fx[0], maxX = fx[0], minY = fy[0], maxY = fy[0];
+    for (int i = 1; i < 4; ++i) {
+        minX = std::min(minX, fx[i]);
+        maxX = std::max(maxX, fx[i]);
+        minY = std::min(minY, fy[i]);
+        maxY = std::max(maxY, fy[i]);
+    }
+    const int xBegin = qMax(0, static_cast<int>(std::floor(minX)));
+    const int xEnd = qMin(mapW, static_cast<int>(std::ceil(maxX)));
+    const int yBegin = qMax(0, static_cast<int>(std::floor(minY)));
+    const int yEnd = qMin(mapH, static_cast<int>(std::ceil(maxY)));
+    if (xEnd <= xBegin || yEnd <= yBegin) return;
+
+    // Resolution guard: lines are drawn every gridStepX_/gridStepY_ world
+    // units, exactly as in the 2D grid. The perspective scale varies across
+    // the view, so measure the spacing where the grid is largest on screen —
+    // at the near edge of the footprint. Below the minimum spacing the lines
+    // would merge into a white field, so the grid stays hidden.
+    const double nearY = static_cast<double>(yBegin);
+    const double midX = 0.5 * (xBegin + xEnd);
+    double camZ0, sx0, sy0, camZ1, sx1, sy1, camZ2, sx2, sy2;
+    if (!gpuView_->projectToScreenZ(midX, nearY, z, camZ0, sx0, sy0)
+        || !gpuView_->projectToScreenZ(midX + gridStepX_, nearY, z, camZ1, sx1, sy1)
+        || !gpuView_->projectToScreenZ(midX, nearY + gridStepY_, z, camZ2, sx2, sy2)
+        || camZ0 <= 0.0) {
+        return;
+    }
+    const double stepPxX = std::hypot(sx1 - sx0, sy1 - sy0) / dpr;
+    const double stepPxY = std::hypot(sx2 - sx0, sy2 - sy0) / dpr;
+    if (stepPxX < kMinGridSpacingPx && stepPxY < kMinGridSpacingPx) {
+        editorTrace("ViewportWidget: grid step=%dx%d hidden (pxX=%.2f pxY=%.2f at near edge)",
+                    gridStepX_, gridStepY_, stepPxX, stepPxY);
+        return;
+    }
+
+    // Near-plane clipping constant: the camera's own near plane — terrain
+    // closer than this is not rasterized, and the grid must use the same
+    // bound so its lines do not intrude into the sky region.
+    const double nearPlane = gpuView_->nearPlaneZ();
+    const auto clipToNear = [this, z, nearPlane, dpr](
+                                double ax, double ay, double bx, double by) {
+        double za, sa, ta, zb, sb, tb;
+        if (!gpuView_->projectToScreenZ(ax, ay, z, za, sa, ta)
+            || !gpuView_->projectToScreenZ(bx, by, z, zb, sb, tb)) {
+            return QLineF();
+        }
+        if (za <= nearPlane && zb <= nearPlane) {
+            return QLineF();   // the whole segment is behind the near plane
+        }
+        if (za <= nearPlane) {
+            const double t = (nearPlane - za) / (zb - za);
+            ax += (bx - ax) * t;
+            ay += (by - ay) * t;
+            if (!gpuView_->projectToScreenZ(ax, ay, z, za, sa, ta)) {
+                return QLineF();
+            }
+        }
+        if (zb <= nearPlane) {
+            const double t = (nearPlane - zb) / (za - zb);
+            bx += (ax - bx) * t;
+            by += (ay - by) * t;
+            if (!gpuView_->projectToScreenZ(bx, by, z, zb, sb, tb)) {
+                return QLineF();
+            }
+        }
+        return QLineF(sa / dpr, ta / dpr, sb / dpr, tb / dpr);
+    };
+
+    painter.setPen(QPen(QColor(255, 255, 255), 4.0));
+
+    // Align to the grid origin, not to the first visible cell (as in 2D).
+    const int x0f = (xBegin / gridStepX_) * gridStepX_;
+    for (int x = x0f; x <= xEnd; x += gridStepX_) {
+        const QLineF line = clipToNear(x, yBegin, x, yEnd);
+        if (!line.isNull()) painter.drawLine(line);
+    }
+    const int y0f = (yBegin / gridStepY_) * gridStepY_;
+    for (int y = y0f; y <= yEnd; y += gridStepY_) {
+        const QLineF line = clipToNear(xBegin, y, xEnd, y);
+        if (!line.isNull()) painter.drawLine(line);
+    }
+}
 
 void ViewportWidget::drawGrid(QPainter &painter)
 {
@@ -861,12 +1380,30 @@ void ViewportWidget::drawBrushPreview(QPainter &painter)
     painter.setBrush(Qt::NoBrush);
 
     if (viewMode_ == ViewMode::Oblique) {
+        // GPU path: the perspective camera images a ground disc as a sheared,
+        // offset ellipse whose size depends on how far the cursor sits from the
+        // look-at point — the CPU view's (F+Z)/F ground scale is wrong here (it
+        // is the nadir scale of the voxel window, not this camera's), so the
+        // ring was drawn far too large. Project the real stamp footprint.
+        const QPolygonF contour = projectedBrushContour();
+        if (contour.size() >= 3) {
+            painter.drawPolygon(contour);
+            if (linePending_ && lineStartWidgetPos_.x() >= 0) {
+                painter.drawLine(QPointF(lineStartWidgetPos_),
+                                 QPointF(cursorWidgetPos_));
+            }
+            return;
+        }
         // The oblique projection has no linear cell→screen map, so the ring is
         // centred on the cursor and sized by the camera's approximate
         // widget-pixels-per-ground-cell (the same basis the pick uses).
         const QPointF pxPerCell = obliquePxPerCell();
-        const double rx = qMax(3.0, brushRadius_ * pxPerCell.x());
-        const double ry = qMax(3.0, brushRadius_ * pxPerCell.y());
+        // GPU path: use a smaller minimum (1.0) so the perspective ellipse
+        // is visible even for small brush radii. The 3.0 minimum was hiding
+        // the Y-stretch from the oblique camera deformation.
+        const double minDim = (gpuView_ && gpuView_->isReady()) ? 1.0 : 3.0;
+        const double rx = qMax(minDim, brushRadius_ * pxPerCell.x());
+        const double ry = qMax(minDim, brushRadius_ * pxPerCell.y());
         const QPointF center(cursorWidgetPos_);
         if (brushShape_ == BrushPreviewShape::Circle) {
             painter.drawEllipse(center, rx, ry);
@@ -960,6 +1497,10 @@ void ViewportWidget::drawSpawnPoints(QPainter &painter)
 void ViewportWidget::drawHud(QPainter &painter)
 {
     if (!renderer_->isBound()) return;
+    // The HUD text looks blurry when the GPU path is active (the widget
+    // renders at device-pixel resolution and QPainter's text gets scaled
+    // back down). Skip it when the GPU scene is ready.
+    if (lastGpuViewReady_) return;
 
     QString info;
     // The editor interaction mode the cursor carries right now.
@@ -967,11 +1508,10 @@ void ViewportWidget::drawHud(QPainter &painter)
         ? tr("View") : (editorMode_ == EditorMode::Eyedropper ? tr("Pipette")
                                                               : tr("Brush"));
     if (viewMode_ == ViewMode::Oblique) {
-        // The 3D camera line-up; lean is the value viewV2D will actually use
-        // (may be clamped by the stable band, see View3DRenderer).
-        const double lean = View3DRenderer::stableLeanDeg(
-            obliqueCamera_.leanDeg, obliqueCamera_.focusC,
-            std::max(1, view3d_ ? view3d_->windowHeight() / 2 : height() / 2));
+        // The 3D camera line-up; lean is the value the active renderer will
+        // actually use (the CPU voxel window clamps it into the stable
+        // band, the GPU camera takes it raw — see obliqueMathLeanDeg()).
+        const double lean = obliqueMathLeanDeg();
         info = tr("%1  |  3D  |  Rot: %2\u00B0  Tilt: %3\u00B0  Lift: %4  Focus: %5")
                    .arg(modeLabel)
                    .arg(qRound(obliqueCamera_.turnAngleDeg))
@@ -1095,7 +1635,7 @@ void ViewportWidget::mousePressEvent(QMouseEvent *event)
             return;
         }
     }
-    QWidget::mousePressEvent(event);
+    QOpenGLWidget::mousePressEvent(event);
 }
 
 void ViewportWidget::mouseMoveEvent(QMouseEvent *event)
@@ -1211,7 +1751,7 @@ void ViewportWidget::mouseReleaseEvent(QMouseEvent *event)
         event->accept();
         return;
     }
-    QWidget::mouseReleaseEvent(event);
+    QOpenGLWidget::mouseReleaseEvent(event);
 }
 
 void ViewportWidget::mouseDoubleClickEvent(QMouseEvent *event)
@@ -1271,7 +1811,7 @@ void ViewportWidget::wheelEvent(QWheelEvent *event)
 
 void ViewportWidget::resizeEvent(QResizeEvent *event)
 {
-    QWidget::resizeEvent(event);
+    QOpenGLWidget::resizeEvent(event);
     updateFitScale();
     clampZoom();
     needs3DRedraw_ = true;
@@ -1297,20 +1837,27 @@ void ViewportWidget::resizeEvent(QResizeEvent *event)
 
 void ViewportWidget::panObliqueBy(double dxCursorPx, double dyCursorPx)
 {
-    if (!view3d_ || view3d_->windowWidth() <= 0 || width() <= 0) {
+    if (width() <= 0) {
         return;
     }
 
     const double focus = obliqueCamera_.focusC;
     const double lift = obliqueCamera_.cameraDZ;
-    // Screen→ground scale: the drag happened on widget pixels while the
-    // projection constants are per rendered pixel.
-    const double cellsPerPxX =
-        (focus + lift) / focus * view3d_->windowWidth() / width();
+    // Screen→ground scale: the drag happened on widget pixels.
+    //   GPU mode — the view maps 1:1 onto the widget, so (F+Z)/F cells per px.
+    //   CPU mode — the projection constants are per rendered buffer pixel.
+    double cellsPerPxX;
+    if (gpuActive()) {
+        cellsPerPxX = obliqueCellsPerWidgetPx();
+    } else {
+        if (!view3d_ || view3d_->windowWidth() <= 0) {
+            return;
+        }
+        cellsPerPxX =
+            (focus + lift) / focus * view3d_->windowWidth() / width();
+    }
 
-    const double leanDeg = View3DRenderer::stableLeanDeg(
-        obliqueCamera_.leanDeg, obliqueCamera_.focusC,
-        view3d_->windowHeight() / 2);
+    const double leanDeg = obliqueMathLeanDeg();
     const double forwardScale = obliqueForwardScale(obliqueCamera_, leanDeg);
     const double theta = qDegreesToRadians(obliqueCamera_.turnAngleDeg);
     const double cosT = std::cos(theta);
@@ -1321,6 +1868,96 @@ void ViewportWidget::panObliqueBy(double dxCursorPx, double dyCursorPx)
     const double moveY = (-dxCursorPx * sinT - dyCursorPx * forwardScale * cosT) * cellsPerPxX;
     obliqueCenter_ += QPointF(moveX, moveY);
     needs3DRedraw_ = true;
+    applyGpuCamera();
+}
+
+// ---------------------------------------------------------------------------
+// GPU oblique path helpers
+// ---------------------------------------------------------------------------
+
+bool ViewportWidget::gpuActive() const
+{
+    return viewMode_ == ViewMode::Oblique && gpuView_ && gpuView_->isReady();
+}
+
+double ViewportWidget::obliqueMathLeanDeg() const
+{
+    if (gpuActive()) {
+        return obliqueCamera_.leanDeg; // the GPU camera has no stable band
+    }
+    return View3DRenderer::stableLeanDeg(
+        obliqueCamera_.leanDeg, obliqueCamera_.focusC,
+        view3d_ ? qMax(1, view3d_->windowHeight() / 2) : height() / 2);
+}
+
+double ViewportWidget::obliqueCellsPerWidgetPx() const
+{
+    const double scale =
+        (obliqueCamera_.focusC + obliqueCamera_.cameraDZ) /
+        static_cast<double>(qMax(1, obliqueCamera_.focusC));
+    if (gpuActive()) {
+        return scale; // view maps 1:1 onto the widget
+    }
+    if (!view3d_ || view3d_->windowWidth() <= 0 || width() <= 0) {
+        return scale;
+    }
+    return scale * view3d_->windowWidth() / width();
+}
+
+void ViewportWidget::rebuildGpuView()
+{
+    // The GL context must be current (paintGL / initializeGL).
+    if (!renderer_ || !renderer_->isBound()) {
+        editorTrace("ViewportWidget: rebuildGpuView — no renderer, deleting gpuView=%p",
+                    static_cast<void*>(gpuView_));
+        delete gpuView_;
+        gpuView_ = nullptr;
+        editorTrace("ViewportWidget: rebuildGpuView — no renderer, dropped");
+        return;
+    }
+    if (gpuView_) {
+        // Same context, new world/color source — rebuild inside the view.
+        editorTrace("ViewportWidget: rebuildGpuView — reloadWorld path");
+        gpuView_->setColorSource(renderer_);
+        applyGpuCamera();
+        return;
+    }
+    editorTrace("ViewportWidget: rebuildGpuView — creating new TerrainGpuView");
+    auto *view = new TerrainGpuView();
+    view->setColorSource(renderer_);
+    const qreal dpr = devicePixelRatioF();
+    const QSize fbo(qRound(size().width() * dpr),
+                    qRound(size().height() * dpr));
+    editorTrace("ViewportWidget: rebuildGpuView — init (%dx%d)", fbo.width(),
+                fbo.height());
+    if (view->init(fbo.width(), fbo.height())) {
+        gpuView_ = view;
+        applyGpuCamera();
+        editorTrace("ViewportWidget: rebuildGpuView — init OK");
+    } else {
+        editorTrace("ViewportWidget: rebuildGpuView — init failed, deleting view");
+        delete view;
+        qWarning("ViewportWidget: GPU oblique view unavailable, "
+                 "the CPU renderer stays in charge");
+        editorTrace("ViewportWidget: rebuildGpuView — init FAILED");
+    }
+}
+
+void ViewportWidget::applyGpuCamera()
+{
+    if (!gpuView_) {
+        return;
+    }
+    // No GL calls here — setCamera only records state applied on the next
+    // renderFrame, so mouse handlers may call this freely.
+    TerrainGpuView::CameraState state;
+    state.centerX = obliqueCenter_.x();
+    state.centerY = obliqueCenter_.y();
+    state.turnAngleDeg = obliqueCamera_.turnAngleDeg;
+    state.leanDeg = obliqueCamera_.leanDeg;
+    state.heightCells = obliqueCamera_.focusC + obliqueCamera_.cameraDZ;
+    state.focalDevPx = obliqueCamera_.focusC * devicePixelRatioF();
+    gpuView_->setCamera(state);
 }
 
 QPoint ViewportWidget::cellAtWidgetPos(const QPoint &widgetPos) const
@@ -1330,6 +1967,21 @@ QPoint ViewportWidget::cellAtWidgetPos(const QPoint &widgetPos) const
     }
     if (viewMode_ == ViewMode::TopDown) {
         return screenToMap(widgetPos.x(), widgetPos.y());
+    }
+    if (gpuActive()) {
+        // GPU mode: the view maps 1:1 onto the widget — pick through the
+        // sokol camera's ray, coordinates in device pixels.
+        const qreal dpr = devicePixelRatioF();
+        int mx = -1;
+        int my = -1;
+        if (gpuView_->pickCell(widgetPos.x() * dpr, widgetPos.y() * dpr,
+                                mx, my)) {
+            return {mx, my};
+        }
+        // GPU pick failed (ray above horizon / sky) — the GPU camera has a
+        // wider FOV than the CPU voxel view, so edge positions can point
+        // above the terrain. Fallback to the CPU path which has a narrower
+        // FOV and can see more ground.
     }
     if (!view3d_ || view3d_->windowWidth() <= 0 || view3d_->windowHeight() <= 0) {
         return {-1, -1};
@@ -1356,10 +2008,78 @@ QPoint ViewportWidget::cellAtWidgetPos(const QPoint &widgetPos) const
     return {mx, my};
 }
 
+QPolygonF ViewportWidget::projectedBrushContour() const
+{
+    if (!gpuActive() || cursorCell_.x() < 0 || brushRadius_ <= 0) {
+        return {};
+    }
+    const double cx = cursorCell_.x() + 0.5;
+    const double cy = cursorCell_.y() + 0.5;
+    const double r = brushRadius_;
+
+    // Stamp boundary in map cells. The square is subdivided along its edges so
+    // the terrain height variation shows up in the projection (a straight world
+    // line is only straight on screen at a constant z).
+    std::vector<double> pts;
+    if (brushShape_ == BrushPreviewShape::Circle) {
+        const int steps = qBound(24, static_cast<int>(r) * 2, 180);
+        pts.reserve(static_cast<std::size_t>(steps) * 2);
+        for (int i = 0; i < steps; ++i) {
+            const double a = 2.0 * M_PI * i / steps;
+            pts.push_back(cx + r * std::cos(a));
+            pts.push_back(cy + r * std::sin(a));
+        }
+    } else {
+        const int seg = qBound(2, static_cast<int>(r) / 8, 16);
+        static const double kCorners[4][2] = {
+            {-1.0, -1.0}, {1.0, -1.0}, {1.0, 1.0}, {-1.0, 1.0},
+        };
+        pts.reserve(4 * static_cast<std::size_t>(seg) * 2);
+        for (int e = 0; e < 4; ++e) {
+            const double x0 = cx + kCorners[e][0] * r;
+            const double y0 = cy + kCorners[e][1] * r;
+            const double x1 = cx + kCorners[(e + 1) % 4][0] * r;
+            const double y1 = cy + kCorners[(e + 1) % 4][1] * r;
+            for (int i = 0; i < seg; ++i) {
+                const double t = i / static_cast<double>(seg);
+                pts.push_back(x0 + (x1 - x0) * t);
+                pts.push_back(y0 + (y1 - y0) * t);
+            }
+        }
+    }
+
+    const int count = static_cast<int>(pts.size() / 2);
+    std::vector<double> sx(count);
+    std::vector<double> sy(count);
+    const int n = gpuView_->projectGroundContour(pts.data(), count,
+                                                 sx.data(), sy.data());
+    if (n < 3) {
+        return {}; // mostly behind the camera — keep the heuristic ring
+    }
+    const qreal dpr = devicePixelRatioF();
+    QPolygonF poly;
+    poly.reserve(n);
+    for (int i = 0; i < n; ++i) {
+        poly << QPointF(sx[i] / dpr, sy[i] / dpr);
+    }
+    return poly;
+}
+
 QPointF ViewportWidget::obliquePxPerCell() const
 {
-    if (!view3d_ || view3d_->windowWidth() <= 0 || view3d_->windowHeight() <= 0
-        || width() <= 0 || height() <= 0) {
+    if (!renderer_ || width() <= 0 || height() <= 0) {
+        return QPointF(1.0, 1.0);
+    }
+    if (gpuActive()) {
+        // GPU mode: cells per widget px = (F+Z)/F with no window clamp, so
+        // widget px per cell is simply the reciprocal; rows keep the kv
+        // depth stretch of the CPU heuristic.
+        const double kv = obliqueForwardScale(obliqueCamera_,
+                                              obliqueCamera_.leanDeg);
+        const double pxPerCell = 1.0 / obliqueCellsPerWidgetPx();
+        return QPointF(pxPerCell, pxPerCell / kv);
+    }
+    if (!view3d_ || view3d_->windowWidth() <= 0 || view3d_->windowHeight() <= 0) {
         return QPointF(1.0, 1.0);
     }
     const QSize buffer = obliqueBufferSize();

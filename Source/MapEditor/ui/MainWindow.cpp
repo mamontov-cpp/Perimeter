@@ -21,6 +21,9 @@
 #include <algorithm>
 #include <cmath>
 
+#include "EditorTrace.h"
+using MapEditor::editorTrace;
+
 namespace fs = std::filesystem;
 
 #include <QAction>
@@ -589,14 +592,47 @@ MainWindow::MainWindow(QWidget *parent)
     // blank until the first pan/zoom.
     updateViewReadout();
     updateStatusBar();
+    editorTrace("MainWindow: ctor done");
 }
 
 MainWindow::~MainWindow()
 {
+    editorTrace("MainWindow: dtor start");
     delete brushTool_;
     delete session_;
     delete gameDirMgr_;
     // viewport_ is a child widget; deleted by the parent.
+    editorTrace("MainWindow: dtor members deleted (viewport dies with parent)");
+}
+
+void MainWindow::debugOpenGameDir(const std::string& dir)
+{
+    editorTrace("autotest: setGameDir('%s')", dir.c_str());
+    if (!session_->setGameDir(dir)) {
+        editorTrace("autotest: setGameDir FAILED");
+        return;
+    }
+    if (!session_->scanWorlds()) {
+        editorTrace("autotest: scanWorlds FAILED");
+        return;
+    }
+    updateStatusBar();
+    editorTrace("autotest: game dir opened (%zu worlds)",
+                session_->worldCount());
+}
+
+void MainWindow::debugLoadWorld(const std::string& worldName)
+{
+    editorTrace("autotest: loadWorldByName('%s')", worldName.c_str());
+    if (!session_->loadWorldByName(worldName)) {
+        editorTrace("autotest: loadWorldByName FAILED");
+        return;
+    }
+    editorTrace("autotest: calling onWorldLoaded");
+    onWorldLoaded();
+    editorTrace("autotest: after onWorldLoaded, updating status bar");
+    updateStatusBar();
+    editorTrace("autotest: world loaded");
 }
 
 // ---------------------------------------------------------------------------
@@ -666,6 +702,16 @@ void MainWindow::buildViewport()
     // T3.3 — eyedropper signal: right-click in TopDown mode picks SurBuf.
     connect(viewport_, &MapEditor::ViewportWidget::eyedropperPicked,
             this, &MainWindow::onEyedropperPicked);
+
+    // Hide the freeze-dam action when the GPU terrain path is available —
+    // the feature is a CPU-path-only fallback (it depends on the torus
+    // repetition logic in View3DRenderer, which sokol does not implement).
+    connect(viewport_, &MapEditor::ViewportWidget::gpuViewReadyChanged, this,
+            [this](bool gpuReady) {
+                if (actFreezeDam_) {
+                    actFreezeDam_->setVisible(!gpuReady);
+                }
+            });
 
     /// Initial style button state (the viewport defaults to Smooth; post-T3.3
     /// chunky/smooth renderer toggle).
@@ -801,11 +847,13 @@ void MainWindow::buildMinimapDock()
         viewMenu_->addAction(toggleAction);
     }
 
-    // The rectangle outline follows the viewport — whatever moves it
+    // The view outline follows the viewport — whatever moves it
     // (pan, zoom, orbit, mode switch, resize, world load/unload) ends in
-    // ViewportWidget::viewRectChanged after the next repaint.
-    connect(viewport_, &MapEditor::ViewportWidget::viewRectChanged,
-            minimap_, &MapEditor::MinimapWidget::setViewRect);
+    // ViewportWidget::viewPolygonChanged after the next repaint. The polygon
+    // carries the 3D camera azimuth/perspective that an axis-aligned rect
+    // would flatten.
+    connect(viewport_, &MapEditor::ViewportWidget::viewPolygonChanged,
+            minimap_, &MapEditor::MinimapWidget::setViewPolygon);
 
     // T7 — the "Add" marker default position follows the view centre.
     connect(viewport_, &MapEditor::ViewportWidget::viewRectChanged, this,
@@ -823,7 +871,7 @@ void MainWindow::buildMinimapDock()
     // Load the image for the world that may already be bound and push the
     // current view rectangle once (subsequent updates come from the signal).
     minimap_->setSession(session_);
-    minimap_->setViewRect(viewport_->currentViewRect());
+    minimap_->setViewPolygon(viewport_->currentViewPolygon());
 }
 
 void MainWindow::buildPaletteDock()
@@ -889,17 +937,23 @@ void MainWindow::buildPaletteDock()
 
 void MainWindow::onWorldLoaded()
 {
+    editorTrace("onWorldLoaded: start (viewport=%p, session=%p)",
+                static_cast<void*>(viewport_), static_cast<void*>(session_));
     // Rebind the viewport to pick up the newly loaded world.
     if (viewport_ && session_) {
+        editorTrace("onWorldLoaded: calling viewport->setSession");
         viewport_->setSession(session_);
+        editorTrace("onWorldLoaded: viewport setSession done");
     }
     // Rebind the minimap image (map.tga of the new world) and reset the
     // outline until the viewport's next repaint pushes a rectangle.
+    editorTrace("onWorldLoaded: setting minimap session");
     if (minimap_ && session_) {
         minimap_->setSession(session_);
-        minimap_->setViewRect(viewport_ ? viewport_->currentViewRect()
-                                        : QRect());
+        minimap_->setViewPolygon(viewport_ ? viewport_->currentViewPolygon()
+                                           : QPolygonF());
     }
+    editorTrace("onWorldLoaded: setting palette session");
     // Rebuild the palette panel grids (T4.1) — the palette belongs to the
     // newly loaded world. setSession() resets the swatch selection, so push
     // the brush state back in: the highlighted entry must keep showing the
@@ -910,18 +964,24 @@ void MainWindow::onWorldLoaded()
         palettePanel_->selectIndex(params.colorIndex,
                                    params.mode == MapEditor::BrushMode::Dam);
     }
+    editorTrace("onWorldLoaded: loading markers");
     // T7 — markers of the new world: sidecar + overlay.
     loadMarkerSidecar();
+    editorTrace("onWorldLoaded: sync brush controls");
     // The brush-dependent controls (color swatch, spinboxes, cursor preview)
     // were only partially initialized before the world existed — re-read the
     // tool state now that the palettes are available.
     syncBrushControls();
+    editorTrace("onWorldLoaded: updating view readout");
     // The camera readout has never fired its signal yet on a fresh session.
     updateViewReadout();
+    editorTrace("onWorldLoaded: updating window title");
     // The title carries the world name (also after "Save As", which
     // rebinds the session onto the renamed world and lands here).
     updateWindowTitle();
+    editorTrace("onWorldLoaded: updating status bar");
     updateStatusBar();
+    editorTrace("onWorldLoaded: done");
 }
 
 void MainWindow::onWorldUnload()
@@ -931,7 +991,7 @@ void MainWindow::onWorldUnload()
     }
     if (minimap_ && session_) {
         minimap_->setSession(session_);
-        minimap_->setViewRect(QRect());
+        minimap_->setViewPolygon(QPolygonF());
     }
     if (palettePanel_ && session_) {
         palettePanel_->setSession(session_);
@@ -1409,7 +1469,7 @@ void MainWindow::buildViewMenu(QMenuBar *menuBar)
     actLiftUp_->setToolTip(tr("Lift the 3D camera one step (Page Up)"));
     actLiftUp_->setShortcut(QKeySequence(Qt::Key_PageUp));
     connect(actLiftUp_, &QAction::triggered, this, [this] {
-        if (viewport_) viewport_->adjustObliqueLift(100);
+        if (viewport_) viewport_->adjustObliqueLift(25);
     });
 
     actLiftDown_ = create();
@@ -1418,7 +1478,7 @@ void MainWindow::buildViewMenu(QMenuBar *menuBar)
     actLiftDown_->setToolTip(tr("Lower the 3D camera one step (Page Down)"));
     actLiftDown_->setShortcut(QKeySequence(Qt::Key_PageDown));
     connect(actLiftDown_, &QAction::triggered, this, [this] {
-        if (viewport_) viewport_->adjustObliqueLift(-100);
+        if (viewport_) viewport_->adjustObliqueLift(-25);
     });
 
     viewMenu->addSeparator();

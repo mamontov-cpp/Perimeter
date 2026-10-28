@@ -834,3 +834,332 @@ veryLightDam`. После посева `VD != 0` и тулзер коррект�
 `At_ZPMASK` очищается — gate не срабатывает, тулзер двигает дамбу.
 При `whole == hZeroPlast` метка сохраняется (тулзер по-прежнему пропускает
 клетку — это корректно, клетка остаётся зеропластом на своей высоте).
+
+## 5.23 (контекст): находки сессии GPU-миграции
+
+* **MSVC кодирует доступ члена в mangled-имени**: private 'A', protected 'P',
+  public 'Q' (видно в dumpbin: `?ClearPooledResources@cSokolRender@@AEAAXI@Z`
+  — определение, `@@QEAAXI@Z` — ссылка из TU с хаком private>public >
+  LNK2019). Значит хак должен применяться КО ВСЕМ TU, где живут/используются
+  эти классы — сделано через `/FI shim/render_msvc_access.h` на весь таргет
+  `MapEditorRender`. Там же `#define _ALLOW_KEYWORD_MACROS`, иначе MSVC STL
+  (xkeycheck.h) даёт #error "forbids macroizing the keyword private".
+* **`StdAfxRD.h` НЕ имеет include-guard** — рассчитан на один парс на TU
+  (внешние заголовки его не подключают). В редакторском коде он включается
+  ровно один раз (через render/EditorTerraInterface.h); правило
+  задокументировано в cpp-файлах.
+* `TerraInterface.inl` требует перед собой terra.h (vMap, VX_FRACTION, kmGrid).
+* `/UPERIMETER_D3D9` работает: MSVC кладёт его в AdditionalOptions после /D,
+  предупреждение D9025 подтверждает вычитывание PERIMETER_D3D9.
+* `MT_IS_LOGIC/MT_IS_GRAPH` определяются только в VisGeneric.cpp (RenderMT.h
+  только объявляет); после удаления стаба `MT_IS_LOGIC` из game_stubs.cpp
+  тесты линкуются — Terra/tx3d/XTool/Util их не зовут. Осталась функция
+  `MTConfig::multithreading/setMultithreading` (HT/ht.cpp) — стаб в
+  game_stubs.cpp (false > однопоточно).
+* `hWndVisGeneric` — глобал Game/Runtime.cpp; нужен VisGeneric.cpp (диагностика
+  памяти). Стаб в game_stubs.cpp.
+* PluginMAX-символы ObjLibrary (cMeshFile/cMeshScene/sSubTexmap/ZIPIsOpen)
+  заcтаблены минимальными объявлениями с теми же public-сигнатурами (манглирование
+  совпадает); PluginMAX целиком не линкуется — ZIPStream-шим конфликтовал бы.
+  Заголовок meshfile.h в стаб-TU не включается: его Src/BaseClass.h требует
+  больше игрового контекста.
+* `FileImage.cpp` зовёт `IMG_Init/IMG_Quit/IMG_Load_RW` > таргету нужен
+  `SDL2_image` (корень уже находит его в SetupSDL.cmake, переменная
+  `SDL2_IMAGE_LIBRARY`).
+* **WorldCreation: assert Terra `loadLeveledTexture: size texture > size map`**
+  (VMAP.cpp:2481) при создании маленького мира из шаблона-«настоящей» карты
+  (COMPASS 2048 > мир 64?64): leveledSurfaceTexture.tga копируется из шаблона,
+  а Terra loader требует texture ? map (xassert абортит в Debug). Проявлялось
+  и до GPU-сессии (проверено stash-ом шимов). Исправлено в редакторе:
+  `resizeLeveledTextureIfNeeded` в WorldCreation.cpp — nearest-neighbour
+  downscale в индексном пространстве (палитра DAM-типов сохраняется), сдвиг
+  на степень двойки, TGA остаётся 256-цветным.
+* INI-шимы (`ReadIniString/WriteIniString/IniManager` в MapEditorSupport)
+  удалены: стек рендера притянул настоящий `Util.lib(SystemUtil.obj)` >
+  дубли символов. Тесты переключены на реальный `SystemUtil.h` (Util уже
+  линкуется тестами). Класс IniManager в шиме был мёртвым кодом.
+* Краш-тест: `map_editor_tests` упирался в тест 17 abort'ом — теперь все 39
+  тестов зелёные (аргумент запуска — КОРЕНЬ игры, т.е. каталог с `RESOURCE/`,
+  НЕ сам каталог RESOURCE).
+* sokol GLCORE backend в ревизии 4bda1469 не имеет sg_begin_default_pass —
+  кадр рисуется в pass с `swapchain.gl.framebuffer` = FBO QOpenGLWidget (?0).
+  sokol не владеет контекстом > `sg_reset_state_cache()` каждый кадр перед
+  BeginScene (QPainter/blitter портят GL-состояние).
+* Визуальная проверка GPU-картинки требует GUI-запуска с загруженным миром
+  (кли: нет; мир грузится через диалог). Пока проверено: сборка, 39/39 тестов,
+  запуск редактора без краша при старте.
+
+
+## GPU Viewport: double-free TerraInterface (crash on window close)
+
+**Symptom:** the editor crashes when closing the window if a world was loaded
+and the GPU oblique view was initialized (world loaded -> 3D view created -> close window).
+
+**Root cause:** cTileMap::~cTileMap() (Source/Render/tilemap/TileMap.cpp:196)
+calls RELEASE(terra) -- releases the TerraInterface reference stored in
+cTileMap::terra. The constructor (TileMap.cpp:175) assigns 	erra = terra_
+WITHOUT calling IncRef(), so cTileMap owns the only reference to the object.
+
+TerrainGpuView::destroyScene() also called RELEASE(terra_) -- after
+RELEASE(tileMap_) the EditorTerraInterface object is already deleted, and the
+second Release() touches freed memory (double-free / use-after-free).
+
+**Fix:** in destroyScene() check whether 	ileMap_ owned the 	erra_ reference
+(i.e. was tileMap_ non-null before releasing it). If yes -- 	erra_ is already
+deleted by the tilemap destructor, just set 	erra_ = nullptr. If 	ileMap_ was
+never created (CreateMap failed) -- release 	erra_ ourselves.
+
+**Reproduction:** MAP_EDITOR_AUTOTEST=1 with MAP_EDITOR_GAMEDIR and
+MAP_EDITOR_WORLD -- the autotest loads a world and closes the window after 25s.
+With MAP_EDITOR_TRACE=1 the log goes to %TEMP%\map_editor_trace.log.
+
+
+## GPU Viewport: 2D view cut into a triangle after visiting the 3D view
+
+**Symptom:** switching TopDown -> Oblique -> TopDown on FORTOP left the top
+view rendered as a single half-quad: everything on one side of a straight
+diagonal line showed the map, the other side showed the 32,32,32 clear color.
+Resizing the window or panning moved the effect; restarting in pure 2D was
+fine.
+
+**Root cause:** sokol renders with GL_CULL_FACE enabled (the game camera's
+cull mode: SetDrawTransform, SokolRenderState.cpp:1143 sets cull CULL_CW ->
+SG_FACEWINDING_CW + front culling, SokolRenderPipeline.cpp:165-166) and never
+turns it off at pass end. Qt's QOpenGLTextureBlitter never touches cull state
+(qopengltextureblitter.cpp documents that state is the caller's
+responsibility), and its quad is two triangles with OPPOSITE windings:
+(-1,-1),(-1,1),(1,-1) is CW while (-1,1),(1,-1),(1,1) is CCW
+(qopengltextureblitter.cpp:155-162). With the sokol cull state left active the
+CW triangle is culled, so the blitter draws exactly one triangle of the map
+quad -- the image is cut along the quad diagonal (-1,1)->(1,-1). Verified
+pixel-wise: in the broken shot the right edge of the map rect stayed put while
+the left content edge retreated along x ~= const + y (the quad diagonal).
+
+**Fix:** glDisable(GL_CULL_FACE) right after the sokol frame in
+ViewportWidget::paintGL() (in the block that restores GL state for QPainter)
+and before every blit in drawTopDownGL()/drawObliqueGL(), so the blit does not
+depend on what the previous pass left behind. (An earlier glViewport reset in
+the same places was kept as a defensive measure but was NOT the cause.)
+
+**Verification:** MAP_EDITOR_SHOTS=<dir> autotest captures 01_topdown.png,
+02_oblique.png and 03_topdown_after3d.png; after the fix 01 and 03 are
+byte-identical (0 differing pixels of 880x678).
+
+
+## GPU Viewport: chunky render style needs nearest-neighbor sampler
+
+**Symptom:** before this fix the GPU oblique viewport (`TerrainGpuView`) always
+rendered terrain with bilinear filtering (`SG_FILTER_LINEAR`), regardless of
+the editor's render style setting. The old CPU chunky path (`drawObliqueGL`)
+already used `GL_NEAREST` for magnification when `RenderStyle::Chunky` was
+selected, but the sokol GPU path never switched its sampler.
+
+**Root cause:** `TerrainGpuView` wraps the game's sokol terrain renderer
+(`cTileMap` via `scene_->Draw`). The game's sokol sampler is created with
+`SG_FILTER_LINEAR` at `cSokolRender::Init` (SokolRender.cpp:309-311) and
+assigned to every pipeline's `un_sampler0` binding (SokolRenderState.cpp:308).
+`TerrainGpuView` had no API to swap the sampler, so the tilemap was always
+linearly interpolated — no chunky look.
+
+**Fix:** add `TerrainGpuView::setNearestFiltering(bool)` and
+`setDeviceTextureFilter(device, bool)` in `EditorSokolDevice`. The editor
+device creates two samplers (`samplerLinear` and `samplerNearest`) during
+`Init`, and `setNearestFiltering` swaps the active `sampler` member that
+`sokol_render_state` binds. `TerrainGpuView::renderFrame` calls
+`setDeviceTextureFilter` before `BeginScene` based on the flag.
+`ViewportWidget::paintGL` calls `gpuView_->setNearestFiltering(renderStyle_ ==
+RenderStyle::Chunky)` before `gpuView_->renderFrame()`.
+
+**Verification:** MAP_EDITOR_SHOTS autotest captures `02_oblique.png` (smooth,
+387 KB) and `03_oblique_chunky.png` (chunky, 160 KB) in the same camera
+configuration. They differ by 193 569 pixels of 596 640. Chunky PNG is much
+smaller because nearest sampling produces large uniform regions that compress
+well. Smooth has 36.9 % gradient pixels, chunky 27.2 % — confirming less
+interpolation.
+
+
+## GPU picking: the terrain march must go to z=0, not to the zeroplast plane
+
+**Symptom:** the brush cursor/p preview disappeared over GEO cells that have no
+DAM, especially near the map edges, while it worked over dammed terrain.
+
+**Root cause:** `TerrainGpuView::pickCell()` ray-marched the terrain and stopped
+at the zeroplast plane height. Heights are stored unsigned (`SGetAlt`), so raw
+geo can sit well BELOW `hZeroPlast`; the march never reached that surface, the
+ray stayed above the terrain, `pickCell()` returned false and the cell was lost.
+A secondary factor: the descent threshold `dir.z >= -1e-6` rejected the very
+shallow rays of terrain close to the horizon, and `tMax` was too short for them.
+
+**Fix:** march down to `zFloor = 0.0` (the lowest representable terrain height)
+instead of the zeroplast plane; clamp `tMax` to [32, 200000] with a
+`max(0.25, tMax/4096)` step and reject only rays with `dir.z >= -1e-3`. In
+`ViewportWidget::cellAtWidgetPos()` a missed GPU pick no longer falls back to
+the CPU `view3d_` (the GPU camera and the CPU voxel window are different
+projections — the fallback returned cells from another view).
+
+
+## Minimap: image cropped and vertically squashed when the window is maximized
+
+**Symptom:** with the MapEditor window at its default size the minimap looked
+correct; maximizing it made the map raster squash vertically into the bottom of
+the panel with a white band above it (`MAP_EDITOR_MAXIMIZE=1` autotest).
+
+**Root cause:** `MinimapWidget::resizeEvent()` recomputed the letter-boxed
+`mapArea_` and called `update()`, but never called
+`QOpenGLWidget::resizeEvent()`. That base implementation is what recreates the
+widget FBO (`QOpenGLWidgetPrivate::recreateFbos()`, qopenglwidget.cpp:1495-1515)
+for the new size — its documentation explicitly warns against overriding the
+handler without invoking it. The paint therefore continued into the old-size
+texture (396x140), which Qt stretched over the new widget (396x191): the map
+came out vertically compressed and the never-written top strip stayed at Qt's
+clear color (white).
+
+The first hypotheses were all wrong and cost time: a stale `glViewport` after
+the sokol render (the logged viewport was correct), a bad `mapArea_` (it was
+correct), a stale scissor. The giveaway was the pixel probe: the grabbed
+framebuffer was white exactly in `newHeight - oldHeight` top rows.
+
+**Fix:** call `QOpenGLWidget::resizeEvent(event)` (after `updateMapArea()`, so a
+paint event sent from inside the base handler already sees the new layout).
+
+
+## Minimap: the 3D view zone is a rotated trapezoid, not an axis-aligned rect
+
+**Symptom:** the yellow outline in the minimap ignored the 3D camera — in the
+GPU oblique mode it was computed from the `kv` ground-scale heuristic, so it
+never rotated with the camera turn and usually degenerated into "the whole map"
+(the outline coincided with the map frame and was invisible).
+
+**Fix:** the zone is now a polygon in map cells.
+`TerrainGpuView::groundFootprint()` casts one ray per screen corner
+(`cCamera::GetWorldRay`, same `pe` domain as `pickCell`) and intersects it with
+the zeroplast plane, which keeps the azimuth and the perspective spread — the
+far edge always covers more ground than the near one. A corner whose ray is at
+or above the horizon (common: the editor's GPU camera is wide, with lean 140 the
+top edge is only ~15° below horizontal) is clamped along the ray at the map
+diagonal, so the polygon stays finite; `MinimapWidget` clips the outline to the
+map rectangle. `ViewportWidget::currentViewPolygon()` returns it (TopDown: the
+visible cell range as a quad; CPU oblique fallback: the ground rectangle of the
+viewV2D basis rotated by the turn angle, the same axes `panObliqueBy()`
+inverts), and the new `viewPolygonChanged(QPolygonF)` signal feeds
+`MinimapWidget::setViewPolygon()`. `viewRectChanged`/`currentViewRect()` stay
+for the consumers that need a rect (marker panel default position, battle-map
+centring).
+
+**Verification:** the autotest captures `10_minimap_topdown` (quad over the whole
+map), `11_minimap_oblique` (turn=180 — the band between the near and far ground
+edges) and `12_minimap_oblique_rot45` (turn=45 — the near edge visibly diagonal,
+the side edges running up to the map border). Same shots in the maximized and
+the default window size, no white band in either.
+
+
+## GPU oblique: brush preview ring was ~2.4x too large (wrong ground-scale basis)
+
+**Symptom (FORTOP, rot 15 / lean 155 / lift -500 / focus 1950, brush = filled
+circle radius 64, Dam layer):** the stamped area covered only about half of the
+yellow ellipse the preview drew — the outline did not represent the affected
+area.
+
+**Root cause:** `drawBrushPreview()` sized the 3D ring from
+`obliquePxPerCell()`, whose GPU branch returns `1 / ((focusC + cameraDZ) /
+focusC)` — the **nadir** cells-per-pixel formula of the CPU voxel window. Two
+errors compound:
+
+1. `(F+Z)/F` is not the perspective ground scale. The editor's GPU camera sits
+   at slant range `r = H / cos(theta)` from the look-at point (`H = F + Z`,
+   `theta = lean - 90°`), so the true scale there is `focal_px / r` cells per
+   pixel. For the repro camera: `H = 1450`, `theta = 65°`, `r = 3431` cells,
+   `1950 / 3431 = 0.568` widget px per cell — while the heuristic gave `1 /
+   0.744 = 1.345`, i.e. **2.37x too large** (≈5.6x in area).
+2. Even the correct nadir scale is only valid at the look-at centre. The image
+   scale grows towards the bottom of the screen (nearer ground) and shrinks
+   towards the horizon, and a ground disc projects to a *sheared, offset*
+   ellipse — an axis-aligned ring centred on the cursor cannot represent it.
+
+**Fix:** draw the actual stamp footprint instead of an approximating ellipse.
+`TerrainGpuView::projectGroundContour()` projects a contour of map-cell points
+through the camera (`ConvertorWorldToViewPort`, each point taken at the terrain
+height under it, points behind the camera dropped), and
+`ViewportWidget::projectedBrushContour()` builds the boundary of the disc/square
+of `brushRadius_` cells centred on `cursorCell_` (circle: 24..180 samples;
+square: edges subdivided so the height variation shows) and returns it in widget
+pixels. `drawBrushPreview()` draws that polygon when it has ≥3 points and keeps
+the heuristic ring only as the CPU-path / behind-camera fallback.
+
+**Note — `obliquePxPerCell()` is still the old heuristic in GPU mode.** It now
+only drives the fallback brush ring (and the CPU `drawGridOverlay` step guard),
+both cosmetic; the grid itself and the brush preview are projected, so the
+rendering is correct. Not fixed here to keep the change minimal.
+
+**Verification:** autotest step at 23 s sets the repro camera and the radius-64
+Dam brush, moves the cursor to 3/4 of the viewport height and captures
+`13_brush_preview`. Instrumented during the fix (before removing the trace):
+heuristic `rx=86.1 ry=48.9` (bbox 172x98) vs projected contour bbox `84.7x44.5`
+— the projected size matches `focal/slant_range` analytically. The harness does
+**not** perform a real stamp: `applyStamp()` marks the world modified and closing
+then raises the modal "Unsaved Changes" dialog, which blocks an unattended run
+(and could save over the test world).
+
+
+## GPU oblique: grid was drawn on the zeroplast plane, grey 1px, and vanished at tilt
+
+**Symptom:** in the GPU oblique view the grid was a faint dark-grey 1px overlay
+that sat above the terrain surface (it floated over hills and clipped into
+valleys), and at steep tilt/low cameras it disappeared completely.
+
+**Root cause — three independent issues:**
+
+1. **Wrong plane.** `drawGrid3D()` projected every line at `z = zeroplastZ()`
+   (the game's zeroplast height, `hZeroPlast << VX_FRACTION` in world units),
+   not at the bottom ground plane `z = 0`. On FORTOP the zeroplast sits well
+   above the lowest terrain, so the grid hovered in the air.
+2. **Wrong style.** The pen was `QColor(70,70,70,90)` with the default 1px
+   width — invisible against the terrain.
+3. **No near-plane clipping.** Grid lines ran from one edge of the ground rect
+   to the other as single `QLineF`s. When the camera tilted low, part of the
+   line fell *behind* the camera: `projectToScreen()` rejected any point with
+   `pv.z <= 0` (behind the eye) and returned false, so the **whole** line was
+   dropped — not just the part behind the eye. A single line crossing the near
+   plane therefore deleted itself entirely, which is why the grid "vanished at
+   tilt" rather than fading.
+
+   A secondary guard bug: the "do the lines resolve on screen?" test used
+   `obliquePxPerCell()` — the CPU nadir heuristic (`F/(F+Z)`), wrong by ~2.4x
+   in perspective (see the brush-preview section above).
+
+**Fix:**
+
+- Project every grid vertex on the plane `z = 0` (the bottom ground), and draw
+  with `QPen(QColor(255,255,255), 4.0)` (4 widget px; DPR=1 in the autotest so
+  the captured lines measure 4-6 device px including antialiasing).
+- `TerrainGpuView::projectToScreenZ()` — like `projectToScreen()` but it also
+  returns the camera-space depth `pv.z` and does **not** reject points behind
+  the camera. `drawGrid3D()` uses it to clip each grid segment against the
+  camera near plane (`TerrainGpuView::nearPlaneZ()` = `cCamera::GetZPlane().x`,
+  the same bound the terrain rasterizer uses): interpolate the endpoint that is
+  behind the plane to the crossing point, then project. If both endpoints are
+  behind it, the segment is skipped.
+- The resolution guard now projects real points instead of using the heuristic:
+  it measures the projected px-spacing of one `gridStepX_`/`gridStepY_` cell at
+  the **near edge** of the ground footprint (where lines are largest), and only
+  hides the grid when both axes fall under `kMinGridSpacingPx` (4 px) — the
+  same threshold the 2D grid uses.
+- The visible ground area comes from `groundFootprint(0.0, …)` (the exact
+  frustum footprint) instead of the old `currentViewRect()` kv-heuristic rect.
+
+The line phase is unchanged from 2D: lines sit at multiples of
+`gridStepX_`/`gridStepY_` world units aligned to the map origin, so the step
+spinboxes (`setGridStep`) keep working identically in both views.
+
+**Verification (autotest, maximized window):** steps at 27 s / 29.5 s / 32 s set
+the step to 32 / 128 / 4 and capture `15_grid3d_step32`, `17_grid3d_step128`,
+`16_grid3d_step4`; `13_brush_preview` (grid hidden) is the baseline. step32 and
+step128 differ from the baseline over the ground area (white-pixel counts
+206 541 vs 63 531 — the sparser step draws fewer lines) and from each other;
+line runs measure 4-6 px. step4 stays hidden — at the near edge its lines are
+2.25 px apart (`MAP_EDITOR_TRACE=1` logs
+`grid step=4x4 hidden (pxX=2.25 pxY=1.18 at near edge)`), below the 4 px
+threshold, which matches the 2D grid's behaviour at the same zoom.
+`01_topdown` vs `04_topdown_after3d` is still byte-identical (no 2D regression).
+
+

@@ -38,10 +38,11 @@ int View3DRenderer::clampFocus(int focusC)
     return std::clamp(focusC, kMinFocusC, kMaxFocusC);
 }
 
-int View3DRenderer::clampCameraDZ(int cameraDZ)
+int View3DRenderer::clampCameraDZ(int cameraDZ, bool is_gpu_view)
 {
+    const int min = (is_gpu_view) ? -500.0 : static_cast<int>(MIN_CAMERADZ_VX_WINDOW);
     return std::clamp(cameraDZ,
-                      static_cast<int>(MIN_CAMERADZ_VX_WINDOW),
+                      min,
                       static_cast<int>(MAX_CAMERADZ_VX_WINDOW));
 }
 
@@ -127,7 +128,7 @@ void View3DRenderer::render(int cx, int cy)
         static_cast<float>(camera_.turnAngleDeg * kPi / 180.0);
     vMap.cameraAngleLean = static_cast<int>(
         stableLeanDeg(camera_.leanDeg, camera_.focusC, yside) + 0.5);
-    vMap.cameraDZ = clampCameraDZ(camera_.cameraDZ);
+    vMap.cameraDZ = clampCameraDZ(camera_.cameraDZ, m_is_gpu_available);
     vMap.focusC = clampFocus(camera_.focusC);
 
     // The window is centred on the map cell; xside/yside = half-window so the
@@ -598,7 +599,7 @@ void View3DRenderer::drawGridOverlay(int stepX, int stepY,
 
     // The same clamped camera values renderSmooth renders with.
     const int focusC = clampFocus(camera_.focusC);
-    const int cameraDZ = clampCameraDZ(camera_.cameraDZ);
+    const int cameraDZ = clampCameraDZ(camera_.cameraDZ, m_is_gpu_available);
     const double lean = stableLeanDeg(camera_.leanDeg, focusC, yside);
     const double leanRad = lean * 3.14159265358979323846 / 180.0;
     const double tga = std::tan(leanRad);
@@ -842,7 +843,7 @@ bool View3DRenderer::pickGroundCell(int cx, int cy, int col, int row,
     // Same clamped camera values render() pushes into vMap, taken from our own
     // camera_ so the pick does not depend on vMap's current contents.
     const int focusC = clampFocus(camera_.focusC);
-    const int cameraDZ = clampCameraDZ(camera_.cameraDZ);
+    const int cameraDZ = clampCameraDZ(camera_.cameraDZ, m_is_gpu_available);
     const double lean = stableLeanDeg(camera_.leanDeg, focusC, yside);
     const double leanRad = lean * 3.14159265358979323846 / 180.0;
     const double turnRad = camera_.turnAngleDeg * 3.14159265358979323846 / 180.0;

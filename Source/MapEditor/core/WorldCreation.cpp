@@ -75,6 +75,114 @@ bool writeFlatVmp(const fs::path& worldDir, int hSize, int vSize,
     return true;
 }
 
+/// The template's leveledSurfaceTexture.tga is an 8-bit indexed TGA whose
+/// size can exceed the new (smaller) map — Terra's loader asserts on that
+/// (VMAP.cpp loadLeveledTexture: "size texture > size map") and Debug builds
+/// abort. Downscale the copied file nearest-neighbour in index space (the
+/// palette entries are the DAM surface types, they must survive verbatim)
+/// by the smallest power-of-two factor that fits both axes, keeping the
+/// texture a power of two. Files already small enough are left untouched.
+bool resizeLeveledTextureIfNeeded(const fs::path& worldDir, int mapPowerX,
+                                  int mapPowerY)
+{
+    const fs::path path = worldDir / WorldFiles::LeveledTextureFile;
+    if (!fs::exists(path)) {
+        return true; // optional file
+    }
+
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        fprintf(stderr, "WorldCreation: cannot read '%s'.\n",
+                path.u8string().c_str());
+        return false;
+    }
+    unsigned char header[18] = {};
+    in.read(reinterpret_cast<char*>(header), sizeof(header));
+    if (!in) {
+        return false;
+    }
+    // Uncompressed 256-colour, 8-bit indices, no ID field (the Terra loader
+    // does not skip one either).
+    if (header[0] != 0 || header[1] != 1 || header[2] != 1 ||
+        header[16] != 8 || header[7] != 24 ||
+        (header[3] | (header[4] << 8)) != 0 || // CMapStart
+        (header[5] | (header[6] << 8)) != 256) { // CMapLenght
+        fprintf(stderr, "WorldCreation: '%s' has an unsupported TGA layout.\n",
+                path.u8string().c_str());
+        return false;
+    }
+    const unsigned w = static_cast<unsigned>(header[12]) |
+                       (static_cast<unsigned>(header[13]) << 8);
+    const unsigned h = static_cast<unsigned>(header[14]) |
+                       (static_cast<unsigned>(header[15]) << 8);
+    const unsigned maxW = 1u << mapPowerX;
+    const unsigned maxH = 1u << mapPowerY;
+    if (w == 0 || h == 0 || (w <= maxW && h <= maxH)) {
+        return true;
+    }
+
+    int shift = 0;
+    while ((w >> shift) > maxW || (h >> shift) > maxH) {
+        ++shift;
+    }
+    const unsigned newW = w >> shift;
+    const unsigned newH = h >> shift;
+
+    std::vector<unsigned char> palette(static_cast<std::size_t>(768));
+    in.read(reinterpret_cast<char*>(palette.data()),
+            static_cast<std::streamsize>(palette.size()));
+    if (!in) {
+        return false;
+    }
+    // Read the index plane top-down (bit 5 of the descriptor says whether
+    // the file stores rows bottom-up).
+    const bool bottomUp = (header[17] & 0x20) == 0;
+    std::vector<unsigned char> indices(static_cast<std::size_t>(w) * h);
+    if (bottomUp) {
+        for (unsigned row = 0; row < h; ++row) {
+            in.read(reinterpret_cast<char*>(&indices[(h - 1 - row) * w]),
+                    static_cast<std::streamsize>(w));
+        }
+    } else {
+        in.read(reinterpret_cast<char*>(indices.data()),
+                static_cast<std::streamsize>(w) * h);
+    }
+    in.close();
+    if (in.bad()) {
+        return false;
+    }
+
+    std::vector<unsigned char> scaled(static_cast<std::size_t>(newW) * newH);
+    for (unsigned y = 0; y < newH; ++y) {
+        for (unsigned x = 0; x < newW; ++x) {
+            scaled[y * newW + x] = indices[(y << shift) * w + (x << shift)];
+        }
+    }
+
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        fprintf(stderr, "WorldCreation: cannot write '%s'.\n",
+                path.u8string().c_str());
+        return false;
+    }
+    header[12] = static_cast<unsigned char>(newW & 0xFF);
+    header[13] = static_cast<unsigned char>((newW >> 8) & 0xFF);
+    header[14] = static_cast<unsigned char>(newH & 0xFF);
+    header[15] = static_cast<unsigned char>((newH >> 8) & 0xFF);
+    header[17] = 0x20; // canonical top-left origin on output
+    out.write(reinterpret_cast<const char*>(header), sizeof(header));
+    out.write(reinterpret_cast<const char*>(palette.data()),
+              static_cast<std::streamsize>(palette.size()));
+    out.write(reinterpret_cast<const char*>(scaled.data()),
+              static_cast<std::streamsize>(scaled.size()));
+    if (!out.good()) {
+        fprintf(stderr, "WorldCreation: failed writing '%s'.\n",
+                path.u8string().c_str());
+        return false;
+    }
+    return true;
+}
+
 } // namespace
 
 bool isValidWorldName(const std::string& name)
@@ -167,6 +275,15 @@ WorldCreateResult createNewWorld(EditorSession& session,
                           fs::copy_options::overwrite_existing, ec);
             ec.clear();
         }
+    }
+
+    // Terra asserts (and aborts in Debug) when the copied leveled texture is
+    // larger than the new map — downscale it to fit.
+    if (!resizeLeveledTextureIfNeeded(newDir, params.mapPowerX,
+                                      params.mapPowerY)) {
+        result.error = "Cannot resize the copied leveledSurfaceTexture.tga.";
+        fs::remove_all(newDir, ec);
+        return result;
     }
 
     // ------------------------------------------------------------------

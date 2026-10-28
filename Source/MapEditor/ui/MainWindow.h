@@ -2,6 +2,8 @@
 
 #include <QMainWindow>
 
+#include <string>
+
 #include "BrushTool.h"
 #include "MarkerStore.h"
 #include "Validation.h"
@@ -62,6 +64,20 @@ public:
 protected:
     /// Gives the user a chance to save unsaved changes before closing.
     void closeEvent(QCloseEvent *event) override;
+
+public:
+    // Repro-harness hooks (MAP_EDITOR_AUTOTEST) — not part of the UI flow.
+    void debugOpenGameDir(const std::string& dir);
+    void debugLoadWorld(const std::string& worldName);
+    /// The central viewport widget for the autotest harness (nullptr before
+    /// buildViewport).
+    MapEditor::ViewportWidget *debugViewport() const { return viewport_; }
+    /// The minimap panel for the autotest harness (nullptr before
+    /// buildViewport).
+    MapEditor::MinimapWidget *debugMinimap() const { return minimap_; }
+    /// The brush tool for the autotest harness (nullptr before the toolbar is
+    /// built) — lets a repro drive a real stamp through the widget handlers.
+    MapEditor::BrushTool *debugBrushTool() const { return brushTool_; }
 
 private slots:
     void onActionSelectGameDir();

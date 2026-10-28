@@ -78,7 +78,7 @@ public:
     /// Clamp an editor-facing focus value into [kMinFocusC, kMaxFocusC].
     static int clampFocus(int focusC);
     /// Clamp cameraDZ into Terra's own CAMERADZ window constants.
-    static int clampCameraDZ(int cameraDZ);
+    static int clampCameraDZ(int cameraDZ, bool isGpuRender);
     /// Clamp the tilt into the band that renders cleanly. yside is half the
     /// window height the renderer will scan (buffer height / 2).
     static double stableLeanDeg(double leanDeg, int focusC, int yside);
@@ -163,6 +163,11 @@ public:
     bool pickGroundCell(int cx, int cy, int col, int row,
                         int &mapX, int &mapY) const;
 
+
+    inline void toggleGPUIsAvailable()
+    {
+        m_is_gpu_available = true;
+    }
 private:
     /// The voxel renderer walking the corrected frustum (mirrored behind
     /// the nadir, see the .cpp) with pyramid sampling; render() dispatches
@@ -176,6 +181,9 @@ private:
     /// on (save → grey the geo halves → render → restore byte-exact).
     /// Legacy-geometry fallback for renders without a color source.
     void viewV2DChunky(int cx, int cy);
+
+
+    bool m_is_gpu_available = false;
 
     std::vector<unsigned short> buffer_;
     int width_ = 0;
