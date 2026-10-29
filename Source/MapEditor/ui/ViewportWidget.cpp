@@ -1767,7 +1767,27 @@ void ViewportWidget::mouseReleaseEvent(QMouseEvent *event)
 
 void ViewportWidget::mouseDoubleClickEvent(QMouseEvent *event)
 {
-    Q_UNUSED(event);
+    // Windows reports the second press of a rapid click series as a
+    // double-click event (WM_LBUTTONDBLCLK → MouseButtonDblClick — the
+    // normal MouseButtonPress is not delivered for it). During fast brush
+    // stamping or repeated eyedropper picks that must NOT reset the 3D
+    // camera: the double-click "zoom to fit" gesture is reserved for the
+    // View mode (left button). In edit modes the event is routed through
+    // the normal press path so the stamp/pick the platform swallowed as a
+    // double-click still applies.
+    if (event->button() == Qt::LeftButton
+            && (editorMode_ == EditorMode::Brush
+                || editorMode_ == EditorMode::Eyedropper)) {
+        mousePressEvent(event);
+        event->accept();
+        return;
+    }
+    if (event->button() != Qt::LeftButton) {
+        // Middle/right buttons drive camera pans (and repeats of them are
+        // just more pans) — a double-click of those is not a fit gesture.
+        event->ignore();
+        return;
+    }
     zoomToFit();
 }
 

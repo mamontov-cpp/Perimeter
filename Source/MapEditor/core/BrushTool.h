@@ -72,7 +72,9 @@ enum class BrushEffect
                     ///< mark the cells that reached it At_ZEROPLAST — the
                     ///< former Align4ZP and PlotZeroplast brushes in one tool
                     ///< (Terra's T2TE_ALIGNMENT_TERRAIN_4ZP +
-                    ///< T2TE_PLOTTING_ZEROPLAST per cell).
+                    ///< T2TE_PLOTTING_ZEROPLAST per cell). Absolute set like
+                    ///< AlignVariableH: one stamp reaches the level from any
+                    ///< height, strength does not step it.
     AlignVariableH, ///< T3.2: set to an arbitrary height in one stamp — a
                     ///< full-influence cell moves by the whole remaining
                     ///< distance to params.heightLevel (absolute set, not an

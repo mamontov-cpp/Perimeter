@@ -8,11 +8,11 @@
 //
 // The check follows the exact Terra alignment math:
 //   after seedDamLayer, VxDBuf = VxGBuf (dam at geo height);
-//   the toolzer drives the dam layer:
-//     AlignVariableH — absolute set: damTop = target in one stamp;
-//     Align4ZP       — game-like step, hardness ignored (tVoxSetAll):
-//                      damTop = min(geoTop + magnitude, target) / lowered by
-//                      magnitude when the seeded dam starts above the target;
+//   the toolzer drives the dam layer (both tools are absolute sets):
+//     AlignVariableH — damTop = target in one stamp;
+//     Align4ZP       — damTop = target in one stamp, hardness ignored
+//                      (tVoxSetAll), plus the At_ZEROPLAST marking of the
+//                      cells that sit exactly at the target;
 //   VxGBuf stays unchanged (the geo layer is owned by Geo mode) unless the
 //   surface drops to the geo top — then the dam is removed;
 //   SurBuf = veryLightDam (the seed writes the dam material);
@@ -172,20 +172,18 @@ bool prepareBrushTestSession(const char* subdirName,
 ///
 /// For every mask cell the expected result follows Terra's exact sequence:
 ///   1. seedDamLayer sets VxDBuf := VxGBuf, SurBuf := veryLightDam;
-///   2. the toolzer (VD != 0 branch) drives the dam layer:
-///        AlignVariableH — damTop = target (absolute set);
-///        Align4ZP       — damTop = min(geoTop + magnitude, target) when
-///                         geoTop < target, otherwise damTop is lowered by
-///                         magnitude (the brush ignores the GRIDAT hardness);
+///   2. the toolzer (VD != 0 branch) drives the dam layer — both tools are
+///      absolute sets, so damTop := target in one stamp whatever the
+///      starting geo height (hardness never attenuates them);
 ///   3. VxGBuf is unchanged (Geo mode owns it) unless the surface drops to
 ///      the geo top — then the toolzer's `v <= VG` branch removes the dam
 ///      and writes the new geo top;
 ///   4. AtrBuf := damTop & VX_FRACTION_MASK (fraction bits of the dam top).
 ///
 /// `isAlign4ZP` selects the At_ZEROPLAST marking of the cells that reach the
-/// target; the absolute AlignVariableH toolzer writes only the fraction bits.
+/// target; the AlignVariableH toolzer writes only the fraction bits.
 bool checkDamSeededStamp(const MapEditor::BrushMask& mask, int stampX,
-                         int stampY, int radius, int magnitude, int target,
+                         int stampY, int radius, int target,
                          const StampPre& pre, bool isAlign4ZP)
 {
     for (int dy = -radius; dy <= radius; ++dy) {
@@ -203,15 +201,11 @@ bool checkDamSeededStamp(const MapEditor::BrushMask& mask, int stampX,
             const int effectiveTop = (before.geo == 0)
                 ? (geoTop + (1 << VX_FRACTION))
                 : geoTop;
-            // AlignVariableH ("Level to Height") is an absolute set: one
-            // stamp moves the seeded dam by the whole remaining distance.
-            // Align4ZP keeps the game-like strength-scaled step and ignores
-            // the GRIDAT hardness (tVoxSetAll), so a lowering is never
-            // attenuated to nothing on hard ground.
-            const int step = isAlign4ZP
-                ? magnitude
-                : (effectiveTop < target ? target - effectiveTop
-                                         : effectiveTop - target);
+            // Both alignment effects are absolute sets: the stamp moves the
+            // seeded dam by the whole remaining distance to the target, the
+            // toolzer caps the overshoot at it.
+            const int step = (effectiveTop < target ? target - effectiveTop
+                                                    : effectiveTop - target);
             int expectedTop = effectiveTop;
             bool moved = false;
             if (effectiveTop < target) {
@@ -234,9 +228,9 @@ bool checkDamSeededStamp(const MapEditor::BrushMask& mask, int stampX,
 
             TEST_REQUIRE(actualDamTop == expectedTop,
                          "dam top at (%d,%d): expected %d, got %d "
-                         "(geoTop=%d magnitude=%d target=%d).",
+                         "(effectiveTop=%d target=%d).",
                          dx, dy, expectedTop, actualDamTop,
-                         geoTop, magnitude, target);
+                         effectiveTop, target);
 
             TEST_REQUIRE(post.dam == expectedDam,
                          "dam layer at (%d,%d): expected %d, got %d.",
@@ -330,16 +324,15 @@ bool runBrushAlignDamOnGeoTests()
     BrushParams params;
     params.shape = BrushShape::FilledCircle;
     params.radius = radius;
-    params.strength = 100;      // full delta = 3200 = 100 voxels per stamp
+    params.strength = 100;      // unused by the alignment tools (absolute sets)
     params.mode = BrushMode::Dam;
 
     const MapEditor::BrushMask mask =
         MapEditor::BrushMasks::filledCircle(radius);
-    const int magnitude = MapEditor::BrushTool::heightDeltaMagnitude(params, 255);
 
     // ------------------------------------------------------------------
-    // 1: AlignVariableH — Dam mode must seed the dam, then drive it to
-    // min(geoTop + magnitude, target).
+    // 1: AlignVariableH — Dam mode must seed the dam, then set it to the
+    // target in one stamp (absolute set).
     // ------------------------------------------------------------------
     {
         const int customLevel = MapEditor::BrushTool::clampHeightLevel(
@@ -356,7 +349,7 @@ bool runBrushAlignDamOnGeoTests()
                      "the AlignVariableH stamp in Dam mode was refused.");
 
         TEST_REQUIRE(checkDamSeededStamp(mask, stampX, stampY, radius,
-                                         magnitude, target, pre,
+                                         target, pre,
                                          /*isAlign4ZP=*/false),
                      "AlignVariableH Dam mode cell check failed.");
         std::printf("[PASS] AlignVariableH Dam mode seeds the dam and drives "
@@ -386,7 +379,7 @@ bool runBrushAlignDamOnGeoTests()
                      "the Align4ZP stamp in Dam mode was refused.");
 
         TEST_REQUIRE(checkDamSeededStamp(mask, stampX, stampY, radius,
-                                         magnitude, targetZP, pre,
+                                         targetZP, pre,
                                          /*isAlign4ZP=*/true),
                      "Align4ZP Dam mode cell check failed.");
         std::printf("[PASS] Align4ZP Dam mode seeds the dam and marks "

@@ -650,13 +650,17 @@ void BrushTool::applyEffectToCell(const BrushParams& params, int x, int y, unsig
             break; // already zeroplast — the alignment toolzer skips it too
         }
 
-        // AlignVariableH ("Level to Height") is an absolute set: one stamp
-        // moves every covered cell by the whole remaining distance to the
-        // target (scaled by the mask influence), so even a much lower dam or
-        // a geo-only cell reaches the chosen height in a single click. The
-        // Dam mode seeds its layer first: the distance must be measured from
-        // the seeded dam top (the zero-geo seed sits one voxel up), otherwise
-        // the first stamp would stop one voxel short of the target.
+        // Both alignment effects are absolute sets: one stamp moves every
+        // covered cell by the whole remaining distance to the target (scaled
+        // by the mask influence), so even a much lower dam or a geo-only cell
+        // reaches the chosen height in a single click — the toolzer caps the
+        // overshoot at the target. The Dam mode seeds its layer first: the
+        // distance must be measured from the seeded dam top (the zero-geo
+        // seed sits one voxel up), otherwise the stamp stops one voxel short
+        // of the target. (Align4ZP used to take Terra's game-like
+        // strength-scaled step instead: over low geo the brush then reached
+        // the zeroplast height only after repeated stamps, and only the
+        // overshooting stamp marked At_ZEROPLAST.)
         //
         // Terra's alignment toolzers have an early-return gate:
         // `if (AtrBuf & At_ZPMASK == At_ZEROPLAST) return 0`
@@ -674,21 +678,15 @@ void BrushTool::applyEffectToCell(const BrushParams& params, int x, int y, unsig
                 vMap.AtrBuf[off] = static_cast<unsigned char>(
                     vMap.AtrBuf[off] & ~At_ZPMASK);
             }
+        }
+        if (params.mode == BrushMode::Dam) {
             seedDamLayer(off);
         }
 
-        int dV = 0;
-        if (params.effect == BrushEffect::AlignVariableH) {
-            // Full remaining distance; influence 255 (every shape stamp) is
-            // exact, a partial image-mask influence moves part of the way.
-            dV = scaleDeltaByInfluence(
-                target - static_cast<int>(vMap.SGetAlt(off)), influence);
-        } else {
-            // Align4ZP keeps Terra's game-like incremental levelling: the
-            // strength-scaled per-stamp delta towards the target.
-            const int magnitude = heightDeltaMagnitude(params, influence);
-            dV = vMap.SGetAlt(off) < target ? magnitude : -magnitude;
-        }
+        // Full remaining distance; influence 255 (every shape stamp) is
+        // exact, a partial image-mask influence moves part of the way.
+        const int dV = scaleDeltaByInfluence(
+            target - static_cast<int>(vMap.SGetAlt(off)), influence);
 
         if (params.mode == BrushMode::Geo && damCell) {
             // Geo mode owns VxGBuf only: Terra's toolzer would edit the top
@@ -705,13 +703,6 @@ void BrushTool::applyEffectToCell(const BrushParams& params, int x, int y, unsig
             break;
         }
         if (params.effect == BrushEffect::Align4ZP) {
-            // The former PlotZeroplast Dam-mode behaviour: seed the dam at
-            // the geo height first so the toolzer drives the dam layer (the
-            // zeroplast belongs to the dam domain — the UI offers this brush
-            // in Dam mode only).
-            if (params.mode == BrushMode::Dam) {
-                seedDamLayer(off);
-            }
             static individualToolzer<T2TE_ALIGNMENT_TERRAIN_4ZP> alignZPToolzer;
             alignZPToolzer.setHAppoximation(whole);
             // tVoxSetAll, not tVoxSet: the zeroplast brush ignores the GRIDAT
@@ -721,7 +712,8 @@ void BrushTool::applyEffectToCell(const BrushParams& params, int x, int y, unsig
             // at all (hardness 0) or moved by a fraction of the step, so a
             // stamp over cells of different heights left them uneven and
             // above hZeroPlast. Setting the surface to the zeroplast level
-            // must not depend on hardness.
+            // must not depend on hardness. (The Dam-mode dam seeding now
+            // happens above, before the distance measurement.)
             alignZPToolzer.tVoxSetAll(off, dV);
             // The zeroplast marking of the former PlotZeroplast brush: the
             // merged brush levels to hZeroPlast and marks every cell that

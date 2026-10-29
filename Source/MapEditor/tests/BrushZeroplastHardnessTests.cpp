@@ -9,9 +9,10 @@
 // and a stamp covering cells of different heights left them uneven. The brush
 // now goes through tVoxSetAll (no attenuation), so:
 //
-//   1. one stamp lowers every dam in the mask by the full `strength` step,
-//      capped at hZeroPlast, whatever the hardness (0..2 under the whole
-//      patch) — the cells converge to exactly hZeroPlast even though they
+//   1. one stamp lowers every dam in the mask straight to hZeroPlast (the
+//      absolute set takes the whole remaining distance; strength steps
+//      nothing here), whatever the hardness (0..2 under the whole patch)
+//      — the cells converge to exactly hZeroPlast even though they
 //      start at different heights;
 //   2. the cells that reached the level are marked At_ZEROPLAST, keep their
 //      geo layer and their dam surface, and a second stamp leaves them
@@ -223,8 +224,8 @@ bool runBrushZeroplastHardnessTests()
     const int hZP = static_cast<int>(vMap.hZeroPlast);
     const int target = hZP << VX_FRACTION;
     // Patch layout: the geo sits 30 voxels under the zeroplast level, the
-    // dams start 10..40 voxels above it (one full-strength step reaches the
-    // level from every one of them).
+    // dams start 10..40 voxels above it — everything reaches the level in
+    // one stamp (the absolute set takes the whole remaining distance).
     const int geoWhole = hZP - 30;
     const int lowestDam = hZP + 10;
     const int highestDam = lowestDam + 2 * radius * 5;
@@ -275,7 +276,7 @@ bool runBrushZeroplastHardnessTests()
     BrushParams params;
     params.shape = BrushShape::FilledCircle;
     params.radius = radius;
-    params.strength = 100;      // full delta = 3200 = 100 voxels per stamp
+    params.strength = 100;      // ignored by Align4ZP (an absolute set)
     params.mode = BrushMode::Dam;
     params.effect = BrushEffect::Align4ZP;
     params.direction = 1;       // alignment tools ignore the direction

@@ -1675,9 +1675,10 @@ void MainWindow::createBrushActions()
     actBrushLevelZP_ = addType(
         makeGroundLetterIcon(QStringLiteral("Z"), kInk),
         tr("Level to Zeroplast"),
-        tr("The brush levels the terrain to the world zeroplast height and "
-           "marks the reached cells as zeroplast (Dam mode only — the "
-           "zeroplast belongs to the dam domain)."),
+        tr("The brush levels the terrain to the world zeroplast height in "
+           "one stamp (strength has no effect on it) and marks the reached "
+           "cells as zeroplast (Dam mode only — the zeroplast belongs to "
+           "the dam domain)."),
         MapEditor::BrushEffect::Align4ZP, 1);
     actBrushLevelHeight_ = addType(
         makeGroundLetterIcon(QStringLiteral("H"), kInk),
