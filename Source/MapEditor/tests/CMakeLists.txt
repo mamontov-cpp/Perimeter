@@ -21,6 +21,7 @@ ADD_EXECUTABLE(map_editor_tests
         BrushAlignDamOnGeoTests.cpp
         BrushAlignVariableHZPTests.cpp
         BrushSetHeightTests.cpp
+        BrushZeroplastHardnessTests.cpp
         BrushColorToolTests.cpp
         BrushPickColorTests.cpp
         ImageDecalTests.cpp

@@ -10,9 +10,11 @@
 //   after seedDamLayer, VxDBuf = VxGBuf (dam at geo height);
 //   the toolzer drives the dam layer:
 //     AlignVariableH — absolute set: damTop = target in one stamp;
-//     Align4ZP       — game-like step:
-//                      damTop = min(geoTop + magnitude, target);
-//   VxGBuf stays unchanged (the geo layer is owned by Geo mode);
+//     Align4ZP       — game-like step, hardness ignored (tVoxSetAll):
+//                      damTop = min(geoTop + magnitude, target) / lowered by
+//                      magnitude when the seeded dam starts above the target;
+//   VxGBuf stays unchanged (the geo layer is owned by Geo mode) unless the
+//   surface drops to the geo top — then the dam is removed;
 //   SurBuf = veryLightDam (the seed writes the dam material);
 //   undo restores the pre-stamp geo-only state byte-exact.
 // ============================================================================
@@ -173,8 +175,11 @@ bool prepareBrushTestSession(const char* subdirName,
 ///   2. the toolzer (VD != 0 branch) drives the dam layer:
 ///        AlignVariableH — damTop = target (absolute set);
 ///        Align4ZP       — damTop = min(geoTop + magnitude, target) when
-///                         geoTop < target, otherwise damTop = geoTop;
-///   3. VxGBuf is unchanged (Geo mode owns it);
+///                         geoTop < target, otherwise damTop is lowered by
+///                         magnitude (the brush ignores the GRIDAT hardness);
+///   3. VxGBuf is unchanged (Geo mode owns it) unless the surface drops to
+///      the geo top — then the toolzer's `v <= VG` branch removes the dam
+///      and writes the new geo top;
 ///   4. AtrBuf := damTop & VX_FRACTION_MASK (fraction bits of the dam top).
 ///
 /// `isAlign4ZP` selects the At_ZEROPLAST marking of the cells that reach the
@@ -191,10 +196,6 @@ bool checkDamSeededStamp(const MapEditor::BrushMask& mask, int stampX,
             const CellState& before = pre.at(dx, dy);
             const CellState post = CellState::read(px, py);
 
-            TEST_REQUIRE(post.dam != 0,
-                         "dam must be seeded on geo cell (%d,%d) in Dam mode.",
-                         dx, dy);
-
             const int geoTop = before.height;
             // seedDamLayer: if VxGBuf == 0, the dam starts at voxel 1 (bump
             // of 1 << VX_FRACTION above geoTop), because VxDBuf == 0 means
@@ -204,33 +205,59 @@ bool checkDamSeededStamp(const MapEditor::BrushMask& mask, int stampX,
                 : geoTop;
             // AlignVariableH ("Level to Height") is an absolute set: one
             // stamp moves the seeded dam by the whole remaining distance.
-            // Align4ZP keeps the game-like strength-scaled step.
-            const int expectedDamTop = isAlign4ZP
-                ? ((effectiveTop < target)
-                       ? std::min(effectiveTop + magnitude, target)
-                       : effectiveTop)
-                : target;
+            // Align4ZP keeps the game-like strength-scaled step and ignores
+            // the GRIDAT hardness (tVoxSetAll), so a lowering is never
+            // attenuated to nothing on hard ground.
+            const int step = isAlign4ZP
+                ? magnitude
+                : (effectiveTop < target ? target - effectiveTop
+                                         : effectiveTop - target);
+            int expectedTop = effectiveTop;
+            bool moved = false;
+            if (effectiveTop < target) {
+                expectedTop = std::min(effectiveTop + step, target);
+                moved = true;
+            } else if (effectiveTop > target) {
+                expectedTop = std::max(effectiveTop - step, target);
+                moved = true;
+            }
+
+            // Dropping to the geo top removes the dam (toolzer `v <= VG`).
+            const bool damRemoved = moved && expectedTop <= geoTop;
+            const int expectedDam = damRemoved ? 0 : (expectedTop >> VX_FRACTION);
+            const int expectedGeo =
+                damRemoved ? (expectedTop >> VX_FRACTION) : before.geo;
 
             const int actualDamTop =
                 (static_cast<int>(post.dam) << VX_FRACTION) +
                 (post.atr & VX_FRACTION_MASK);
 
-            TEST_REQUIRE(actualDamTop == expectedDamTop,
+            TEST_REQUIRE(actualDamTop == expectedTop,
                          "dam top at (%d,%d): expected %d, got %d "
                          "(geoTop=%d magnitude=%d target=%d).",
-                         dx, dy, expectedDamTop, actualDamTop,
+                         dx, dy, expectedTop, actualDamTop,
                          geoTop, magnitude, target);
 
-            TEST_REQUIRE(post.geo == before.geo,
-                         "geo layer must not change in Dam mode at (%d,%d).",
-                         dx, dy);
+            TEST_REQUIRE(post.dam == expectedDam,
+                         "dam layer at (%d,%d): expected %d, got %d.",
+                         dx, dy, expectedDam, post.dam);
 
-            TEST_REQUIRE(post.sur == vMap.veryLightDam,
-                         "dam surface at (%d,%d) must be veryLightDam "
-                         "(seedDamLayer writes).",
-                         dx, dy);
+            TEST_REQUIRE(post.geo == expectedGeo,
+                         "geo layer at (%d,%d): expected %d, got %d.",
+                         dx, dy, expectedGeo, post.geo);
 
-            if (expectedDamTop == target && isAlign4ZP) {
+            TEST_REQUIRE(post.sur == (damRemoved
+                                          ? vMap.GetGeoType(off, expectedTop)
+                                          : vMap.veryLightDam),
+                         "surface at (%d,%d): expected %d, got %d "
+                         "(seedDamLayer writes veryLightDam; a removed dam "
+                         "re-derives the geo texture).",
+                         dx, dy,
+                         damRemoved ? vMap.GetGeoType(off, expectedTop)
+                                    : vMap.veryLightDam,
+                         post.sur);
+
+            if (isAlign4ZP && expectedTop == target) {
                 TEST_REQUIRE((post.atr & At_ZPMASK) == At_ZEROPLAST,
                              "cells at target must be At_ZEROPLAST "
                              "(Align4ZP) at (%d,%d).", dx, dy);

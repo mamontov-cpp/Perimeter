@@ -24,7 +24,8 @@
 //          its own history with identical swap semantics);
 //       2. route each mask cell through Terra's individualToolzer
 //          (tVoxSet — hardness scaling, zeroplast attributes, geo/dam layer
-//          handling are all Terra's own behaviour, not reimplemented):
+//          handling are all Terra's own behaviour, not reimplemented; the
+//          alignment tools use tVoxSetAll, i.e. they ignore the hardness):
 //          * ChangeHeight (T3.2) — T2TE_CHANGING_TERRAIN_HEIGHT; the
 //            BrushMode Geo/Dam difference is applied around the toolzer
 //            (Geo: only VxGBuf, dam-capped; Dam: seeds/removes VxDBuf);

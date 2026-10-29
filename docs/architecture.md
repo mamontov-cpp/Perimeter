@@ -440,8 +440,9 @@ undo-запись):
    undo редактора описан в §4.1);
 3. маршрутизация эффекта: высотные инструменты T3.2 (`ChangeHeight`,
    `Align4ZP`, `AlignVariableH`, §5.11) — каждая клетка маски проходит
-   через Terra-тулзу (`individualToolzer<T2TE_*>::tVoxSet()`):
-   hardness-затухание, биты `At_*`, согласованность `VxGBuf/VxDBuf/SurBuf`
+   через Terra-тулзу (`individualToolzer<T2TE_*>::tVoxSet()` /
+   `tVoxSetAll()`): hardness-затухание (только `ChangeHeight`), биты
+   `At_*`, согласованность `VxGBuf/VxDBuf/SurBuf`
    и разделение слоёв Geo/Dam — всё это поведение самой Terra, не
    переизобретается. Дельта клетки ChangeHeight = `direction × strength` (в
    1/32 м, `<<VX_FRACTION`) × влияние маски (255 → полный дельта),
@@ -477,7 +478,7 @@ Terra-тулзы без правок Terra:
 | Эффект | Terra-тулза | Цель |
 |---|---|---|
 | `ChangeHeight` | `T2TE_CHANGING_TERRAIN_HEIGHT` | raise/lower на `direction × strength` |
-| `Align4ZP` | `T2TE_ALIGNMENT_TERRAIN_4ZP` | уровень к `vMap.hZeroPlast` («выровнять относительно зеропласта»), игровой шаг `strength` за штамп |
+| `Align4ZP` | `T2TE_ALIGNMENT_TERRAIN_4ZP` | уровень к `vMap.hZeroPlast` («выровнять относительно зеропласта»), игровой шаг `strength` за штамп, hardness игнорируется |
 | `AlignVariableH` | `T2TE_ALIGNMENT_TERRAIN_VARIABLE_H` | абсолютная установка высоты `BrushParams::heightLevel` за один штамп |
 
 **Выравнивание.** Цель (`hAppr`) синхронизируется перед КАЖДОЙ клеткой
@@ -489,7 +490,13 @@ Terra-тулзы без правок Terra:
 - **`Align4ZP`** сохраняет игровую инкрементальную семантику: модуль дельты
   — `strength-×-влияние` (`heightDeltaMagnitude`), клетки, дошедшие до цели,
   помечаются `At_LEVELED` (клетки с `At_ZEROPLAST` скипаются — поведение
-  игры).
+  игры). Кисть НЕ учитывает `GRIDAT_MASK_HARDNESS`: используется
+  `tVoxSetAll`, а не `tVoxSet`. У `tVoxSet` затухание понижения
+  `dV = dV*(hardness<<hardness)/24` даёт множители 0/24, 2/24, 8/24, 24/24
+  для hardness 0..3: на твёрдом грунте дамба либо не двигалась вовсе, либо
+  проходила лишь часть шага, поэтому штамп по клеткам разной высоты
+  оставлял их неровными и выше `hZeroPlast` (bugfix: «Set zeroplast brush
+  ignores hardness»).
 - **`AlignVariableH`** («Level to Height») — абсолютная установка: дельта
   клетки равна всему оставшемуся расстоянию `target − SGetAlt`, умноженному
   на влияние маски (255 → точная цель). Один штамп ставит даже сильно
@@ -535,7 +542,9 @@ Terra-тулзы без правок Terra:
 `BrushTool::heightDeltaMagnitude(params, influence)` — модуль дельты
 ChangeHeight и инкрементального `Align4ZP`, вынесен для тестов. Абсолютный
 `AlignVariableH` его не использует: его дельта — всё оставшееся расстояние
-до цели, умноженное на влияние маски.
+до цели, умноженное на влияние маски. Оба выравнивающих инструмента идут
+через `tVoxSetAll` (без hardness-затухания); `tVoxSet` остался только у
+`ChangeHeight`.
 
 **GUI (T3.2).** Тулбар «Brush»: 4 типа кисти (Raise/Lower/Level-4ZP/Level-H,
 взаимоисключающие), спинбокс цели высоты `Level to Height` (0..255 вокселей,
@@ -998,7 +1007,7 @@ Headless-тесты `map_editor_tests` (`tests/`), по файлу на моду
 | 56 | `BrushMaskTests` | маски совпадают с радиусными таблицами Terra, квадраты/кольца/Брезенхэм-линия, degenerate-штамп, routing `byShape` (T3.1) |
 | 57 | `View3DRendererTests` | кадр 3D заполнен разумно (покрытие, число цветов), поворот на 90° меняет кадр, клип окна ≤ `MAX_XSIZE_VX_WINDOW`, инвариант `stableLeanDeg` (T2.3) |
 | 58 | `BrushToolTests` | штамп меняет ровно клетки маски на `strength<<VX_FRACTION`, undo/redo байт-в-байт, линии по одной undo-записи, отказ `None`-эффекта, клипы radius/strength (T3.1) |
-| 59 | `BrushHeightToolsTests` | выравнивание клетки-в-клетку по Terra-математике (кап на цель снизу/сверху, attenuation hardness-формулой), метка `At_LEVELED` дошедшим, скип `At_ZEROPLAST` байт-в-байт, клип `heightLevel`, undo байт-в-байт (T3.2) |
+| 59 | `BrushHeightToolsTests` | выравнивание клетки-в-клетку по Terra-математике (кап на цель снизу/сверху, шаг `strength` без hardness-затухания), метка `At_LEVELED` дошедшим, скип `At_ZEROPLAST` байт-в-байт, клип `heightLevel`, undo байт-в-байт (T3.2) |
 | 60 | `BrushHeightToolsTests` | режим Geo (без дамба — только `VxGBuf`, `SurBuf == GetGeoType`; с дамбом — подъём гео+дамба на одну дельту, SurBuf/дробь дамба байт-нетронуты), режим Dam (посев `VxDBuf = гео + veryLightDam`, снятие дамба при опускании до гео), LIFO undo пригонов (T3.2) |
 | 61 | `BrushColorToolTests` | `SetColor` красит ровно клетки маски в выбранный индекс, не трогая высотные буферы; краска учитывает слой (Geo-режим — только не-дамбовые клетки, Dam — только дамбовые, без посева/снятия дамбы); undo/redo байт-в-байт; линия = одна undo-запись; дамбовый индекс 200 (T3.3/T4.3) |
 | 62 | `View3DSmoothTests` | smooth 3D == `viewV2D` на плоском мире бит-в-бит, пирамида следует dirty-конвейерке; ближний план smooth-вида сохраняет разнообразие рельефа |
@@ -1011,13 +1020,14 @@ Headless-тесты `map_editor_tests` (`tests/`), по файлу на моду
 | 70–71 | `SpgTests` | load→save COMPASS.spg байт-в-байт (XPrm DOM + SpgFile); правки: worldName/playersData/zeroLayerHeight/movePlayerGroup (фрейм+сквад+stable+слоты+камера), setPlayerCount; неизвестные узлы (контролы UI) выживают (T8) |
 | 75 | `ValidationTests` | validateWorldFiles без ошибок; объёмный баланс плоского мира (fill/dig, допуск); validateBattleMap (чисто; ошибка отсутствия мира; out-of-bounds спавн с go-to); автофиксы (T9) |
 | 55–57 | `WorldParamsTests` | чтение `WorldParams` против `world.ini`/`Perimeter.ini` + round-trip записи в scratch-копию (включая ZP-цвет и ключ `[Storage]`); S2T0→S2T1→S2T0 конвертация `output.vmp` байт-в-байт, идемпотентность, отказы; интеграция `applyWorldSettings`/`saveWorld`: живой `hZeroPlast`, `f3d` в живую + в ini, ZP-цвет в `Perimeter.ini` копии, S2T1 переживает сохранение (T5.1) |
-| 78 | `BrushAlignDamOnGeoTests` | `AlignVariableH`/`Align4ZP` в Dam-режиме на гео-клетках (`VxDBuf == 0`) сеют дамбу (`seedDamLayer`), затем тулзер ведёт её к цели; `VxGBuf` неизменен, `SurBuf == veryLightDam`; bump `VxDBuf = 1` при `VxGBuf == 0`; undo байт-в-байт (T3.2) |
+| 78 | `BrushAlignDamOnGeoTests` | `AlignVariableH`/`Align4ZP` в Dam-режиме на гео-клетках (`VxDBuf == 0`) сеют дамбу (`seedDamLayer`), затем тулзер ведёт её к цели; `VxGBuf` неизменен (кроме снятия дамбы при опускании до гео), `SurBuf == veryLightDam`; bump `VxDBuf = 1` при `VxGBuf == 0`; undo байт-в-байт (T3.2) |
 | 79 | `BrushAlignVariableHZPTests` | `AlignVariableH` в Dam-режиме на клетке с `At_ZEROPLAST`: при `heightLevel != hZeroPlast` бит `At_ZPMASK` очищается, тулзер Terra двигает дамбу (down/up), метка снимается; при `heightLevel == hZeroPlast` метка сохраняется (gate не снимается); undo байт-в-байт (T3.2) |
 | 80 | `BrushSetHeightTests` | `AlignVariableH` — абсолютная установка: Dam-режим на гео и на низком дамбе, Geo-режим — один штамп ставит ровно 180 вокселей; дамба выше цели опускается до 180; два перекрывающихся штампа радиуса 64 с центрами в 3 клетках дают весь union ровно 180 (максимум не выше цели); undo (T3.2 fix) |
 | 81 | `ImageDecalTests` | кисть ImageDecal: отказ для картинки больше 512 px, для полностью прозрачной и при нехватке свободных цветов Dam-палитры (меньше двух свободных при более чем двух «чужих» цветах); k-means переиспользует цвета палитры и добавляет новый цвет на свободный индекс; пиксели с `alpha != 255` не красятся; `scaleNearest` сохраняет индексы и прозрачность; штамп пишет `SurBuf` только на клетках дамбы, не трогает высоты, отказывает в Geo-режиме и без деки, undo байт-в-байт |
 | 82 | `MinimapRasterTests` | `renderMinimapToBgr()` байт-в-байт равен `downscaleNearest(renderToBgr())` того же размера, что пишет `generateMapTga()`, — живая миникарта не может разойтись с сохраняемым радаром |
 | 83 | `MinimapRasterTests` | штамп `ChangeHeight` (Geo) двигает пиксели живого обзора, `undo()` возвращает весь растр байт-в-байт, `redo()` ставит обратно; правка обязана поднять флаг несохранённых изменений — по нему панель и решает перебираться |
 | 84 | `MinimapRasterTests` | `compositeColorAt()` отказывает за границей мира (`-1`, `H_SIZE`, `V_SIZE`) и обнуляет цвет, отдаёт чистый `0x00RRGGBB`; `renderMinimapToBgr(0, 0)` отказывает и чистит буфер |
+| 85 | `BrushZeroplastHardnessTests` | `Align4ZP` игнорирует `GRIDAT_MASK_HARDNESS`: на патче дамб разной высоты (10..40 вокселей над `hZeroPlast`) с hardness 0..2 один штамп ставит все клетки ровно на `hZeroPlast` (дробь 0, метка `At_ZEROPLAST`, гео и `SurBuf` нетронуты), второй штамп — no-op, undo байт-в-байт (T3.4 fix) |
 
 Тесты пишут только во временный content-root (`%TEMP%/map_editor_roundtrip`),
 исходный мир не изменяется. `SaveWorldTests` строит изолированный content-root

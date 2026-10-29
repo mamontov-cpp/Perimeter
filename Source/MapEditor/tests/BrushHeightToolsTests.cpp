@@ -2,9 +2,10 @@
 // T3.2 — height brushes: the two alignment tools and the Geo/Dam brush modes.
 //
 // Test 59 (align):
-//   * Align4ZP keeps Terra's incremental game math (raise capped at the
-//     target, lower attenuated by the GRIDAT hardness the same integer way
-//     tVoxSet does, both capped at the target);
+//   * Align4ZP keeps Terra's incremental game math (one `strength` step per
+//     stamp, capped at the target) but ignores the GRIDAT hardness — the
+//     zeroplast brush sets the height on any ground, so a lower is not
+//     attenuated by tVoxSet's hardness formula;
 //   * AlignVariableH ("Level to Height") is an absolute set: every mask cell
 //     moves by the whole remaining distance to the target in one stamp, so
 //     even a much lower surface reaches it immediately;
@@ -162,7 +163,8 @@ struct RegionBytes
 
 /// Terra tVoxSet (tools.h:488-495) hardness attenuation for dV < 0,
 /// replicated verbatim for the expected-value math: integer ops in the
-/// order `dV = dV * (hardness << hardness) / 24`.
+/// order `dV = dV * (hardness << hardness) / 24`. Only ChangeHeight goes
+/// through tVoxSet; the alignment tools use tVoxSetAll (no attenuation).
 int hardnessAttenuation(int x, int y, int dV)
 {
     if (dV >= 0) {
@@ -256,8 +258,8 @@ bool prepareBrushTestSession(const char* subdirName,
 
 // ---------------------------------------------------------------------------
 // Shared alignment stamp check: every mask cell must follow the exact Terra
-// alignment math towards `target` (raise capped at it, hardness-attenuated
-// lower capped at it). `skip` marks cells checked byte-exactly instead
+// alignment math towards `target` (one `strength` step capped at it, no
+// hardness attenuation). `skip` marks cells checked byte-exactly instead
 // (At_ZEROPLAST cells that Terra refuses to touch).
 // ---------------------------------------------------------------------------
 
@@ -292,8 +294,8 @@ bool checkAlignStamp(const MapEditor::BrushMask& mask, int stampX, int stampY,
 
             // Terra's alignment paths (tools.h:545-631):
             //   Align4ZP: dV = +magnitude when below the target -> capped at
-            //             it; dV = -magnitude scaled by GRIDAT hardness ->
-            //             capped at it;
+            //             it; dV = -magnitude (tVoxSetAll: the brush ignores
+            //             the GRIDAT hardness) -> capped at it;
             //   AlignVariableH (absolute set): the whole remaining distance
             //             target - height, so every cell below/above the
             //             target reaches it in one stamp;
@@ -309,10 +311,7 @@ bool checkAlignStamp(const MapEditor::BrushMask& mask, int stampX, int stampY,
             } else if (before.height < target) {
                 expected = std::min(before.height + magnitude, target);
             } else if (before.height > target) {
-                const int dV = hardnessAttenuation(px, py, -magnitude);
-                if (dV != 0) {
-                    expected = std::max(before.height + dV, target);
-                }
+                expected = std::max(before.height - magnitude, target);
             }
             const bool changed = expected != before.height;
 

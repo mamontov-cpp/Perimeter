@@ -636,6 +636,7 @@ void BrushTool::applyEffectToCell(const BrushParams& params, int x, int y, unsig
         // the variable-H toolzer writes only the fraction bits. The dam
         // layer is driven by the toolzer as well: raising with a dam present
         // edits VxDBuf, dropping below the geo height removes the dam.
+        // Both effects ignore the GRIDAT hardness (tVoxSetAll, not tVoxSet).
         // The target height is synced before every cell — a static toolzer
         // would otherwise carry the hZeroPlast of a previously loaded world.
         const bool damCell = vMap.VxDBuf[off] != 0;
@@ -713,7 +714,15 @@ void BrushTool::applyEffectToCell(const BrushParams& params, int x, int y, unsig
             }
             static individualToolzer<T2TE_ALIGNMENT_TERRAIN_4ZP> alignZPToolzer;
             alignZPToolzer.setHAppoximation(whole);
-            alignZPToolzer.tVoxSet(off, dV);
+            // tVoxSetAll, not tVoxSet: the zeroplast brush ignores the GRIDAT
+            // hardness. tVoxSet attenuates a lowering by
+            // `dV*(hardness<<hardness)/24` — 0/24, 2/24, 8/24, 24/24 for
+            // hardness 0..3. On hard ground the dam then either did not move
+            // at all (hardness 0) or moved by a fraction of the step, so a
+            // stamp over cells of different heights left them uneven and
+            // above hZeroPlast. Setting the surface to the zeroplast level
+            // must not depend on hardness.
+            alignZPToolzer.tVoxSetAll(off, dV);
             // The zeroplast marking of the former PlotZeroplast brush: the
             // merged brush levels to hZeroPlast and marks every cell that
             // sits at that height (Terra's own plotCircleZL behaviour).
