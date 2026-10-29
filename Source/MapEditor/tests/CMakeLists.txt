@@ -40,6 +40,7 @@ ADD_EXECUTABLE(map_editor_tests
         ImageImportExportTests.cpp
         MarkerStoreTests.cpp
         SpgTests.cpp
+        GameCameraPresetTests.cpp
         ValidationTests.cpp
         View3DHazeTests.cpp
         NewBattleMapFlowTests.cpp)

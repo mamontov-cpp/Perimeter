@@ -3,6 +3,7 @@
 #include <View3DRenderer.h>
 #include <BrushTool.h>
 #include <EditorSession.h>
+#include <GameCameraPreset.h>
 #include <GameDirManager.h>
 #include <BattleMapPanel.h>
 #include <HelpWindow.h>
@@ -735,6 +736,18 @@ void MainWindow::buildViewport()
                 }
             });
 
+    // Keep the camera preset pair (like in game / like in editor) in sync
+    // when the viewport's game camera mode changes.
+    connect(viewport_, &MapEditor::ViewportWidget::gameCameraModeChanged,
+            this, [this](bool gameMode) {
+                if (actGameCamera_) {
+                    actGameCamera_->setChecked(gameMode);
+                }
+                if (actEditorCamera_) {
+                    actEditorCamera_->setChecked(!gameMode);
+                }
+            });
+
     /// Initial style button state (the viewport defaults to Smooth; post-T3.3
     /// chunky/smooth renderer toggle).
     actChunkyRender_->setChecked(viewport_->renderStyle() !=
@@ -1072,6 +1085,58 @@ void MainWindow::onActionToggle3D()
 {
     if (viewport_) {
         viewport_->toggleViewMode();
+    }
+}
+
+void MainWindow::onActionGameCamera()
+{
+    if (!viewport_) {
+        return;
+    }
+
+    // Aim at the first player of the loaded world — the camera state the
+    // game itself starts a battle with (psi=0, theta=0, min zoom distance;
+    // FORTOP and the other shipped worlds carry no camera splines, so the
+    // frame anchor is the player view centre).
+    QPointF presetCenter;
+    if (session_ && session_->isWorldLoaded()) {
+        const MapEditor::GameCameraPreset preset =
+            MapEditor::resolveGameCameraPreset(
+                session_->getGameDir(), session_->currentWorldName(),
+                viewport_->renderer() ? viewport_->renderer()->width() / 2.0
+                                      : 0.0,
+                viewport_->renderer() ? viewport_->renderer()->height() / 2.0
+                                      : 0.0);
+        presetCenter = QPointF(preset.centerX, preset.centerY);
+    }
+
+    // The game camera model (FOV frustum, terCameraType matrix) lives in
+    // the GPU terrain path; without it there is nothing to switch to.
+    if (!viewport_->setGameCameraMode(true, presetCenter)) {
+        QMessageBox::warning(
+            this, tr("Camera Like in Game"),
+            tr("The game camera is only available in the GPU 3D view. "
+               "The editor camera stays active."));
+        if (actGameCamera_) {
+            actGameCamera_->setChecked(false);
+        }
+        if (actEditorCamera_) {
+            actEditorCamera_->setChecked(true);
+        }
+        return;
+    }
+
+    // Make sure the 3D view is visible — the game camera replaces the
+    // editor 3D camera, switching from the 2D view otherwise shows nothing.
+    if (viewport_->viewMode() != MapEditor::ViewportWidget::ViewMode::Oblique) {
+        viewport_->setViewMode(MapEditor::ViewportWidget::ViewMode::Oblique);
+    }
+}
+
+void MainWindow::onActionEditorCamera()
+{
+    if (viewport_) {
+        viewport_->setGameCameraMode(false, QPointF());
     }
 }
 
@@ -1543,6 +1608,36 @@ void MainWindow::buildViewMenu(QMenuBar *menuBar)
             viewport_->zoomToFit();
         }
     });
+
+    viewMenu->addSeparator();
+
+    // ------------------------------------------------------------------
+    // Camera preset pair (exclusive): the main game's camera model vs the
+    // editor camera model. The game variant needs the GPU terrain path —
+    // the game frustum/FOV lives in TerrainGpuView.
+    // ------------------------------------------------------------------
+    QActionGroup *cameraGroup = new QActionGroup(this);
+    actGameCamera_ = create();
+    actGameCamera_->setText(tr("Camera Like in &Game"));
+    actGameCamera_->setToolTip(
+        tr("Switch the 3D view to the main game's camera: psi/theta/distance "
+           "model with the game FOV (HardwareCameraFocus), aimed at the first "
+           "player of the loaded world — the view a player has at battle "
+           "start. The minimap outline follows the game frustum."));
+    actGameCamera_->setCheckable(true);
+    actEditorCamera_ = create();
+    actEditorCamera_->setText(tr("Camera Like in &Editor"));
+    actEditorCamera_->setToolTip(
+        tr("Switch the 3D view back to the editor camera (rotation/tilt/lift/"
+           "focus with its own zoom model)."));
+    actEditorCamera_->setCheckable(true);
+    actEditorCamera_->setChecked(true);
+    cameraGroup->addAction(actGameCamera_);
+    cameraGroup->addAction(actEditorCamera_);
+    connect(actGameCamera_, &QAction::triggered, this,
+            &MainWindow::onActionGameCamera);
+    connect(actEditorCamera_, &QAction::triggered, this,
+            &MainWindow::onActionEditorCamera);
 }
 
 void MainWindow::buildViewToolbar()

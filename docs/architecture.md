@@ -1227,3 +1227,72 @@ Dam: в Geo-режиме `applyStamp()` отказывает, кнопка Geo �
 несжатого оригинала, поэтому повторное масштабирование не накапливает
 искажений.
 
+## 5.25. Камера «как в игре» — модель terCameraType в TerrainGpuView
+
+**Что.** Пара пунктов меню View — `Camera Like in Game` / `Camera Like in
+Editor` (эксклюзивная группа). Первый переводит GPU-oblique вид на камеру
+главной игры: та же параметризация `CameraCoordinate` (psi/theta/distance
+вокруг точки взгляда) и тот же фрустум — фокус = скриптовая опция
+`HardwareCameraFocus` (0.8, `Scripts/Config.prm`) в clip-space, zplane
+(30, 1e5) — т.е. игровой FOV. Второй возвращает редакторскую камеру
+(`View3DCamera`: turn/lean/lift/focus), её состояние при переключениях не
+теряется.
+
+**TerrainGpuView.** `CameraState` получил ветку `gameMode` (psiDeg/thetaDeg/
+distance/focusClip); `applyGameCamera()` дословно воспроизводит
+`terCameraType::update()` + `SetFrustumGame()` (CameraManager.cpp):
+радиус = distance × aspectScale, aspectScale = (sizeX/sizeY)/(4/3),
+matrix = Mat3f(theta, X_AXIS)·Mat3f(PI/2−psi, Z_AXIS) с теми же flip-ами
+`SetCameraPosition`, камера z клампится в [200, 10000] (CAMERA_MIN/MAX_HEIGHT,
+restricted-игра — в поставляемом Perimeter.ini `CameraRestriction = 1`).
+Тета клампится в [0, PI/2.85] (CAMERA_THETA_MAX restricted-игры), дистанция —
+в [300, 5000] (CAMERA_ZOOM_MIN/MAX).
+
+**Пресет (`core/GameCameraPreset`).** Состояние «камеры первого игрока мира»
+редактор берёт там же, где его берёт игра: триггер `ActionSetCamera`
+(`Units/Triggers.cpp:1149`) ищет сплайн `Camera<idx>`/`UserCamera<idx>` в
+`manualData.cameras` и при `useAsSpline=false` ставит координату из первой
+точки `path`. Резолвер пробует `RESOURCE/Multiplayer/<мир>.spg`, затем
+`Battle/`, `Worlds/`; берёт `SpgFile::playerCamera(0, …)` (первая точка
+сплайна: position{x,y} + psi/theta в радианах + distance), при отсутствии
+сплайна — якорь фрейма игрока 0, иначе фолбэк-центр с игровыми дефолтами
+терCameraType (psi=0, theta=0 — надир, distance=300). Нюанс данных: у
+`Worlds/FORTOP.spg` миссионная заглушка — `cameras = { 0; }` (первый скаляр
+XPrm-коллекции — число элементов) и `frame = 0` без позиций; настоящие
+камеры игроков лежат в `Multiplayer/FORTOP.spg` (FORTOP, игрок 0:
+psi=1.56223, theta=0.314159 = PI/10, distance=1000 — наклонный вид на спавн).
+
+**Взаимодействие в игровом режиме.** Жесты маппятся на игровые величины:
+колесо → distance (×kZoomStep, клампы игры), орбита (Alt+левая / View-режим)
+→ psi/theta, пан (средняя/правая) — «тащить рельеф»: `panObliqueGame()`
+берёт клетку под курсором через `pickCell()` (реальный луч камеры) и
+удерживает её под курсором, дельта укорачивается через шов тора. Тулбарные
+Rotate/Tilt/Zoom/Reset работают через те же ветки. `centerOnCell` (клик по
+миникарте) двигает центр игрового фрустума.
+
+**Кисть в игровом режиме.** Штамп не зависит от камеры: клик/драг берут
+клетку через `pickCell()` реального фрустума, применение кисти — прежний
+пайплайн буферов + dirty-rects + `updateCells`. Нюансы: (1) в игровом режиме
+НЕВЕРНЫЙ фолбэк пикера на CPU `view3d_` отключён — там проекция редакторской
+камеры, не совпадающая с отображаемой (штамп ушёл бы в чужую клетку);
+(2) превью кисти — `projectedBrushContour()`: контур ВЫБРАННОЙ пользователем
+формы (круг — выборка диска, квадрат — подразбитые рёбра) проецируется
+через игровой фрустум по высотам рельефа; эвристическое кольцо редакторской
+камеры в этом режиме не рисуется вовсе.
+
+**Миникарта.** Жёлтая рамка в GPU-режиме строится из `groundFootprint()`
+(луч в каждый угол экрана через `cCamera::GetWorldRay`) — она учитывает
+любой фрустум автоматически, включая игровой FOV/aspect; в игровом режиме
+`currentViewRect()` (потребители прямоугольника) считается как bbox этого
+же полигона.
+
+**Проверка.** Тест 72 (`GameCameraPresetTests`) — чтение сплайна
+`Multiplayer/FORTOP.spg`, конверсия радиан→градусы, фолбэки; GUI-прогон
+`MAP_EDITOR_AUTOTEST=1 MAP_EDITOR_WORLD=FORTOP`: переключение действием
+меню, кадр `18_game_camera`, рамка миникарты `19_minimap_game` (полигон
+центрирован на (354.8, 306.4) — точка взгляда Camera0), реальный штамп
+кистью `20_game_brush_stamp` (152 тыс. изменённых пикселей) и undo
+`21_game_brush_undo` (терраин восстановлен бит-в-бит, остаточная разница с
+до-штампным кадром — только кольцо превьи под курсором).
+
+

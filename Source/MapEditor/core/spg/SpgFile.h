@@ -72,6 +72,15 @@ public:
     /// Frame anchor of a player's spawn group (map coordinates).
     bool playerAnchor(int playerIndex, double& x, double& y) const;
 
+    /// The first path point of the player's camera spline
+    /// (manualData.cameras element `playerIndex`): position{x,y} plus
+    /// psi/theta (radians, the game CameraCoordinate convention) and
+    /// distance. False when the cameras array is absent/empty or the spline
+    /// path has no points (the shipped Worlds/*.spg mission stubs have
+    /// "cameras = { 0; }").
+    bool playerCamera(int playerIndex, double& x, double& y, double& psi,
+                      double& theta, double& distance) const;
+
     /// Move the whole spawn group of a player by the delta. `dz` shifts
     /// every 3D z (the caller derives it from the terrain height difference
     /// under the anchor, so the models keep their vertical offset).

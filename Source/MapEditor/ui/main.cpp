@@ -240,8 +240,103 @@ int main(int argc, char *argv[])
             QTimer::singleShot(32000, &window, [captureGrid] {
                 captureGrid("16_grid3d_step4", 4);
             });
+
+            // ------------------------------------------------------------
+            // Game camera mode (View → Camera Like in Game): the FORTOP
+            // first-player preset (psi/theta/distance + the game FOV) and a
+            // real brush stamp under it — the stamp must land on the cell
+            // under the cursor and render through the game frustum; undo
+            // must restore the terrain (and keep the window closing
+            // unattended — no unsaved-changes dialog).
+            // ------------------------------------------------------------
+            const auto stampDiff = [](const QImage &a, const QImage &b) {
+                if (a.size() != b.size()) {
+                    return -1;
+                }
+                int diff = 0;
+                for (int y = 0; y < a.height(); ++y) {
+                    const QRgb *pa = reinterpret_cast<const QRgb *>(a.constScanLine(y));
+                    const QRgb *pb = reinterpret_cast<const QRgb *>(b.constScanLine(y));
+                    for (int x = 0; x < a.width(); ++x) {
+                        if (pa[x] != pb[x]) {
+                            ++diff;
+                        }
+                    }
+                }
+                return diff;
+            };
+            const auto brushStampAt = [&window](const QPoint &pos) {
+                MapEditor::ViewportWidget *vp = window.debugViewport();
+                if (!vp) {
+                    return;
+                }
+                QMouseEvent move(QEvent::MouseMove, QPointF(pos),
+                                 QPointF(vp->mapToGlobal(pos)),
+                                 Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+                QApplication::sendEvent(vp, &move);
+                vp->repaint();
+                QMouseEvent press(QEvent::MouseButtonPress, QPointF(pos),
+                                  QPointF(vp->mapToGlobal(pos)),
+                                  Qt::LeftButton, Qt::LeftButton,
+                                  Qt::NoModifier);
+                QApplication::sendEvent(vp, &press);
+                QMouseEvent release(QEvent::MouseButtonRelease, QPointF(pos),
+                                    QPointF(vp->mapToGlobal(pos)),
+                                    Qt::LeftButton, Qt::NoButton,
+                                    Qt::NoModifier);
+                QApplication::sendEvent(vp, &release);
+                vp->repaint();
+            };
+            auto gameBefore = std::make_shared<QImage>();
+            QTimer::singleShot(34500, &window, [&window] {
+                MapEditor::ViewportWidget *vp = window.debugViewport();
+                if (!vp) return;
+                // The real menu action: resolves the preset (the first
+                // player's camera spline of the loaded world) and switches.
+                const bool invoked = QMetaObject::invokeMethod(
+                    &window, "onActionGameCamera", Qt::DirectConnection);
+                vp->repaint();
+                MapEditor::editorTrace(
+                    "autotest: game camera invoked=%d gpuReady=%d mode=%d "
+                    "viewMode=%d",
+                    invoked ? 1 : 0, vp->gpuViewReady() ? 1 : 0,
+                    vp->isGameCameraMode() ? 1 : 0,
+                    vp->viewMode() == MapEditor::ViewportWidget::ViewMode::Oblique
+                        ? 1 : 0);
+            });
+            QTimer::singleShot(36500, [capture] { capture("18_game_camera"); });
+            QTimer::singleShot(36600, [captureMini] { captureMini("19_minimap_game"); });
+            QTimer::singleShot(37500, [&window, capture, stampDiff,
+                                       brushStampAt, gameBefore] {
+                MapEditor::ViewportWidget *vp = window.debugViewport();
+                if (!vp) return;
+                vp->repaint();
+                *gameBefore = vp->grabFramebuffer();
+                const QPoint pos(vp->width() / 2, vp->height() * 3 / 4);
+                brushStampAt(pos);
+                const QImage after = vp->grabFramebuffer();
+                capture("20_game_brush_stamp");
+                MapEditor::editorTrace(
+                    "autotest: game brush stamp at (%d,%d) cursor cell (%d,%d) "
+                    "pixels changed=%d",
+                    pos.x(), pos.y(), vp->cursorCell().x(), vp->cursorCell().y(),
+                    stampDiff(after, *gameBefore));
+            });
+            QTimer::singleShot(40500, [&window, capture, stampDiff,
+                                       gameBefore] {
+                MapEditor::ViewportWidget *vp = window.debugViewport();
+                if (!vp) return;
+                const bool invoked = QMetaObject::invokeMethod(
+                    &window, "onActionUndo", Qt::DirectConnection);
+                vp->repaint();
+                const QImage undone = vp->grabFramebuffer();
+                capture("21_game_brush_undo");
+                MapEditor::editorTrace(
+                    "autotest: game brush undo invoked=%d pixels restored=%d",
+                    invoked ? 1 : 0, stampDiff(undone, *gameBefore));
+            });
         }
-        QTimer::singleShot(34500, &window, [&window] {
+        QTimer::singleShot(44500, &window, [&window] {
             MapEditor::editorTrace("autotest: closing window");
             window.close();
         });

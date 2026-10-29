@@ -214,6 +214,11 @@ void TerrainGpuView::applyCamera() {
     if (!camera_ || !device_) return;
 
     const CameraState& c = cameraState_;
+    if (c.gameMode) {
+        applyGameCamera();
+        return;
+    }
+
     // Depression below the horizontal plane; the editor never uses a
     // degenerate angle (nadir lean=90 handled by clamping to >90).
     const double leanRad = degToRad(clampd(c.leanDeg, 90.5, 179.0));
@@ -273,6 +278,66 @@ void TerrainGpuView::applyCamera() {
     // (in the game the pointer alternates between the main and the
     // reflection/shadow cameras every frame, which hides this). Feed the
     // transform explicitly; it also refreshes viewport/clip from the camera.
+    device_->SetDrawTransform(camera_);
+}
+
+void TerrainGpuView::applyGameCamera() {
+    // The main game's camera model, replicated from terCameraType
+    // (Source/Game/CameraManager.cpp): update() builds the position from the
+    // spherical CameraCoordinate, SetFrustumGame() sets the frustum.
+    const CameraState& c = cameraState_;
+
+    const double psi = degToRad(c.psiDeg);
+    // 0 = nadir (the game's default at battle start); clamp just below the
+    // horizon so the projection stays finite even if a caller pushes further
+    // than the game's restricted tilt limit (PI/2.85).
+    const double theta = degToRad(clampd(c.thetaDeg, 0.0, 89.0));
+
+    // terCameraType::update(): the aspect factor stretches the radius so a
+    // 4:3 window and a 16:9 window show the same vertical ground span.
+    const double aspectScale =
+        static_cast<double>(device_->GetSizeX()) /
+        static_cast<double>(device_->GetSizeY()) / (4.0 / 3.0);
+    const double r = c.distance * aspectScale;
+
+    const double zZero = static_cast<double>(vMap.hZeroPlast);
+    const Vect3f lookAt(static_cast<float>(c.centerX),
+                        static_cast<float>(c.centerY),
+                        static_cast<float>(zZero));
+    Vect3f position;
+    position.setSpherical(static_cast<float>(psi), static_cast<float>(theta),
+                          static_cast<float>(r));
+    position += lookAt;
+    // terCameraType::update() clamps the camera z into
+    // [CAMERA_MIN_HEIGHT, CAMERA_MAX_HEIGHT] (restricted game, the shipped
+    // Perimeter.ini sets CameraRestriction=1).
+    position.z = clampd(position.z, 200.0, 10000.0);
+
+    // The game matrix construction — same as the editor branch, but with the
+    // game's psi/theta angles.
+    MatXf matrix = MatXf::ID;
+    matrix.rot() = Mat3f(static_cast<float>(theta), X_AXIS)
+                 * Mat3f(static_cast<float>(kPi / 2.0 - psi), Z_AXIS);
+    matrix *= MatXf(Mat3f::ID, -position);
+
+    // CameraManager::SetCameraPosition flips (Source/Game/CameraManager.cpp):
+    // ml flips the view z axis, mr the x axis of the right transform.
+    MatXf ml = MatXf::ID;
+    MatXf mr = MatXf::ID;
+    ml.rot()[2][2] = -1;
+    mr.rot()[1][1] = -1;
+    MatXf cameraMatrix = mr * ml * matrix;
+    camera_->SetPosition(cameraMatrix);   // calls Update()
+
+    // terCameraType::SetFrustumGame verbatim: focus = the game's
+    // HardwareCameraFocus script option (the FOV), zplane (30, 1e5).
+    Vect2f center(0.5f, 0.5f);
+    sRectangle4f clip(-0.5f, -0.5f, 0.5f, 0.5f);
+    const float focusClip = static_cast<float>(c.focusClip);
+    Vect2f focus(focusClip, focusClip);
+    Vect2f zplane(30.0f, 1e5f);
+    camera_->SetFrustum(&center, &clip, &focus, &zplane);
+
     device_->SetDrawTransform(camera_);
 }
 

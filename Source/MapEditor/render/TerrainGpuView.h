@@ -59,6 +59,14 @@ public:
     /// height stays in world units (cells), while the focal length is in
     /// DEVICE pixels (widget px * devicePixelRatio) so the ground scale
     /// cells-per-widget-px == (height - lift)/focal stays DPR-independent.
+    ///
+    /// Game mode (gameMode = true) switches to the main game's camera model
+    /// instead (terCameraType, Source/Game/CameraManager.cpp): the spherical
+    /// CameraCoordinate (psi, theta, distance) around the look-at centre plus
+    /// the game frustum — focus = the game's HardwareCameraFocus script option
+    /// (0.8, the FOV knob) in clip space and zplane (30, 1e5). The radius is
+    /// scaled by the game's aspect factor ((screenX/screenY)/(4/3)) exactly
+    /// like terCameraType::update() does.
     struct CameraState
     {
         double centerX = 0;        ///< look-at x, map cells
@@ -67,6 +75,13 @@ public:
         double leanDeg = 140;      ///< tilt; 90 = nadir, 180 = horizon
         double heightCells = 700;  ///< camera height above zeroplast plane
         double focalDevPx = 600;   ///< focal length, device pixels
+
+        bool gameMode = false;     ///< use the game camera model below
+        double psiDeg = 0;         ///< CameraCoordinate psi (azimuth), degrees
+        double thetaDeg = 0;       ///< CameraCoordinate theta (polar from +Z,
+                                   ///  0 = nadir), degrees
+        double distance = 300;     ///< CameraCoordinate distance (game zoom)
+        double focusClip = 0.8;    ///< frustum focus (HardwareCameraFocus)
     };
     void setCamera(const CameraState& state) { cameraState_ = state; }
 
@@ -155,6 +170,9 @@ private:
     bool buildScene();
     void destroyScene();
     void applyCamera();
+    /// The game camera model branch of applyCamera() (terCameraType
+    /// replication — see CameraState::gameMode).
+    void applyGameCamera();
 
     cInterfaceRenderDevice* device_ = nullptr;
     cVisGeneric* visGeneric_ = nullptr;

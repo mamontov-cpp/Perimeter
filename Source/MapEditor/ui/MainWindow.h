@@ -97,6 +97,13 @@ private slots:
     void onActionClearUndoHistory();
     void onZoomToFit();
     void onActionToggle3D();
+    /// Switch the Oblique camera to the main game's model: the game
+    /// psi/theta/distance + FOV aimed at the first player's frame anchor of
+    /// the loaded world (GameCameraPreset). The editor camera model is
+    /// restored by onActionEditorCamera().
+    void onActionGameCamera();
+    /// Switch the Oblique camera back to the editor model.
+    void onActionEditorCamera();
 
     /// React to a world load: update the viewport and status bar.
     void onWorldLoaded();
@@ -291,6 +298,11 @@ private:
     QAction *actZoomIn_ = nullptr;
     QAction *actZoomOut_ = nullptr;
     QAction *actResetView_ = nullptr;
+    // Camera preset pair (exclusive): the main game's camera model
+    // (psi/theta/distance + game FOV) vs the editor camera model — the
+    // game variant aims at the first player of the loaded world.
+    QAction *actGameCamera_ = nullptr;
+    QAction *actEditorCamera_ = nullptr;
 
     // T3.1 — the editor interaction mode the mouse follows: View navigates,
     // Brush paints, Eyedropper samples the surface color. Exclusive group,

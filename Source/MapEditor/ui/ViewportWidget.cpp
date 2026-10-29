@@ -26,6 +26,11 @@ public:
         double leanDeg = 140;
         double heightCells = 700;
         double focalDevPx = 600;
+        bool gameMode = false;
+        double psiDeg = 0;
+        double thetaDeg = 0;
+        double distance = 300;
+        double focusClip = 0.8;
     };
     bool isReady() const { return false; }
     void setColorSource(ViewportRenderer *) {}
@@ -432,7 +437,13 @@ void ViewportWidget::zoomStep(double factor)
         return;
     }
     if (viewMode_ == ViewMode::Oblique) {
-        adjustObliqueFocus(factor > 1.0 ? -100 : 100);
+        if (gameCameraMode_) {
+            // Game zoom: the wheel factor scales the CameraCoordinate
+            // distance (smaller = closer), like the game's own zoom.
+            adjustGameDistance(factor);
+        } else {
+            adjustObliqueFocus(factor > 1.0 ? -100 : 100);
+        }
     } else {
         // Zoom around the widget centre.
         const QPointF widgetCenter(width() / 2.0, height() / 2.0);
@@ -509,6 +520,10 @@ void ViewportWidget::setObliqueCamera(const View3DCamera &camera)
 
 void ViewportWidget::adjustObliqueRotation(double deltaDeg)
 {
+    if (gameCameraMode_) {
+        adjustGameRotation(deltaDeg);
+        return;
+    }
     const double next = wrapDegrees(obliqueCamera_.turnAngleDeg + deltaDeg);
     if (next == obliqueCamera_.turnAngleDeg) {
         return;
@@ -522,6 +537,10 @@ void ViewportWidget::adjustObliqueRotation(double deltaDeg)
 
 void ViewportWidget::adjustObliqueTilt(double deltaDeg)
 {
+    if (gameCameraMode_) {
+        adjustGameTilt(deltaDeg);
+        return;
+    }
     obliqueCamera_.leanDeg += deltaDeg;
     needs3DRedraw_ = true;
     applyGpuCamera();
@@ -559,6 +578,16 @@ void ViewportWidget::adjustObliqueFocus(int deltaCells)
 
 void ViewportWidget::resetObliqueView()
 {
+    if (gameCameraMode_) {
+        // Back to the game's start-of-battle defaults over the map centre.
+        gameCamera_ = GameCameraState{};
+        gameCamera_.centerX = renderer_ ? renderer_->width() / 2.0 : 0.0;
+        gameCamera_.centerY = renderer_ ? renderer_->height() / 2.0 : 0.0;
+        needs3DRedraw_ = true;
+        applyGpuCamera();
+        update();
+        return;
+    }
     obliqueCamera_ = View3DCamera{};
     obliqueCenter_ = renderer_ ? QPointF(renderer_->width() / 2.0,
                                          renderer_->height() / 2.0)
@@ -568,6 +597,124 @@ void ViewportWidget::resetObliqueView()
     setViewMode(ViewMode::Oblique); // no-op when already Oblique
     emit obliqueCameraChanged(obliqueCamera_);
     update();
+}
+
+// ---------------------------------------------------------------------------
+// Game camera mode (the main game's camera model)
+// ---------------------------------------------------------------------------
+
+bool ViewportWidget::setGameCameraMode(bool gameMode, const QPointF &presetCenter)
+{
+    // The game camera model (FOV frustum, terCameraType matrix) lives in
+    // TerrainGpuView — without the GPU path there is nothing to drive.
+    if (gameMode && !gpuView_) {
+        return false;
+    }
+
+    if (gameCameraMode_ == gameMode) {
+        if (gameMode) {
+            // Re-entering the mode re-applies the preset — predictable
+            // "show me the game view again" behavior.
+            gameCamera_.centerX = presetCenter.x();
+            gameCamera_.centerY = presetCenter.y();
+            gameCamera_.psiDeg = 0.0;
+            gameCamera_.thetaDeg = 0.0;
+            gameCamera_.distance = kGameDistanceMin;
+            needs3DRedraw_ = true;
+            applyGpuCamera();
+            update();
+        }
+        return true;
+    }
+
+    gameCameraMode_ = gameMode;
+    if (gameMode) {
+        // Game start-of-battle defaults aimed at the preset centre: the
+        // terCameraType constructor state (psi 0, theta 0 = nadir, the
+        // CAMERA_ZOOM_MIN distance).
+        gameCamera_ = GameCameraState{};
+        gameCamera_.centerX = presetCenter.x();
+        gameCamera_.centerY = presetCenter.y();
+    }
+    needs3DRedraw_ = true;
+    applyGpuCamera();
+    emit gameCameraModeChanged(gameCameraMode_);
+    update();
+    return true;
+}
+
+void ViewportWidget::adjustGameRotation(double deltaDeg)
+{
+    gameCamera_.psiDeg = wrapDegrees(gameCamera_.psiDeg + deltaDeg);
+    needs3DRedraw_ = true;
+    applyGpuCamera();
+    update();
+}
+
+void ViewportWidget::adjustGameTilt(double deltaDeg)
+{
+    // theta 0 = nadir, kGameThetaMaxDeg = the game's restricted tilt limit —
+    // the same gesture-to-angle mapping the editor lean uses (lean = theta+90).
+    const double next = std::clamp(gameCamera_.thetaDeg + deltaDeg,
+                                   0.0, kGameThetaMaxDeg);
+    if (next == gameCamera_.thetaDeg) {
+        return;
+    }
+    gameCamera_.thetaDeg = next;
+    needs3DRedraw_ = true;
+    applyGpuCamera();
+    update();
+}
+
+void ViewportWidget::adjustGameDistance(double factor)
+{
+    // factor > 1 zooms in: the game wheel zoom shrinks the distance.
+    if (factor <= 0.0) {
+        return;
+    }
+    const double next = std::clamp(gameCamera_.distance / factor,
+                                   kGameDistanceMin, kGameDistanceMax);
+    if (next == gameCamera_.distance) {
+        return;
+    }
+    gameCamera_.distance = next;
+    needs3DRedraw_ = true;
+    applyGpuCamera();
+    update();
+}
+
+void ViewportWidget::panObliqueGame(const QPointF &widgetPos)
+{
+    if (!gpuActive()) {
+        return;
+    }
+    // pickCell works in device pixels (the sokol framebuffer domain).
+    const qreal dpr = devicePixelRatioF();
+    int cx = -1;
+    int cy = -1;
+    if (!gpuView_->pickCell(widgetPos.x() * dpr, widgetPos.y() * dpr, cx, cy)) {
+        return; // sky / off-map — keep the previous grab point
+    }
+    const QPointF cell(cx, cy);
+    if (gamePanGrabValid_) {
+        // Keep the grabbed terrain under the cursor. The pick returns
+        // wrapped cells while the camera centre is unwrapped — shorten the
+        // delta across the torus seam.
+        const double mapW = renderer_->width();
+        const double mapH = renderer_->height();
+        double dx = gamePanGrabCell_.x() - cell.x();
+        double dy = gamePanGrabCell_.y() - cell.y();
+        if (dx > mapW / 2.0) dx -= mapW;
+        else if (dx < -mapW / 2.0) dx += mapW;
+        if (dy > mapH / 2.0) dy -= mapH;
+        else if (dy < -mapH / 2.0) dy += mapH;
+        gameCamera_.centerX += dx;
+        gameCamera_.centerY += dy;
+        needs3DRedraw_ = true;
+        applyGpuCamera();
+    }
+    gamePanGrabCell_ = cell;
+    gamePanGrabValid_ = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -727,6 +874,24 @@ QRect ViewportWidget::currentViewRect() const
     }
 
     if (gpuActive()) {
+        // Game camera mode: the editor heuristic below does not describe the
+        // game frustum — take the bounding box of the real ground footprint
+        // instead (the same rays the minimap polygon uses).
+        if (gameCameraMode_) {
+            double xs[4];
+            double ys[4];
+            if (gpuView_->groundFootprint(gpuView_->zeroplastZ(), xs, ys)) {
+                const double minX = std::min({xs[0], xs[1], xs[2], xs[3]});
+                const double maxX = std::max({xs[0], xs[1], xs[2], xs[3]});
+                const double minY = std::min({ys[0], ys[1], ys[2], ys[3]});
+                const double maxY = std::max({ys[0], ys[1], ys[2], ys[3]});
+                return QRectF(minX, minY, maxX - minX, maxY - minY)
+                    .toAlignedRect()
+                    .intersected(QRect(0, 0, renderer_->width(),
+                                       renderer_->height()));
+            }
+            return {};
+        }
         // GPU mode: the view maps 1:1 onto the widget (device pixels), no
         // 640-cell window clamp — the ground scale per widget pixel is
         // (F+Z)/F, the depth (rows) stretch uses the same kv heuristic as
@@ -835,6 +1000,11 @@ void ViewportWidget::centerOnCell(const QPoint &cell)
 
     if (viewMode_ == ViewMode::Oblique) {
         obliqueCenter_ = QPointF(px, py);
+        if (gameCameraMode_) {
+            // Keep the game camera looking at the same cell.
+            gameCamera_.centerX = px;
+            gameCamera_.centerY = py;
+        }
         needs3DRedraw_ = true;
         applyGpuCamera();
     } else {
@@ -1406,23 +1576,29 @@ void ViewportWidget::drawBrushPreview(QPainter &painter)
         }
         // The oblique projection has no linear cell→screen map, so the ring is
         // centred on the cursor and sized by the camera's approximate
-        // widget-pixels-per-ground-cell (the same basis the pick uses).
+        // widget-pixels-per-ground-cell (the same basis the pick uses). The
+        // heuristic is the EDITOR camera's scale — in the game camera mode a
+        // failed projection leaves no meaningful fallback, so no ring (the
+        // stamp itself still goes through the real camera pick).
         const QPointF pxPerCell = obliquePxPerCell();
-        // GPU path: use a smaller minimum (1.0) so the perspective ellipse
-        // is visible even for small brush radii. The 3.0 minimum was hiding
-        // the Y-stretch from the oblique camera deformation.
-        const double minDim = (gpuView_ && gpuView_->isReady()) ? 1.0 : 3.0;
-        const double rx = qMax(minDim, brushRadius_ * pxPerCell.x());
-        const double ry = qMax(minDim, brushRadius_ * pxPerCell.y());
-        const QPointF center(cursorWidgetPos_);
-        if (brushShape_ == BrushPreviewShape::Circle) {
-            painter.drawEllipse(center, rx, ry);
-        } else {
-            painter.drawRect(QRectF(center.x() - rx, center.y() - ry,
-                                    rx * 2.0, ry * 2.0));
+        if (!gameCameraMode_) {
+            // GPU path: use a smaller minimum (1.0) so the perspective ellipse
+            // is visible even for small brush radii. The 3.0 minimum was hiding
+            // the Y-stretch from the oblique camera deformation.
+            const double minDim = (gpuView_ && gpuView_->isReady()) ? 1.0 : 3.0;
+            const double rx = qMax(minDim, brushRadius_ * pxPerCell.x());
+            const double ry = qMax(minDim, brushRadius_ * pxPerCell.y());
+            const QPointF center(cursorWidgetPos_);
+            if (brushShape_ == BrushPreviewShape::Circle) {
+                painter.drawEllipse(center, rx, ry);
+            } else {
+                painter.drawRect(QRectF(center.x() - rx, center.y() - ry,
+                                        rx * 2.0, ry * 2.0));
+            }
         }
         if (linePending_ && lineStartWidgetPos_.x() >= 0) {
-            painter.drawLine(QPointF(lineStartWidgetPos_), center);
+            painter.drawLine(QPointF(lineStartWidgetPos_),
+                             QPointF(cursorWidgetPos_));
         }
         return;
     }
@@ -1559,6 +1735,8 @@ void ViewportWidget::mousePressEvent(QMouseEvent *event)
         // free for the camera here).
         panning_ = true;
         panStart_ = event->position();
+        // Game camera pan re-picks the grab cell on the first move event.
+        gamePanGrabValid_ = false;
         setCursor(Qt::ClosedHandCursor);
         event->accept();
         return;
@@ -1652,11 +1830,17 @@ void ViewportWidget::mousePressEvent(QMouseEvent *event)
 void ViewportWidget::mouseMoveEvent(QMouseEvent *event)
 {
     if (panning_) {
-        const QPointF delta = event->position() - panStart_;
-        if (viewMode_ == ViewMode::Oblique) {
-            panObliqueBy(delta.x(), delta.y());
+        if (viewMode_ == ViewMode::Oblique && gameCameraMode_) {
+            // Drag-the-terrain through the real game camera (perspective and
+            // FOV aware) — the editor pan heuristic does not apply here.
+            panObliqueGame(event->position());
         } else {
-            panOffset_ += delta;
+            const QPointF delta = event->position() - panStart_;
+            if (viewMode_ == ViewMode::Oblique) {
+                panObliqueBy(delta.x(), delta.y());
+            } else {
+                panOffset_ += delta;
+            }
         }
         panStart_ = event->position();
         update();
@@ -1721,6 +1905,7 @@ void ViewportWidget::mouseReleaseEvent(QMouseEvent *event)
 {
     if (panning_) {
         panning_ = false;
+        gamePanGrabValid_ = false;
         setCursor(paintCursorShape());
         event->accept();
         return;
@@ -1982,12 +2167,25 @@ void ViewportWidget::applyGpuCamera()
     // No GL calls here — setCamera only records state applied on the next
     // renderFrame, so mouse handlers may call this freely.
     TerrainGpuView::CameraState state;
-    state.centerX = obliqueCenter_.x();
-    state.centerY = obliqueCenter_.y();
-    state.turnAngleDeg = obliqueCamera_.turnAngleDeg;
-    state.leanDeg = obliqueCamera_.leanDeg;
-    state.heightCells = obliqueCamera_.focusC + obliqueCamera_.cameraDZ;
-    state.focalDevPx = obliqueCamera_.focusC * devicePixelRatioF();
+    if (gameCameraMode_) {
+        // The main game's camera model: raw CameraCoordinate values plus the
+        // game FOV (HardwareCameraFocus); TerrainGpuView::applyGameCamera
+        // replicates terCameraType::update() + SetFrustumGame from them.
+        state.gameMode = true;
+        state.centerX = gameCamera_.centerX;
+        state.centerY = gameCamera_.centerY;
+        state.psiDeg = gameCamera_.psiDeg;
+        state.thetaDeg = gameCamera_.thetaDeg;
+        state.distance = gameCamera_.distance;
+        state.focusClip = kGameCameraFocus;
+    } else {
+        state.centerX = obliqueCenter_.x();
+        state.centerY = obliqueCenter_.y();
+        state.turnAngleDeg = obliqueCamera_.turnAngleDeg;
+        state.leanDeg = obliqueCamera_.leanDeg;
+        state.heightCells = obliqueCamera_.focusC + obliqueCamera_.cameraDZ;
+        state.focalDevPx = obliqueCamera_.focusC * devicePixelRatioF();
+    }
     gpuView_->setCamera(state);
 }
 
@@ -2009,10 +2207,17 @@ QPoint ViewportWidget::cellAtWidgetPos(const QPoint &widgetPos) const
                                 mx, my)) {
             return {mx, my};
         }
-        // GPU pick failed (ray above horizon / sky) — the GPU camera has a
-        // wider FOV than the CPU voxel view, so edge positions can point
-        // above the terrain. Fallback to the CPU path which has a narrower
-        // FOV and can see more ground.
+        if (gameCameraMode_) {
+            // Game camera pick failed (ray above horizon / sky). The CPU
+            // fallback below picks through the EDITOR camera projection,
+            // which in this mode shows a different view than the rendered
+            // one — a stamp would land somewhere else. Report "no cell".
+            return {-1, -1};
+        }
+        // Editor GPU camera pick failed — the GPU camera has a wider FOV
+        // than the CPU voxel view, so edge positions can point above the
+        // terrain. Fallback to the CPU path which has a narrower FOV and
+        // can see more ground.
     }
     if (!view3d_ || view3d_->windowWidth() <= 0 || view3d_->windowHeight() <= 0) {
         return {-1, -1};

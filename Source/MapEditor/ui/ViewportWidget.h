@@ -253,6 +253,8 @@ public:
 
     /// Fine-grained camera helpers for the view toolbar; each one clamps the
     /// affected fields and emits obliqueCameraChanged() when something moved.
+    /// In the game camera mode (see setGameCameraMode) the rotation/tilt
+    /// helpers drive the game psi/theta instead of the editor knobs.
     void adjustObliqueRotation(double deltaDeg); ///< ± degrees around Z.
     void adjustObliqueTilt(double deltaDeg);     ///< ± degrees of lean.
     void adjustObliqueLift(int deltaCells);      ///< ± cameraDZ cells.
@@ -260,6 +262,34 @@ public:
 
     /// Back to the default camera and map centre.
     void resetObliqueView();
+
+    // ---- Game camera mode (the main game's camera model) -------------------
+
+    /// Camera of the game model (terCameraType CameraCoordinate,
+    /// Source/Game/CameraManager.cpp) the GPU oblique view uses when the game
+    /// camera mode is on. psi/theta/distance are the raw game values, the
+    /// FOV is the game's HardwareCameraFocus (0.8) — set in TerrainGpuView.
+    struct GameCameraState
+    {
+        double centerX = 0;      ///< look-at x, map cells
+        double centerY = 0;      ///< look-at y, map cells
+        double psiDeg = 0;       ///< azimuth (CameraCoordinate psi)
+        double thetaDeg = 0;     ///< polar tilt (0 = nadir, like the game)
+        double distance = 300;   ///< game zoom (CameraCoordinate distance)
+    };
+
+    bool isGameCameraMode() const { return gameCameraMode_; }
+    /// True when the GPU terrain path rendered at least one frame — the game
+    /// camera model is unavailable without it (the CPU voxel renderer has no
+    /// frustum/FOV model). The same state gpuViewReadyChanged() announces.
+    bool gpuViewReady() const { return lastGpuViewReady_; }
+
+    /// Switch the Oblique camera between the editor model and the main game's
+    /// model (psi/theta/distance + the game FOV). Entering the mode aims the
+    /// camera at `presetCenter` with the game start-of-battle defaults
+    /// (psi=0, theta=0 — nadir, distance=300); re-entering re-applies the
+    /// preset. Returns false when the GPU path is not available.
+    bool setGameCameraMode(bool gameMode, const QPointF &presetCenter);
 
     // -----------------------------------------------------------------------
     // Current view rectangle (T2.4)
@@ -389,6 +419,9 @@ signals:
     /// hides the freeze-dam action (which only makes sense for the CPU path)
     /// when the GPU path is available.
     void gpuViewReadyChanged(bool gpuReady);
+    /// Emitted after setGameCameraMode() — MainWindow keeps the two camera
+    /// preset actions (like in game / like in editor) in sync with it.
+    void gameCameraModeChanged(bool gameMode);
 
 protected:
     void initializeGL() override;
@@ -464,6 +497,17 @@ private:
     /// Pan of the 3D camera over the ground plane after a screen-drag of the
     /// given pixel deltas — inverse view-basis mapping, see the .cpp.
     void panObliqueBy(double dxCursorPx, double dyCursorPx);
+
+    /// Game camera mode pan: drag-the-terrain — pick the ground cell under
+    /// the cursor (device-pixel widget position) and keep it under the
+    /// cursor while the drag lasts. Uses the real GPU camera, so the
+    /// perspective/FOV does not matter.
+    void panObliqueGame(const QPointF &widgetPos);
+    /// Game camera helpers behind adjustObliqueRotation/adjustObliqueTilt
+    /// and zoomStep when the game camera mode is on.
+    void adjustGameRotation(double deltaDeg);
+    void adjustGameTilt(double deltaDeg);
+    void adjustGameDistance(double factor);
 
     // --- GPU oblique path (TerrainGpuView) ---------------------------------
     //
@@ -589,6 +633,15 @@ private:
     View3DCamera obliqueCamera_{};
     QPointF obliqueCenter_;
 
+    // Game camera mode (setGameCameraMode): the game camera model the GPU
+    // view renders with instead of obliqueCamera_/obliqueCenter_.
+    GameCameraState gameCamera_;
+    bool gameCameraMode_ = false;
+    /// Ground cell picked under the cursor when the game-mode pan started
+    /// (drag-the-terrain anchor; invalid until the first successful pick).
+    QPointF gamePanGrabCell_{-1, -1};
+    bool gamePanGrabValid_ = false;
+
     BrushPreviewShape brushShape_ = BrushPreviewShape::Circle;
     int brushRadius_ = kFineGridCell;
     bool brushPreviewVisible_ = false;
@@ -626,6 +679,16 @@ private:
     static constexpr double kZoomStep = 1.25;
     /// Degrees the orbit drag moves for one screen pixel.
     static constexpr double kOrbitDegPerPx = 0.3;
+
+    // Game camera mode constants — the main game's own values
+    // (Source/Game/CameraManager.cpp, Source/Scripts/Config.prm).
+    /// HardwareCameraFocus — the game FOV knob (clip-space focal length).
+    static constexpr double kGameCameraFocus = 0.8;
+    /// CAMERA_ZOOM_MIN / CAMERA_ZOOM_MAX (the terCameraType distance clamp).
+    static constexpr double kGameDistanceMin = 300.0;
+    static constexpr double kGameDistanceMax = 5000.0;
+    /// CAMERA_THETA_MAX of the restricted game camera (PI/2.85), degrees.
+    static constexpr double kGameThetaMaxDeg = 63.1579;
 };
 
 } // namespace MapEditor

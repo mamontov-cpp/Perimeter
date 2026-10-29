@@ -338,6 +338,32 @@ bool SpgFile::playerAnchor(int playerIndex, double& x, double& y) const
     return readVec3(frame, "position", x, y, z, hasZ);
 }
 
+bool SpgFile::playerCamera(int playerIndex, double& x, double& y,
+                           double& psi, double& theta, double& distance) const
+{
+    SpgFile* self = const_cast<SpgFile*>(this);
+    XPrmObject* spline = elementObject(self->camerasArray(), playerIndex);
+    if (!spline) {
+        return false;
+    }
+    XPrmObject* path = spline->object("path");
+    XPrmObject* point = elementObject(path, 0);
+    if (!point) {
+        return false;
+    }
+    double z = 0;
+    bool hasZ = false;
+    if (!readVec3(point, "position", x, y, z, hasZ)) {
+        return false;
+    }
+    if (!toDouble(point->scalar("psi"), psi) ||
+        !toDouble(point->scalar("theta"), theta) ||
+        !toDouble(point->scalar("distance"), distance)) {
+        return false;
+    }
+    return true;
+}
+
 bool SpgFile::movePlayerGroup(int playerIndex, double dx, double dy,
                               double dz)
 {
