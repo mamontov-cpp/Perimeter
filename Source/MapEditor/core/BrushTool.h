@@ -91,7 +91,6 @@ enum class BrushEffect
     PickColor,      ///< T4.2: eyedropper — sample the Geo/Dam surface pixel
                     ///< (SurBuf index) at the stamp centre into the color
                     ///< brush; no buffer is written.
-    EraseZeroplast, ///< T3.4: T2TE_ERASE_ZEROPLAST.
     PlotSoot,       ///< T3.4: T2TE_PLOTTING_SOOT.
     VeryLightDam,   ///< T3.4: T2TE_PLOTTING_VERY_LIGHT_DAM.
 };

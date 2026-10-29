@@ -313,9 +313,8 @@ private:
     // member of the brush type group; while it is selected the Brush toolbar
     // acts on the surface pixels by sampling them (editor mode Eyedropper).
     QAction *actBrushPickColor_ = nullptr;
-    // T3.4/T5 — zeroplast brushes, offered in the Dam mode only (the
-    // zeroplast belongs to the dam domain).
-    QAction *actBrushEraseZP_ = nullptr;
+    // T3.4/T5 — dam-marking brushes (soot, very light dam); the zeroplast
+    // marking itself happens through the "Level to Zeroplast" brush.
     QAction *actBrushSoot_ = nullptr;
     QAction *actBrushVeryLightDam_ = nullptr;
     // T3.5 — load-image action: the loaded image becomes the stamp mask of

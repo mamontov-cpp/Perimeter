@@ -239,7 +239,6 @@ bool BrushTool::effectSupported(BrushEffect effect)
     case BrushEffect::SetColor:     // T3.3 paint SurBuf with palette index
     case BrushEffect::ImageDecal:   // palette-limited image stamp (Dam only)
     case BrushEffect::PickColor:    // T4.2 eyedropper: sample SurBuf pixel
-    case BrushEffect::EraseZeroplast:  // T3.4 remove zeroplast flag
     case BrushEffect::PlotSoot:        // T3.4 mark soot
     case BrushEffect::VeryLightDam:    // T3.4 very light dam
         return true;
@@ -773,15 +772,6 @@ void BrushTool::applyEffectToCell(const BrushParams& params, int x, int y, unsig
             break; // Dam layer only
         }
         vMap.SetTer(x, y, static_cast<unsigned char>(index));
-        break;
-    }
-    case BrushEffect::EraseZeroplast: {
-        // T3.4 — eraseCircleZL analogue: remove zeroplast flag via the
-        // T2TE_ERASE_ZEROPLAST toolzer (clears At_NOTPURESURFACE).
-        {
-            static individualToolzer<T2TE_ERASE_ZEROPLAST> eraseZPToolzer;
-            eraseZPToolzer.tVoxSet(off, 1);
-        }
         break;
     }
     case BrushEffect::PlotSoot: {

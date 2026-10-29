@@ -1337,7 +1337,6 @@ void MainWindow::buildEditMenu(QMenuBar *menuBar)
     brushMenu->addSeparator();
     brushMenu->addAction(actBrushImageDecal_);
     brushMenu->addSeparator();
-    brushMenu->addAction(actBrushEraseZP_);
     brushMenu->addAction(actBrushSoot_);
     brushMenu->addAction(actBrushVeryLightDam_);
     brushMenu->addSeparator();
@@ -1707,15 +1706,6 @@ void MainWindow::createBrushActions()
            "mode \"Eyedropper\" (E) as the switch."),
         MapEditor::BrushEffect::PickColor, 0);
 
-    // T3.4 — erase zeroplast: remove At_ZEROPLAST / At_SOOT flags. Offered
-    // in the Dam mode only, like the zeroplast brush itself.
-    actBrushEraseZP_ = addType(
-        makeGroundLetterIcon(QStringLiteral("E"), kInk),
-        tr("Erase Zeroplast"),
-        tr("The brush removes the zeroplast and soot marks from the cells "
-           "under it, restoring them to the leveled state (Dam mode only)."),
-        MapEditor::BrushEffect::EraseZeroplast, 0);
-
     // T3.4 — plot soot (burn marks on the terrain).
     actBrushSoot_ = addType(
         makeGroundLetterIcon(QStringLiteral("S"), QColor(80, 50, 20)),
@@ -1797,7 +1787,6 @@ void MainWindow::createBrushActions()
             // plain raise.
             if (mode == MapEditor::BrushMode::Geo &&
                 (params.effect == MapEditor::BrushEffect::Align4ZP ||
-                 params.effect == MapEditor::BrushEffect::EraseZeroplast ||
                  params.effect == MapEditor::BrushEffect::ImageDecal)) {
                 params.effect = MapEditor::BrushEffect::ChangeHeight;
                 params.direction = 1;
@@ -2032,9 +2021,7 @@ void MainWindow::buildBrushToolbar()
 
     bar->addSeparator();
 
-    // T3.4 — zeroplast/soot/very-light-dam buttons (the zeroplast brushes
-    // are enabled in the Dam mode only, see updateActionStates).
-    bar->addAction(actBrushEraseZP_);
+    // T3.4 — soot/very-light-dam buttons.
     bar->addAction(actBrushSoot_);
     bar->addAction(actBrushVeryLightDam_);
 
@@ -2102,8 +2089,6 @@ void MainWindow::syncBrushControls()
              params.effect == MapEditor::BrushEffect::ImageDecal);
     syncType(actBrushPickColor_,
              params.effect == MapEditor::BrushEffect::PickColor);
-    syncType(actBrushEraseZP_,
-             params.effect == MapEditor::BrushEffect::EraseZeroplast);
     syncType(actBrushSoot_, params.effect == MapEditor::BrushEffect::PlotSoot);
     syncType(actBrushVeryLightDam_,
              params.effect == MapEditor::BrushEffect::VeryLightDam);
@@ -3324,7 +3309,7 @@ void MainWindow::updateActionStates()
             action->setEnabled(worldLoaded);
         }
     }
-    for (QAction *action : {actBrushLevelZP_, actBrushEraseZP_}) {
+    for (QAction *action : {actBrushLevelZP_}) {
         if (action) {
             action->setEnabled(worldLoaded && damMode);
         }
