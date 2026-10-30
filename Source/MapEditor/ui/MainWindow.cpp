@@ -1100,13 +1100,18 @@ void MainWindow::onActionGameCamera()
     // frame anchor is the player view centre).
     QPointF presetCenter;
     if (session_ && session_->isWorldLoaded()) {
-        const MapEditor::GameCameraPreset preset =
+        
+        // Used preset from FORTOP, since current can be also not present in world
+        static constexpr MapEditor::GameCameraPreset default_preset{ 354.791000,306.425000,89.509186,17.999985,1000.000000,true };
+        /*const MapEditor::GameCameraPreset preset =
             MapEditor::resolveGameCameraPreset(
                 session_->getGameDir(), session_->currentWorldName(),
                 viewport_->renderer() ? viewport_->renderer()->width() / 2.0
                                       : 0.0,
                 viewport_->renderer() ? viewport_->renderer()->height() / 2.0
                                       : 0.0);
+        */
+        const MapEditor::GameCameraPreset preset = default_preset;
         presetCenter = QPointF(preset.centerX, preset.centerY);
     }
 
