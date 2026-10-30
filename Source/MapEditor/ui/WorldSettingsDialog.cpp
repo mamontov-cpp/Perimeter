@@ -12,10 +12,9 @@
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
-#include <QPushButton>
 #include <QSpinBox>
 #include <QVBoxLayout>
-#include <QColorDialog>
+
 
 namespace {
 
@@ -144,30 +143,6 @@ void WorldSettingsPanel::buildUi(Mode mode)
     f3dForm->addRow(tr("Function:"), functionCombo_);
     mainLayout->addWidget(f3dGroup);
 
-    // ------------------------------------------------------------------
-    // Zeroplast color (game-wide, Perimeter.ini)
-    // ------------------------------------------------------------------
-    auto *zpGroup = new QGroupBox(tr("Zeroplast Color (game-wide)"), this);
-    auto *zpForm = new QFormLayout(zpGroup);
-    zeroLayerColorButton_ = new QPushButton(zpGroup);
-    zeroLayerColorButton_->setFixedWidth(64);
-    connect(zeroLayerColorButton_, &QPushButton::clicked, this,
-            &WorldSettingsPanel::pickZeroLayerColor);
-    zeroLayerColorLabel_ = new QLabel(zpGroup);
-    auto *colorRow = new QHBoxLayout;
-    colorRow->addWidget(zeroLayerColorButton_);
-    colorRow->addWidget(zeroLayerColorLabel_);
-    colorRow->addStretch(1);
-    zpForm->addRow(tr("Color:"), colorRow);
-    zeroLayerAlphaSpin_ = makeSpin(0, 255);
-    zpForm->addRow(tr("Alpha:"), zeroLayerAlphaSpin_);
-    QLabel *zpNote = new QLabel(
-        tr("Stored in Perimeter.ini [TD] Color ZeroLayer and shared by every "
-           "map in this game installation."), zpGroup);
-    zpNote->setWordWrap(true);
-    zpForm->addRow(zpNote);
-    mainLayout->addWidget(zpGroup);
-
     mainLayout->addStretch(1);
 }
 
@@ -204,20 +179,6 @@ void WorldSettingsPanel::syncWidgets()
     kmySpin_->setValue(params_.f3dKmy);
     kmzSpin_->setValue(params_.f3dKmz);
     functionCombo_->setCurrentIndex(params_.f3dFunction != 0 ? 1 : 0);
-
-    updateZeroLayerColorWidgets();
-}
-
-void WorldSettingsPanel::updateZeroLayerColorWidgets()
-{
-    const QColor color(params_.zeroLayerColor.r, params_.zeroLayerColor.g,
-                       params_.zeroLayerColor.b);
-    zeroLayerColorButton_->setStyleSheet(
-        QStringLiteral("background-color: %1").arg(color.name()));
-    zeroLayerColorLabel_->setText(tr("R %1  G %2  B %3")
-                                      .arg(params_.zeroLayerColor.r)
-                                      .arg(params_.zeroLayerColor.g)
-                                      .arg(params_.zeroLayerColor.b));
 }
 
 void WorldSettingsPanel::onZeroPlastChanged(int value)
@@ -230,20 +191,6 @@ void WorldSettingsPanel::onZeroPlastChanged(int value)
     }
 }
 
-void WorldSettingsPanel::pickZeroLayerColor()
-{
-    const QColor initial(params_.zeroLayerColor.r, params_.zeroLayerColor.g,
-                         params_.zeroLayerColor.b);
-    const QColor picked = QColorDialog::getColor(initial, this);
-    if (!picked.isValid()) {
-        return;
-    }
-    params_.zeroLayerColor.r = picked.red();
-    params_.zeroLayerColor.g = picked.green();
-    params_.zeroLayerColor.b = picked.blue();
-    updateZeroLayerColorWidgets();
-}
-
 void WorldSettingsPanel::setGeoLayerHeight(int height)
 {
     geoLayerHeight_ = height;
@@ -254,8 +201,6 @@ void WorldSettingsPanel::setGeoLayerHeight(int height)
 
 MapEditor::WorldParams WorldSettingsPanel::params() const
 {
-    // Widget state wins over the cached struct; the zeroplast RGB lives in
-    // params_ already (pickZeroLayerColor keeps it in sync).
     MapEditor::WorldParams result = params_;
     if (powerXSpin_) {
         result.mapPowerX = powerXSpin_->value();
@@ -272,7 +217,6 @@ MapEditor::WorldParams WorldSettingsPanel::params() const
     result.f3dKmy = kmySpin_->value();
     result.f3dKmz = kmzSpin_->value();
     result.f3dFunction = functionCombo_->currentIndex();
-    result.zeroLayerColor.a = zeroLayerAlphaSpin_->value();
     return result;
 }
 

@@ -3,13 +3,12 @@
 // compression converter.
 //
 //   55  read WorldParams for the saved temp world and verify it against the
-//       world.ini / Perimeter.ini contents; write modified parameters into a
-//       scratch copy and verify the round-trip (incl. zeroplast color);
+//       world.ini contents; write modified parameters into a scratch copy and
+//       verify the round-trip;
 //   56  output.vmp S2T0 -> S2T1 -> S2T0 conversion round-trip (byte-exact);
 //   57  EditorSession::applyWorldSettings / currentWorldParams / saveWorld
-//       integration: hZeroPlast live-apply + persistence, ZP color into
-//       Perimeter.ini, generation powers into world.ini, S2T1 re-applied on
-//       save.
+//       integration: hZeroPlast live-apply + persistence, generation powers
+//       into world.ini, S2T1 re-applied on save.
 //
 // Runs after the SaveWorld tests (order 50) and reuses their temporary world;
 // every write happens in a scratch copy, never in the real game folder.
@@ -108,7 +107,7 @@ bool runWorldParamsTests()
     // --- read --------------------------------------------------------------
     const MapEditor::WorldFiles worldFiles(ctx.tempWorldDir);
     const std::optional<MapEditor::WorldParams> params =
-        MapEditor::WorldParams::readFromWorld(worldFiles, ctx.gameDir);
+        MapEditor::WorldParams::readFromWorld(worldFiles);
     TEST_REQUIRE(params.has_value(),
                  "WorldParams::readFromWorld() failed for '%s'.",
                  ctx.tempWorldDir.u8string().c_str());
@@ -136,27 +135,7 @@ bool runWorldParamsTests()
                  "expected S2T0 for the freshly saved temp world, got %d.",
                  params->compressedFormat);
 
-    // The zeroplast color must match Perimeter.ini (or the game default when
-    // the key is absent).
-    MapEditor::ZeroLayerColor expectedColor;
-    bool stored = false;
-    TEST_REQUIRE(MapEditor::readZeroLayerColor(ctx.gameDir, expectedColor, stored),
-                 "readZeroLayerColor() failed for the game dir.");
-    TEST_REQUIRE(params->zeroLayerColor == expectedColor,
-                 "zeroplast color does not match Perimeter.ini.");
-
     // --- write into a scratch copy ----------------------------------------
-    // Perimeter.ini writes go to the passed game dir, so use a scratch copy
-    // of it — never the real game folder.
-    const fs::path iniScratch = scratch / "perimeter_ini";
-    fs::create_directories(iniScratch, ec);
-    if (fs::exists(ctx.gameDir / "Perimeter.ini")) {
-        fs::copy_file(ctx.gameDir / "Perimeter.ini",
-                      iniScratch / "Perimeter.ini",
-                      fs::copy_options::overwrite_existing, ec);
-        TEST_REQUIRE(!ec, "cannot copy Perimeter.ini into the scratch dir.");
-    }
-
     const fs::path copyDir = scratch / "world_copy";
     MapEditor::Tests::copyDirectoryRecursive(ctx.tempWorldDir, copyDir);
     const MapEditor::WorldFiles copyFiles(copyDir);
@@ -171,13 +150,12 @@ bool runWorldParamsTests()
     modified.f3dKmz = 302;
     modified.f3dFunction = 1;
     modified.compressedFormat = 1; // documentation key only in this test
-    modified.zeroLayerColor = MapEditor::ZeroLayerColor{9, 8, 7, 6};
 
-    TEST_REQUIRE(modified.writeToIni(copyFiles, iniScratch),
+    TEST_REQUIRE(modified.writeToIni(copyFiles),
                  "WorldParams::writeToIni() failed.");
 
     const std::optional<MapEditor::WorldParams> reread =
-        MapEditor::WorldParams::readFromWorld(copyFiles, iniScratch);
+        MapEditor::WorldParams::readFromWorld(copyFiles);
     TEST_REQUIRE(reread.has_value(), "re-reading the modified world failed.");
     TEST_REQUIRE(reread->hZeroPlast == modified.hZeroPlast &&
                      reread->geoNetPower == modified.geoNetPower &&
@@ -191,36 +169,6 @@ bool runWorldParamsTests()
     TEST_REQUIRE(iniValue(copyDir / "world.ini", "Storage",
                           "Compressed Format Using") == "1",
                  "storage documentation key was not updated.");
-
-    // --- zeroplast color file round-trip -----------------------------------
-    const fs::path emptyDir = scratch / "perimeter_ini_empty";
-    fs::create_directories(emptyDir, ec);
-
-    // No Perimeter.ini -> game defaults, nothing stored.
-    MapEditor::ZeroLayerColor color;
-    stored = true;
-    TEST_REQUIRE(MapEditor::readZeroLayerColor(emptyDir, color, stored) &&
-                     !stored && color == MapEditor::ZeroLayerColor{},
-                 "missing Perimeter.ini must yield the game defaults.");
-
-    // iniScratch already holds the copy of the game ini — write + re-read.
-    const MapEditor::ZeroLayerColor written{12, 34, 56, 78};
-    TEST_REQUIRE(MapEditor::writeZeroLayerColor(iniScratch, written),
-                 "writeZeroLayerColor() failed.");
-    stored = false;
-    color = MapEditor::ZeroLayerColor{};
-    TEST_REQUIRE(MapEditor::readZeroLayerColor(iniScratch, color, stored) &&
-                     stored && color == written,
-                 "zeroplast color did not round-trip through Perimeter.ini.");
-
-    // Parse/serialize helpers.
-    const auto parsed =
-        MapEditor::WorldParams::parseZeroLayerColor("10 20 30 40");
-    TEST_REQUIRE(parsed && parsed->r == 10 && parsed->g == 20 &&
-                     parsed->b == 30 && parsed->a == 40,
-                 "parseZeroLayerColor() failed on a valid quadruple.");
-    TEST_REQUIRE(!MapEditor::WorldParams::parseZeroLayerColor("10 20 30"),
-                 "parseZeroLayerColor() accepted a triple.");
 
     return true;
 }
@@ -330,7 +278,6 @@ bool runWorldSettingsApplyTests()
     changed.f3dKmz = before->f3dKmz + 13;
     changed.f3dFunction = before->f3dFunction == 0 ? 1 : 0;
     changed.compressedFormat = before->compressedFormat == 0 ? 1 : 0;
-    changed.zeroLayerColor = MapEditor::ZeroLayerColor{40, 30, 20, 10};
 
     TEST_REQUIRE(session.applyWorldSettings(changed),
                  "applyWorldSettings() failed.");
@@ -350,16 +297,6 @@ bool runWorldSettingsApplyTests()
                  "f3d scaling was not applied live.");
     TEST_REQUIRE(f3d.currentFunction == changed.f3dFunction,
                  "f3d function was not applied live.");
-
-    // ZP color reached Perimeter.ini of the load root (game-wide file).
-    MapEditor::ZeroLayerColor iniColor;
-    bool stored = false;
-    TEST_REQUIRE(MapEditor::readZeroLayerColor(loadRoot, iniColor, stored) &&
-                     stored && iniColor == changed.zeroLayerColor,
-                 "zeroplast color was not written to Perimeter.ini.");
-    TEST_REQUIRE(vMap.colZeroPlast.r == changed.zeroLayerColor.r &&
-                     vMap.colZeroPlast.alpha == changed.zeroLayerColor.a,
-                 "vMap.colZeroPlast was not updated.");
 
     // Save — hZeroPlast, the storage key and the S2T1 format must persist.
     TEST_REQUIRE(session.saveWorld(), "saveWorld() failed after apply.");

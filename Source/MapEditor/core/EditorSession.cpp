@@ -1006,7 +1006,7 @@ std::optional<WorldParams> EditorSession::currentWorldParams() const
         return std::nullopt;
     }
     std::optional<WorldParams> params =
-        WorldParams::readFromWorld(*files, fs::u8path(gameDir_));
+        WorldParams::readFromWorld(*files);
     if (!params) {
         return std::nullopt;
     }
@@ -1038,20 +1038,6 @@ bool EditorSession::applyWorldSettings(const WorldParams& params)
     fs::current_path(fs::u8path(gameDir_));
 
     bool ok = true;
-
-    // Zeroplast tint — game-wide setting, outside the world save pipeline.
-    if (!(params.zeroLayerColor == current->zeroLayerColor)) {
-        auto clampByte = [](int value) {
-            return static_cast<unsigned char>(std::clamp(value, 0, 255));
-        };
-        vMap.colZeroPlast.r = clampByte(params.zeroLayerColor.r);
-        vMap.colZeroPlast.g = clampByte(params.zeroLayerColor.g);
-        vMap.colZeroPlast.b = clampByte(params.zeroLayerColor.b);
-        vMap.colZeroPlast.alpha = clampByte(params.zeroLayerColor.a);
-        if (!writeZeroLayerColor(fs::u8path(gameDir_), params.zeroLayerColor)) {
-            ok = false;
-        }
-    }
 
     // Zero-layer height — a live scalar; saveWorld() persists it with the
     // buffers. Drives the ZP brushes and the 3D grid reference plane.

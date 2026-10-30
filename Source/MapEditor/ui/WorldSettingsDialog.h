@@ -8,7 +8,6 @@
 class QComboBox;
 class QDialogButtonBox;
 class QLabel;
-class QPushButton;
 class QSpinBox;
 
 // ============================================================================
@@ -17,8 +16,7 @@ class QSpinBox;
 //
 //   [Global Parameters] hZeroPlast + the generation powers (+ map size),
 //   [Storage]           output.vmp compression (S2T0 / S2T1),
-//   [3DF Parameters]    geo-noise scaling + function index,
-//   Perimeter.ini       the game-wide zeroplast tint.
+//   [3DF Parameters]    geo-noise scaling + function index.
 //
 // Mode::ExistingWorld is used by the "World Parameters..." dialog for a
 // loaded world: the map size is shown read-only (the buffers are already
@@ -54,13 +52,11 @@ public:
     void setGeoLayerHeight(int height);
 
 private slots:
-    void pickZeroLayerColor();
     void onZeroPlastChanged(int value);
 
 private:
     void buildUi(Mode mode);
     void syncWidgets();
-    void updateZeroLayerColorWidgets();
 
     MapEditor::WorldParams params_;
     int geoLayerHeight_ = 0;
@@ -79,9 +75,6 @@ private:
     QSpinBox *kmySpin_ = nullptr;
     QSpinBox *kmzSpin_ = nullptr;
     QComboBox *functionCombo_ = nullptr;
-    QPushButton *zeroLayerColorButton_ = nullptr;
-    QLabel *zeroLayerColorLabel_ = nullptr;
-    QSpinBox *zeroLayerAlphaSpin_ = nullptr;
 };
 
 // Thin QDialog wrapper: panel + Ok/Cancel (T5.1 "World Parameters...").

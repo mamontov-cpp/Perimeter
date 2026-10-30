@@ -32,7 +32,7 @@ MapEditor::WorldParams paramsFromTemplate(const MapEditor::WorldInfo &world,
          std::filesystem::u8path(world.dirKey))
             .u8string());
     if (const auto read =
-            MapEditor::WorldParams::readFromWorld(files, gameDir)) {
+            MapEditor::WorldParams::readFromWorld(files)) {
         params = *read;
     }
     return params;

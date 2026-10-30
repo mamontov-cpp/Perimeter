@@ -237,9 +237,8 @@ public:
 
     /// Snapshot of the current parameters of the loaded world: live values
     /// (hZeroPlast from vMap, f3d scaling/function) mixed with the file state
-    /// (generation powers, storage compression from the output.vmp header,
-    /// zeroplast color from Perimeter.ini). std::nullopt when no world is
-    /// loaded or world.ini is unreadable.
+    /// (generation powers, storage compression from the output.vmp header).
+    /// std::nullopt when no world is loaded or world.ini is unreadable.
     std::optional<WorldParams> currentWorldParams() const;
 
     /// Apply the parameters the World Settings dialog changed:
@@ -251,8 +250,6 @@ public:
     ///                  new values take effect on reload / terrain generation
     ///   compression -> session target: output.vmp is converted immediately
     ///                  and every save re-applies the format after save3Buf()
-    ///   ZP color    -> Perimeter.ini [TD] Color ZeroLayer (game-wide) plus
-    ///                  vMap.colZeroPlast; outside the world save pipeline
     /// Returns false when no world is loaded or a file write failed.
     bool applyWorldSettings(const WorldParams& params);
 

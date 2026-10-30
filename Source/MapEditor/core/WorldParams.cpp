@@ -42,56 +42,8 @@ int iniIntOr(const IniDocument& ini, const char* section, const char* key,
 // WorldParams
 // ---------------------------------------------------------------------------
 
-std::optional<ZeroLayerColor>
-WorldParams::parseZeroLayerColor(std::string_view text)
-{
-    int values[4] = {0, 0, 0, 0};
-    int count = 0;
-    const char* begin = text.data();
-    const char* const end = begin + text.size();
-    while (count < 4) {
-        while (begin != end && (*begin == ' ' || *begin == '\t')) {
-            ++begin;
-        }
-        if (begin == end) {
-            break;
-        }
-        int value = 0;
-        const auto [ptr, ec] = std::from_chars(begin, end, value);
-        if (ec != std::errc{}) {
-            break;
-        }
-        values[count++] = value;
-        begin = ptr;
-    }
-    if (count < 4) {
-        return std::nullopt;
-    }
-    ZeroLayerColor color;
-    color.r = values[0];
-    color.g = values[1];
-    color.b = values[2];
-    color.a = values[3];
-    return color;
-}
-
-std::string WorldParams::zeroLayerColorToString(const ZeroLayerColor& color)
-{
-    // Space separated like the game writes it; no trailing space (the ini
-    // writer would accumulate one per save, see f3d.cpp sKeyGeoPal).
-    std::string out = std::to_string(color.r);
-    out += ' ';
-    out += std::to_string(color.g);
-    out += ' ';
-    out += std::to_string(color.b);
-    out += ' ';
-    out += std::to_string(color.a);
-    return out;
-}
-
 std::optional<WorldParams>
-WorldParams::readFromWorld(const WorldFiles& files,
-                           const std::filesystem::path& gameDir)
+WorldParams::readFromWorld(const WorldFiles& files)
 {
     const std::optional<IniDocument> ini = files.readIni();
     if (!ini) {
@@ -157,14 +109,10 @@ WorldParams::readFromWorld(const WorldFiles& files,
     params.f3dFunction = iniIntOr(*ini, WorldIni::ThreeDFParameters,
                                   WorldIni::Function, 1);
 
-    bool stored = false;
-    readZeroLayerColor(gameDir, params.zeroLayerColor, stored);
-
     return params;
 }
 
-bool WorldParams::writeToIni(const WorldFiles& files,
-                             const std::filesystem::path& gameDir) const
+bool WorldParams::writeToIni(const WorldFiles& files) const
 {
     bool ok = true;
     ok &= files.writeIniInt(WorldIni::GlobalParameters, WorldIni::MapPowerX,
@@ -187,63 +135,8 @@ bool WorldParams::writeToIni(const WorldFiles& files,
                                    std::to_string(f3dKmy) + " " +
                                    std::to_string(f3dKmz));
     ok &= files.writeIniInt(WorldIni::ThreeDFParameters, WorldIni::Function,
-                            f3dFunction);
-    ok &= writeZeroLayerColor(gameDir, zeroLayerColor);
+                             f3dFunction);
     return ok;
-}
-
-// ---------------------------------------------------------------------------
-// Perimeter.ini [TD] Color ZeroLayer
-// ---------------------------------------------------------------------------
-
-bool readZeroLayerColor(const fs::path& gameDir, ZeroLayerColor& color,
-                        bool& stored)
-{
-    stored = false;
-    color = ZeroLayerColor{};
-
-    const fs::path iniPath = gameDir / GameIni::PerimeterIniFile;
-    if (!fs::exists(iniPath)) {
-        return true; // no ini — the game runs on its built-in defaults
-    }
-    IniDocument ini;
-    if (!ini.load(iniPath)) {
-        return false;
-    }
-    const std::optional<std::string> value =
-        ini.getValue(GameIni::TdSection, GameIni::ColorZeroLayerKey);
-    if (!value || value->empty()) {
-        return true;
-    }
-    const std::optional<ZeroLayerColor> parsed =
-        WorldParams::parseZeroLayerColor(*value);
-    if (!parsed) {
-        return true; // present but unparseable — the game ignores it too
-    }
-    color = *parsed;
-    stored = true;
-    return true;
-}
-
-bool writeZeroLayerColor(const fs::path& gameDir, const ZeroLayerColor& color)
-{
-    const fs::path iniPath = gameDir / GameIni::PerimeterIniFile;
-    IniDocument ini;
-    if (fs::exists(iniPath)) {
-        if (!ini.load(iniPath)) {
-            fprintf(stderr, "WorldParams: cannot parse %s\n",
-                    iniPath.u8string().c_str());
-            return false;
-        }
-    }
-    ini.setValue(GameIni::TdSection, GameIni::ColorZeroLayerKey,
-                 WorldParams::zeroLayerColorToString(color));
-    if (!ini.save(iniPath)) {
-        fprintf(stderr, "WorldParams: cannot write %s\n",
-                iniPath.u8string().c_str());
-        return false;
-    }
-    return true;
 }
 
 // ---------------------------------------------------------------------------
