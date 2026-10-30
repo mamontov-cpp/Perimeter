@@ -346,6 +346,10 @@ private:
     QAction *actShapeLine_ = nullptr;
     // T3.1 — stamp half-size in map cells (BrushParams::radius).
     QSpinBox *brushRadiusSpin_ = nullptr;
+    // Stroke width in cells of the unfilled shapes (CircleOutline,
+    // SquareOutline, Line). 1 = original one-cell border. Only enabled when
+    // an unfilled shape is active; ignored for the filled shapes.
+    QSpinBox *brushThicknessSpin_ = nullptr;
     // T3.2 — brush mode actions: which layer the height tools drive.
     QAction *actBrushGeo_ = nullptr;
     QAction *actBrushDam_ = nullptr;

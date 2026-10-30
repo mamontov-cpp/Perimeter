@@ -721,10 +721,11 @@ void ViewportWidget::panObliqueGame(const QPointF &widgetPos)
 // Overlays
 // ---------------------------------------------------------------------------
 
-void ViewportWidget::setBrushPreview(BrushPreviewShape shape, int radius)
+void ViewportWidget::setBrushPreview(BrushPreviewShape shape, int radius, int innerRadius)
 {
     brushShape_ = shape;
     brushRadius_ = qMax(1, radius);
+    brushPreviewInnerRadius_ = std::max(0, innerRadius);
     update();
 }
 
@@ -1591,9 +1592,20 @@ void ViewportWidget::drawBrushPreview(QPainter &painter)
             const QPointF center(cursorWidgetPos_);
             if (brushShape_ == BrushPreviewShape::Circle) {
                 painter.drawEllipse(center, rx, ry);
+                if (brushPreviewInnerRadius_ > 0) {
+                    const double irx = qMax(minDim, brushPreviewInnerRadius_ * pxPerCell.x());
+                    const double iry = qMax(minDim, brushPreviewInnerRadius_ * pxPerCell.y());
+                    painter.drawEllipse(center, irx, iry);
+                }
             } else {
                 painter.drawRect(QRectF(center.x() - rx, center.y() - ry,
                                         rx * 2.0, ry * 2.0));
+                if (brushPreviewInnerRadius_ > 0) {
+                    const double irx = qMax(minDim, brushPreviewInnerRadius_ * pxPerCell.x());
+                    const double iry = qMax(minDim, brushPreviewInnerRadius_ * pxPerCell.y());
+                    painter.drawRect(QRectF(center.x() - irx, center.y() - iry,
+                                            irx * 2.0, iry * 2.0));
+                }
             }
         }
         if (linePending_ && lineStartWidgetPos_.x() >= 0) {
@@ -1609,10 +1621,20 @@ void ViewportWidget::drawBrushPreview(QPainter &painter)
 
     if (brushShape_ == BrushPreviewShape::Circle) {
         painter.drawEllipse(center, screenR, screenR);
+        if (brushPreviewInnerRadius_ > 0) {
+            const double screenInner = brushPreviewInnerRadius_ * zoom_;
+            painter.drawEllipse(center, screenInner, screenInner);
+        }
     } else {
         QRectF r(center.x() - screenR, center.y() - screenR,
                  screenR * 2, screenR * 2);
         painter.drawRect(r);
+        if (brushPreviewInnerRadius_ > 0) {
+            const double screenInner = brushPreviewInnerRadius_ * zoom_;
+            QRectF inner(center.x() - screenInner, center.y() - screenInner,
+                         screenInner * 2, screenInner * 2);
+            painter.drawRect(inner);
+        }
     }
 
     // Pending Line stroke: start marker + the line to the cursor cell.

@@ -51,19 +51,26 @@ void setCell(BrushMask& mask, int dx, int dy, unsigned char value = 255)
     mask.influence[static_cast<std::size_t>(dy) * mask.sx + dx] = value;
 }
 
-/// Circle mask over all cells with ring(dx,dy) <= radius, or only the ring ==
-/// radius cells for the outline. Ring 0 is the centre cell itself, so the
-/// outline of radius 0 degenerates to a single centre cell.
-BrushMask buildCircle(int radius, bool outline)
+/// Circle mask over all cells with ring(dx,dy) <= radius, or only the ring band
+/// [radius-thickness+1, radius] for the outline. Ring 0 is the centre cell
+/// itself, so the outline of radius 0 degenerates to a single centre cell.
+/// The band is INSET: the outer edge stays at `radius`, so a thicker stroke
+/// never edits outside the stamp footprint the shape has always had.
+/// `thickness <= 0` → the original one-cell ring for outlines, whole disc for
+/// filled (backward-compatible default).
+BrushMask buildCircle(int radius, bool outline, int thickness)
 {
     const int side = 2 * radius + 1;
     BrushMask mask = symmetricMask(side);
+    const int band = outline ? std::max(1, std::max(0, thickness)) : 0;
+    const int innerRing = std::max(0, radius - band + 1);
     for (int dy = 0; dy < side; ++dy) {
         const int y = dy + mask.y;
         for (int dx = 0; dx < side; ++dx) {
             const int x = dx + mask.x;
             const int ring = BrushMasks::circularRing(x, y);
-            const bool member = outline ? (ring == radius) : (ring <= radius);
+            const bool member = outline ? (ring >= innerRing && ring <= radius)
+                                        : (ring <= radius);
             if (member) {
                 setCell(mask, dx, dy);
             }
@@ -72,17 +79,23 @@ BrushMask buildCircle(int radius, bool outline)
     return mask;
 }
 
-/// Square mask: filled |dx|<=radius && |dy|<=radius or the one-cell border.
-BrushMask buildSquare(int radius, bool outline)
+/// Square mask: filled |dx|<=radius && |dy|<=radius or the border band
+/// max(|dx|,|dy|) in [radius-thickness+1, radius] (inset like buildCircle).
+/// `thickness <= 0` → the original one-cell border for outlines, whole square
+/// for filled (backward-compatible default).
+BrushMask buildSquare(int radius, bool outline, int thickness)
 {
     const int side = 2 * radius + 1;
     BrushMask mask = symmetricMask(side);
+    const int band = outline ? std::max(1, std::max(0, thickness)) : 0;
+    const int innerEdge = std::max(0, radius - band + 1);
     for (int dy = 0; dy < side; ++dy) {
         const int y = dy + mask.y;
         for (int dx = 0; dx < side; ++dx) {
             const int x = dx + mask.x;
-            const bool border = std::max(std::abs(x), std::abs(y)) == radius;
-            const bool member = outline ? border : true;
+            const int edge = std::max(std::abs(x), std::abs(y));
+            const bool member = outline ? (edge >= innerEdge && edge <= radius)
+                                        : true;
             if (member) {
                 setCell(mask, dx, dy);
             }
@@ -107,24 +120,37 @@ int scaleDeltaByInfluence(int delta, unsigned char influence)
 
 } // namespace
 
-BrushMask BrushMasks::filledCircle(int radius) { return buildCircle(radius, false); }
-BrushMask BrushMasks::circleOutline(int radius) { return buildCircle(radius, true); }
-BrushMask BrushMasks::filledSquare(int radius) { return buildSquare(radius, false); }
-BrushMask BrushMasks::squareOutline(int radius) { return buildSquare(radius, true); }
+BrushMask BrushMasks::filledCircle(int radius) { return buildCircle(radius, false, 0); }
+BrushMask BrushMasks::circleOutline(int radius, int thickness) { return buildCircle(radius, true, thickness); }
+BrushMask BrushMasks::filledSquare(int radius) { return buildSquare(radius, false, 0); }
+BrushMask BrushMasks::squareOutline(int radius, int thickness) { return buildSquare(radius, true, thickness); }
 
-BrushMask BrushMasks::byShape(BrushShape shape, int radius)
+BrushMask BrushMasks::byShape(BrushShape shape, int radius, int thickness)
 {
     switch (shape) {
     case BrushShape::FilledCircle:  return filledCircle(radius);
-    case BrushShape::CircleOutline: return circleOutline(radius);
+    case BrushShape::CircleOutline: return circleOutline(radius, thickness);
     case BrushShape::FilledSquare:  return filledSquare(radius);
-    case BrushShape::SquareOutline: return squareOutline(radius);
+    case BrushShape::SquareOutline: return squareOutline(radius, thickness);
     case BrushShape::Line:
-        // Line needs two endpoints — BrushTool::applyLine() builds the mask
-        // with lineStamp(); a shapeless line stamp is empty on purpose.
+        // Line has no stamp without endpoints — lineStamp() builds the
+        // mask with its own stamp radius logic.
         return BrushMask{};
     }
     return BrushMask{};
+}
+
+/// Effective filled-circle stamp radius for the Line shape: the stroke is
+/// centred on the Bresenham path and never exceeds the brush footprint.
+/// `thickness <= 0` → full stamp (the pre-thickness behaviour);
+/// `thickness N` → stroke radius (N-1)/2, clamped to [0, radius].
+int BrushTool::lineStrokeRadius(int radius, int thickness)
+{
+    if (thickness <= 0) {
+        return radius;
+    }
+    const int effR = (thickness - 1) / 2;
+    return std::min(effR, std::max(0, radius));
 }
 
 BrushMask BrushMasks::lineStamp(int x0, int y0, int x1, int y1, int stampRadius)
@@ -152,7 +178,7 @@ BrushMask BrushMasks::lineStamp(int x0, int y0, int x1, int y1, int stampRadius)
     // ... stamping a filled circle at every step. Cells inside stamp overlaps
     // keep the 255 value — the effect per cell is applied once per apply
     // call, i.e. the line raises every covered cell by one stamp delta.
-    const int r = BrushTool::clampRadius(stampRadius);
+    const int r = std::max(0, stampRadius);
     const BrushMask stamp = filledCircle(r);
     for (;;) {
         for (int j = 0; j < stamp.sy; ++j) {
@@ -195,6 +221,7 @@ BrushParams clampedParams(const BrushParams& params)
     clamped.radius = BrushTool::clampRadius(clamped.radius);
     clamped.strength = BrushTool::clampStrength(clamped.strength);
     clamped.heightLevel = BrushTool::clampHeightLevel(clamped.heightLevel);
+    clamped.thickness = BrushTool::clampThickness(clamped.thickness, clamped.radius);
     if (clamped.direction != 0) {
         clamped.direction = clamped.direction > 0 ? 1 : -1;
     }
@@ -227,6 +254,16 @@ int BrushTool::clampStrength(int strength)
 int BrushTool::clampHeightLevel(int level)
 {
     return std::clamp(level, 0, MAX_VX_HEIGHT_WHOLE);
+}
+
+int BrushTool::maxThickness(int radius)
+{
+    return 2 * clampRadius(radius) + 1;
+}
+
+int BrushTool::clampThickness(int thickness, int radius)
+{
+    return std::clamp(thickness, 0, maxThickness(radius));
 }
 
 bool BrushTool::effectSupported(BrushEffect effect)
@@ -335,7 +372,7 @@ bool BrushTool::applyStamp(int cx, int cy, const BrushParams& params)
         mask.translate(cx, cy);
         return applyMask(mask, clamped);
     }
-    BrushMask mask = BrushMasks::byShape(clamped.shape, clamped.radius);
+    BrushMask mask = BrushMasks::byShape(clamped.shape, clamped.radius, clamped.thickness);
     if (mask.empty()) {
         return false;
     }
@@ -364,7 +401,7 @@ bool BrushTool::applyLine(int x0, int y0, int x1, int y1, const BrushParams& par
     if (clamped.effect == BrushEffect::ImageDecal) {
         return false;
     }
-    const int stampRadius = clampRadius(clamped.radius);
+    const int stampRadius = BrushTool::lineStrokeRadius(clamped.radius, clamped.thickness);
     BrushMask mask = BrushMasks::lineStamp(x0, y0, x1, y1, stampRadius);
     if (mask.empty()) {
         return false;

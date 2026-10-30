@@ -41,12 +41,14 @@
 namespace MapEditor {
 
 /// Stamp silhouette drawn under the cursor / used for the mask.
+/// The last three are the UNFILLED shapes: their cells form a band of
+/// BrushParams::thickness cells instead of the whole area (see BrushMasks).
 enum class BrushShape
 {
     FilledCircle,   ///< whole disc, rings 0..radius (game `influenceDZ` shape).
     FilledSquare,   ///< solid square, |dx|<=radius and |dy|<=radius.
-    CircleOutline,  ///< one-cell ring at radius (Terra's own `maxRad[r]` ring).
-    SquareOutline,  ///< one-cell square border.
+    CircleOutline,  ///< ring band at radius (Terra's own `maxRad[r]` ring at thickness 1).
+    SquareOutline,  ///< square border band at radius.
     Line,           ///< Bresenham line, circle stamp; endpoints via applyLine().
 };
 
@@ -115,6 +117,16 @@ struct BrushParams
     /// = 1/32 m). Level-to-zeroplast (Align4ZP) reads vMap.hZeroPlast instead.
     int heightLevel = 32;
 
+    /// Stroke width in cells of the UNFILLED shapes
+    /// (CircleOutline, SquareOutline, Line). 0 = the full stamp extent (the
+    /// pre-thickness behaviour: one-cell ring/border for outlines, full-width
+    /// line for the Line shape). A positive value sets the band width:
+    /// outlines grow inward from the outer edge so a stamp never edits outside
+    /// the radius footprint; the Line shape centres the stroke on the Bresenham
+    /// path. Ignored by the filled shapes, the image mask and the decal.
+    /// Clamped into [0, maxThickness(radius)].
+    int thickness = 0;
+
     /// T3.5 (reworked): when true, the loaded image mask (BrushTool::
     /// setImageMask) replaces the shape/radius stamp as the brush geometry
     /// for every terrain effect — the image pixel value is the per-cell
@@ -130,6 +142,7 @@ struct BrushParams
                colorIndex == other.colorIndex && effect == other.effect &&
                direction == other.direction &&
                heightLevel == other.heightLevel &&
+               thickness == other.thickness &&
                useImageMask == other.useImageMask;
     }
 };
@@ -164,26 +177,42 @@ struct BrushMask
 
 /// Mask land shape generators (T3.1). All coordinates are map cells; masks are
 /// centred at the map cell (x/y offsets are relative to the stamp centre).
+/// For the outline shapes, `thickness` controls the band width (cells deep
+/// from the outer edge inward); 1 = the original one-cell ring/border.
 class BrushMasks
 {
 public:
     /// Whole disc ring 0..radius — the shape Terra's influenceDZ affects.
     static BrushMask filledCircle(int radius);
-    /// One-cell ring exactly at radius — Terra's own maxRad[r] offsets.
-    static BrushMask circleOutline(int radius);
+    /// Circle band: rings [radius-thickness+1, radius] — thickness=1 is the
+    /// one-cell ring exactly at radius (Terra's own `maxRad[r]` ring).
+    static BrushMask circleOutline(int radius, int thickness = 1);
     /// Solid square |dx|<=radius, |dy|<=radius.
     static BrushMask filledSquare(int radius);
-    /// Square border max(|dx|,|dy|)==radius.
-    static BrushMask squareOutline(int radius);
+    /// Square border band: max(|dx|,|dy|) in [radius-thickness+1, radius].
+    static BrushMask squareOutline(int radius, int thickness = 1);
     /// Mask builder for a BrushShape (Line has no stamps without endpoints —
-    /// use stampLine(); returns an empty mask there).
-    static BrushMask byShape(BrushShape shape, int radius);
+    /// use stampLine(); returns an empty mask there). Thickness is ignored for
+    /// the filled shapes and for Line (which uses its own stamp logic).
+    static BrushMask byShape(BrushShape shape, int radius, int thickness = 1);
 
     /// The Line shape: Bresenham from (x0,y0) to (x1,y1), union of
     /// filled-circle stamps of the given radius. Each map cell is counted
     /// exactly once (stamp overlaps do not accumulate the effect within one
     /// line); the influence over a cell is thus one stamp's delta, not a sum.
-    static BrushMask lineStamp(int x0, int y0, int x1, int y1, int stampRadius);
+    /// `strokeRadius` is the radius of the filled-circle stamp used at every
+    /// Bresenham step: for the unfilled Line shape it equals (thickness-1)/2
+    /// (inset in the brush footprint), while for the filled shapes it equals
+    /// the full brush radius (thickness=0, the default).
+    static BrushMask lineStamp(int x0, int y0, int x1, int y1, int strokeRadius);
+
+    /// Whether this shape is unfilled (supports BrushParams::thickness).
+    static bool isUnfilledShape(BrushShape shape)
+    {
+        return shape == BrushShape::CircleOutline ||
+               shape == BrushShape::SquareOutline ||
+               shape == BrushShape::Line;
+    }
 
     /// Circle ring number of (dx,dy) — truncating sqrt, exactly the rounding
     /// vrtMap::landPrepare() (LAND.cpp:77) uses for its radius tables.
@@ -208,6 +237,16 @@ public:
     /// Alignment target height clamped into [0, MAX_VX_HEIGHT_WHOLE] whole
     /// voxels — the AlignVariableH target domain (the UI spinbox uses it too).
     static int clampHeightLevel(int level);
+    /// Thickness clamped into [0, maxThickness(radius)]; 0 = "auto" (the
+    /// pre-thickness behaviour of the shape).
+    static int clampThickness(int thickness, int radius);
+    /// Largest stroke width the unfilled shapes can take: the stamp's own
+    /// extent (2*radius+1 cells) — a thicker band would leave the footprint.
+    static int maxThickness(int radius);
+    /// The filled-circle stamp radius the Line shape paints with for a brush
+    /// radius + stroke thickness: the stroke is centred on the Bresenham path
+    /// and never exceeds the brush footprint. thickness 0 → the full stamp.
+    static int lineStrokeRadius(int radius, int thickness);
     /// Whether apply() implements this effect (the T3.3–T3.5 tools are not
     /// routed yet; the T3.2 height tools are).
     static bool effectSupported(BrushEffect effect);

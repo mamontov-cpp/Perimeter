@@ -2051,6 +2051,25 @@ void MainWindow::buildBrushToolbar()
         syncBrushControls();
     });
     bar->addWidget(brushRadiusSpin_);
+
+    // Stroke width in cells for the unfilled shapes (CircleOutline,
+    // SquareOutline, Line). The band is inset from the outer edge, so it never
+    // exceeds the stamp footprint. 0 = full stamp (the pre-thickness behaviour);
+    // UI shows 1..maxThickness where 1 = original one-cell ring/border.
+    brushThicknessSpin_ = new QSpinBox(bar);
+    brushThicknessSpin_->setSuffix(tr(" c"));
+    brushThicknessSpin_->setToolTip(
+        tr("Stroke width in cells of the unfilled shapes (CircleOutline, "
+           "SquareOutline, Line). The band grows inward from the outer edge, "
+           "so a thicker stroke never edits outside the brush footprint. "
+           "Ignored by the filled shapes. 0 = full stamp."));
+    connect(brushThicknessSpin_, &QSpinBox::valueChanged, this, [this](int value) {
+        MapEditor::BrushParams params = brushTool_->params();
+        params.thickness = value;
+        brushTool_->setParams(params);
+        syncBrushControls();
+    });
+    bar->addWidget(brushThicknessSpin_);
     bar->addSeparator();
 
     // T3.2 type buttons: raise / lower / the two levellers.
@@ -2236,6 +2255,32 @@ void MainWindow::syncBrushControls()
             brushRadiusSpin_->blockSignals(false);
         }
     }
+
+    // Thickness: only enabled for the unfilled shapes; the range is the stamp's
+    // own extent (2*radius+1 cells) so a thicker band never leaves the stamp.
+    // Internal 0 = "auto" (full stamp); UI maps 0 to 1 for outlines and to
+    // maxThickness for the Line shape.
+    const bool thicknessEnabled =
+        MapEditor::BrushMasks::isUnfilledShape(params.shape) &&
+        !params.useImageMask &&
+        params.effect != MapEditor::BrushEffect::ImageDecal &&
+        params.effect != MapEditor::BrushEffect::PickColor;
+    if (brushThicknessSpin_) {
+        const int maxThick = MapEditor::BrushTool::maxThickness(params.radius);
+        brushThicknessSpin_->setRange(1, maxThick);
+        brushThicknessSpin_->setEnabled(thicknessEnabled);
+        // Map the internal 0 ("auto") to the shape's natural default.
+        int shownThick = params.thickness;
+        if (shownThick <= 0) {
+            shownThick = params.shape == MapEditor::BrushShape::Line ? maxThick : 1;
+        }
+        shownThick = std::clamp(shownThick, 1, maxThick);
+        if (brushThicknessSpin_->value() != shownThick) {
+            brushThicknessSpin_->blockSignals(true);
+            brushThicknessSpin_->setValue(shownThick);
+            brushThicknessSpin_->blockSignals(false);
+        }
+    }
     const bool imageMaskActive = params.useImageMask && brushTool_->hasImageMask();
     const bool decalActive = params.effect == MapEditor::BrushEffect::ImageDecal &&
                              brushTool_->hasDecalImage();
@@ -2277,10 +2322,20 @@ void MainWindow::syncBrushControls()
             previewRadius = std::max(brushTool_->decalImage().width,
                                      brushTool_->decalImage().height) / 2;
         }
+        // Inner ring of the band for the outline shapes; 0 = no inner ring.
+        // thickness 0 ("auto") → the original one-cell ring, so no inner ring;
+        // the Line shape's stroke is centred on the path, not a concentric
+        // band, so its preview keeps the outer footprint only.
+        int previewInner = 0;
+        if (!imageMaskActive && !decalActive && params.thickness > 0 &&
+            (params.shape == MapEditor::BrushShape::CircleOutline ||
+             params.shape == MapEditor::BrushShape::SquareOutline)) {
+            previewInner = std::max(0, params.radius - params.thickness + 1);
+        }
         viewport_->setBrushPreview(
             squarePreview ? MapEditor::BrushPreviewShape::Square
                           : MapEditor::BrushPreviewShape::Circle,
-            previewRadius);
+            previewRadius, previewInner);
     }
 
     // Enabled/disabled states depend on the effect AND on the session state

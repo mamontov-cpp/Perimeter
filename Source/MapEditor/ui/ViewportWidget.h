@@ -327,9 +327,10 @@ public:
     // Overlays
     // -----------------------------------------------------------------------
 
-    void setBrushPreview(BrushPreviewShape shape, int radius);
+    void setBrushPreview(BrushPreviewShape shape, int radius, int innerRadius = 0);
     BrushPreviewShape brushPreviewShape() const { return brushShape_; }
     int brushPreviewRadius() const { return brushRadius_; }
+    int brushPreviewInnerRadius() const { return brushPreviewInnerRadius_; }
     void setBrushPreviewVisible(bool visible);
 
     void setGridVisible(bool visible);
@@ -644,6 +645,8 @@ private:
 
     BrushPreviewShape brushShape_ = BrushPreviewShape::Circle;
     int brushRadius_ = kFineGridCell;
+    /// Inner radius of the band for the outline shapes; 0 = no inner ring.
+    int brushPreviewInnerRadius_ = 0;
     bool brushPreviewVisible_ = false;
     bool gridVisible_ = false;
     /// Editable grid cell size in map cells (kFineGridCell = Terra's kmGrid).
