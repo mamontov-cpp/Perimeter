@@ -117,6 +117,23 @@ int main(int argc, char *argv[])
                                        name, img.width(), img.height(), ok ? 1 : 0);
             };
             QTimer::singleShot(13300, &window, [captureMini] { captureMini("10_minimap_topdown"); });
+            // Frame diff helper shared by the stamp/spawn checks below.
+            const auto stampDiff = [](const QImage &a, const QImage &b) {
+                if (a.size() != b.size()) {
+                    return -1;
+                }
+                int diff = 0;
+                for (int y = 0; y < a.height(); ++y) {
+                    const QRgb *pa = reinterpret_cast<const QRgb *>(a.constScanLine(y));
+                    const QRgb *pb = reinterpret_cast<const QRgb *>(b.constScanLine(y));
+                    for (int x = 0; x < a.width(); ++x) {
+                        if (pa[x] != pb[x]) {
+                            ++diff;
+                        }
+                    }
+                }
+                return diff;
+            };
             QTimer::singleShot(14000, &window, [&window] {
                 MapEditor::ViewportWidget *vp = window.debugViewport();
                 if (!vp) return;
@@ -268,6 +285,68 @@ int main(int argc, char *argv[])
             });
 
             // ------------------------------------------------------------
+            // 3D spawn markers: synthetic spawns (the battle-map panel drives
+            // the same setSpawnPoints the sync uses), rendered as colored
+            // discs projected at the terrain — move them and verify the
+            // frame follows (a red disc must exist after the move).
+            // ------------------------------------------------------------
+            QTimer::singleShot(25000, &window, [&window] {
+                MapEditor::ViewportWidget *vp = window.debugViewport();
+                if (!vp) return;
+                // A sane default camera (the previous step left the extreme
+                // brush-preview repro camera) over the map centre.
+                MapEditor::View3DCamera cam;
+                cam.turnAngleDeg = 0.0;
+                cam.leanDeg = 140.0;
+                cam.cameraDZ = 100;
+                cam.focusC = 600;
+                vp->setObliqueCamera(cam);
+                std::vector<MapEditor::SpawnPoint> spawns(2);
+                spawns[0].mapX = 900;
+                spawns[0].mapY = 1000;
+                spawns[0].color = QColor(255, 64, 64);
+                spawns[1].mapX = 1150;
+                spawns[1].mapY = 1050;
+                spawns[1].color = QColor(64, 96, 255);
+                vp->setSpawnPoints(spawns);
+                vp->repaint();
+                MapEditor::editorTrace("autotest: spawn3d markers placed");
+            });
+            QTimer::singleShot(26200, &window, [&window, stampDiff] {
+                MapEditor::ViewportWidget *vp = window.debugViewport();
+                if (!vp) return;
+                vp->repaint();
+                const QImage before = vp->grabFramebuffer();
+                std::vector<MapEditor::SpawnPoint> moved(2);
+                moved[0].mapX = 950;
+                moved[0].mapY = 1020;
+                moved[0].color = QColor(255, 64, 64);
+                moved[1].mapX = 1200;
+                moved[1].mapY = 1080;
+                moved[1].color = QColor(64, 96, 255);
+                vp->setSpawnPoints(moved);
+                vp->repaint();
+                const QImage after = vp->grabFramebuffer();
+                int redPx = 0;
+                for (int y = 0; y < after.height(); ++y) {
+                    const QRgb *row =
+                        reinterpret_cast<const QRgb *>(after.constScanLine(y));
+                    for (int x = 0; x < after.width(); ++x) {
+                        const QRgb p = row[x];
+                        if (qRed(p) > 200 && qGreen(p) < 110 && qBlue(p) < 110) {
+                            ++redPx;
+                        }
+                    }
+                }
+                MapEditor::editorTrace(
+                    "autotest: spawn3d moved — pixels changed=%d, red disc "
+                    "px=%d",
+                    stampDiff(after, before), redPx);
+                // Leave the viewport without spawns for the later steps.
+                vp->setSpawnPoints({});
+            });
+
+            // ------------------------------------------------------------
             // Game camera mode (View → Camera Like in Game): the FORTOP
             // first-player preset (psi/theta/distance + the game FOV) and a
             // real brush stamp under it — the stamp must land on the cell
@@ -275,22 +354,6 @@ int main(int argc, char *argv[])
             // must restore the terrain (and keep the window closing
             // unattended — no unsaved-changes dialog).
             // ------------------------------------------------------------
-            const auto stampDiff = [](const QImage &a, const QImage &b) {
-                if (a.size() != b.size()) {
-                    return -1;
-                }
-                int diff = 0;
-                for (int y = 0; y < a.height(); ++y) {
-                    const QRgb *pa = reinterpret_cast<const QRgb *>(a.constScanLine(y));
-                    const QRgb *pb = reinterpret_cast<const QRgb *>(b.constScanLine(y));
-                    for (int x = 0; x < a.width(); ++x) {
-                        if (pa[x] != pb[x]) {
-                            ++diff;
-                        }
-                    }
-                }
-                return diff;
-            };
             const auto brushStampAt = [&window](const QPoint &pos) {
                 MapEditor::ViewportWidget *vp = window.debugViewport();
                 if (!vp) {

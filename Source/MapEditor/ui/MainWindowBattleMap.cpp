@@ -233,11 +233,33 @@ QString MainWindow::askBattleMapSaveName(bool &toWorldsFolder) const
     return name.trimmed();
 }
 
+void MainWindow::normalizeBattleMapSpawnHeights()
+{
+    if (!battleMap_.loaded() || !session_ || !session_->isWorldLoaded()) {
+        return;
+    }
+    // The game lands frames relative to vMap.hZeroPlast (world.ini) and the
+    // local terrain height, so the normalization must use the world the map
+    // actually refers to.
+    if (session_->currentWorldName() != battleMap_.worldName()) {
+        return;
+    }
+    battleMap_.restPlayersOnZeroLayer(
+        session_->zeroLayerHeight(),
+        [this](int x, int y) { return session_->terrainHeightAt(x, y); });
+    // Frames must also be stored "installed" (attached + powered + a
+    // zeroplast disc counter) — the COMPASS-family template state
+    // (attached = false) leaves them hovering until something installs
+    // them in-game.
+    battleMap_.setFramesInstalledForStart();
+}
+
 void MainWindow::onActionSaveBattleMap()
 {
     if (!battleMap_.loaded() || battleMapPath_.isEmpty()) {
         return;
     }
+    normalizeBattleMapSpawnHeights();
     if (!battleMap_.save(battleMapPath_.toStdString())) {
         QMessageBox::warning(this, tr("Save Battle Map"),
                              tr("Failed to write the battle map."));
@@ -270,6 +292,7 @@ void MainWindow::onActionSaveBattleMapAs()
             QMessageBox::Yes) {
         return;
     }
+    normalizeBattleMapSpawnHeights();
     if (!battleMap_.save(target.u8string())) {
         QMessageBox::warning(this, tr("Save Battle Map"),
                              tr("Failed to write the battle map."));
@@ -424,6 +447,13 @@ void MainWindow::onNewBattleMapRequested(const QString &name,
             QMessageBox::Yes) {
         return;
     }
+    // The wizard placed the anchors terrain-referenced — rest the frames on
+    // their grounded pose over the terrain and store them "installed" so
+    // they start landed (same rule as Save).
+    map.restPlayersOnZeroLayer(
+        session_->zeroLayerHeight(),
+        [this](int x, int y) { return session_->terrainHeightAt(x, y); });
+    map.setFramesInstalledForStart();
     if (!map.save(target.u8string())) {
         QMessageBox::warning(this, tr("New Battle Map"),
                              tr("Failed to write the battle map."));

@@ -132,6 +132,7 @@ bool SpgFile::load(const std::string& path)
 {
     mission_ = nullptr;
     save_ = nullptr;
+    textEncoding_ = SpgTextEncoding::Utf8;
     if (!doc_.load(path)) {
         return false;
     }
@@ -139,6 +140,19 @@ bool SpgFile::load(const std::string& path)
     const XPrmDocument::Block* saveBlock = doc_.block("SavePrm");
     mission_ = missionBlock ? missionBlock->object.get() : nullptr;
     save_ = saveBlock ? saveBlock->object.get() : nullptr;
+
+    // Detect the encoding of the editable strings from the player names.
+    // The document itself keeps raw bytes; the transcode happens at the
+    // playerData()/setPlayerData() boundary.
+    if (loaded()) {
+        std::vector<std::string> names;
+        for (int i = 0; i < playerCount(); ++i) {
+            names.push_back(
+                unquote(elementObject(playersDataArray(), i)
+                            ->scalar("name")));
+        }
+        textEncoding_ = detectSpgTextEncoding(names);
+    }
     return loaded();
 }
 
@@ -234,7 +248,7 @@ SpgFile::PlayerData SpgFile::playerData(int index) const
     toInt(player->scalar("clan"), data.clan);
     data.difficulty = player->scalar("difficulty");
     toInt(player->scalar("handicap"), data.handicap);
-    data.name = unquote(player->scalar("name"));
+    data.name = spgTextToUtf8(unquote(player->scalar("name")), textEncoding_);
     return data;
 }
 
@@ -251,7 +265,8 @@ bool SpgFile::setPlayerData(int index, const PlayerData& data)
     player->setScalar("clan", num(data.clan));
     player->setScalar("difficulty", data.difficulty);
     player->setScalar("handicap", num(data.handicap));
-    player->setScalar("name", quote(data.name));
+    player->setScalar("name",
+                      quote(utf8ToSpgText(data.name, textEncoding_)));
     return true;
 }
 
@@ -414,6 +429,134 @@ bool SpgFile::setPlayerAnchor(int playerIndex, double x, double y, double dz)
         return false;
     }
     return movePlayerGroup(playerIndex, x - oldX, y - oldY, dz);
+}
+
+bool SpgFile::restPlayersOnZeroLayer(
+    int zeroLayerHeight,
+    const std::function<int(int, int)>& terrainHeight)
+{
+    if (!loaded()) {
+        return false;
+    }
+    constexpr double kTolerance = 0.5;
+    constexpr double kSquadPullDownTolerance = 2.0;
+
+    for (int i = 0; i < playerCount(); ++i) {
+        XPrmObject* frame = playerFrame(i);
+        if (!frame) {
+            continue;
+        }
+        XPrmObject* squad = frame->object("squad");
+
+        // Squad ground level: pull down to the zero layer only — a squad
+        // resting on low terrain below the zero layer stays put (the game's
+        // landing check is one-sided and counts it as landed).
+        double sx = 0;
+        double sy = 0;
+        double sz = 0;
+        bool squadHasZ = false;
+        if (readVec3(squad, "position", sx, sy, sz, squadHasZ) && squadHasZ &&
+            sz - zeroLayerHeight > kSquadPullDownTolerance) {
+            squad->object("position")->setScalar("z", num(zeroLayerHeight));
+        }
+
+        // Frame grounded pose: the game installs at the stored z (the body
+        // has no gravity), so the stored z must be the grounded pose —
+        // terrain under the frame + the model's origin offset. The packed
+        // buildings ride with the frame.
+        double fx = 0;
+        double fy = 0;
+        double fz = 0;
+        bool frameHasZ = false;
+        if (!readVec3(frame, "position", fx, fy, fz, frameHasZ) || !frameHasZ) {
+            continue;
+        }
+        int ground = terrainHeight
+                         ? terrainHeight(static_cast<int>(fx), static_cast<int>(fy))
+                         : -1;
+        if (ground < 0) {
+            ground = zeroLayerHeight; // off-map fallback
+        }
+        const double target = ground + kFrameOriginGroundOffset;
+        if (std::abs(fz - target) <= kTolerance) {
+            continue;
+        }
+        const double delta = target - fz;
+        frame->object("position")->setScalar("z", num(target));
+
+        XPrmObject* slots = frame->object("frameSlots");
+        if (slots) {
+            for (std::size_t k = 1; k < slots->fields.size(); ++k) {
+                XPrmObject* slot =
+                    slots->fields[k].hasObject ? slots->fields[k].object.get()
+                                               : nullptr;
+                double zx = 0;
+                double zy = 0;
+                double zz = 0;
+                bool slotHasZ = false;
+                if (readVec3(slot, "position", zx, zy, zz, slotHasZ) && slotHasZ) {
+                    slot->object("position")->setScalar("z", num(zz + delta));
+                }
+            }
+        }
+    }
+    return true;
+}
+
+namespace {
+
+/// Collects the values of every `zeroLayerCounter` scalar in the tree —
+/// the ids must stay unique document-wide (loadZeroLayer keys a std::map
+/// by them, duplicates would silently drop a unit's zeroplast disc).
+void collectZeroLayerCounters(const XPrmObject* obj, std::vector<int>& out)
+{
+    if (!obj) {
+        return;
+    }
+    for (const XPrmObject::Field& field : obj->fields) {
+        if (field.hasObject) {
+            collectZeroLayerCounters(field.object.get(), out);
+        } else if (field.name == "zeroLayerCounter") {
+            int value = 0;
+            if (toInt(field.scalar, value) && value > 0) {
+                out.push_back(value);
+            }
+        }
+    }
+}
+
+} // namespace
+
+bool SpgFile::setFramesInstalledForStart()
+{
+    if (!loaded()) {
+        return false;
+    }
+    std::vector<int> used;
+    collectZeroLayerCounters(save_, used);
+
+    int next = 1;
+    for (int i = 0; i < playerCount(); ++i) {
+        XPrmObject* frame = playerFrame(i);
+        if (!frame) {
+            continue;
+        }
+        frame->setScalar("attached", "true");
+        frame->setScalar("powered", "true");
+        int id = 0;
+        toInt(frame->scalar("zeroLayerCounter"), id);
+        if (id <= 0) {
+            // Fresh disc: assign the lowest unused id, like the game's own
+            // zeroLayerCounterCurrent_ increment does at install time.
+            while (std::find(used.begin(), used.end(), next) != used.end()) {
+                ++next;
+            }
+            id = next++;
+            frame->setScalar("zeroLayerCounter", num(id));
+        }
+        used.push_back(id);
+    }
+    return true;
 }
 
 // ---------------------------------------------------------------------------

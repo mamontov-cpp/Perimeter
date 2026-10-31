@@ -44,6 +44,7 @@ ADD_LIBRARY(MapEditorCore STATIC
         core/MarkerStore.cpp
         core/spg/XPrmDocument.cpp
         core/spg/SpgFile.cpp
+        core/spg/SpgTextCoding.cpp
         core/GameCameraPreset.cpp
         core/Validation.cpp
         core/WorldImages.cpp

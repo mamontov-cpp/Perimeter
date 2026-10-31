@@ -500,6 +500,10 @@ private:
     void drawBrushPreview(QPainter &painter);
     void drawMarkers(QPainter &painter);
     void drawSpawnPoints(QPainter &painter);
+    /// 3D spawn markers: colored circles projected at the spawn ground
+    /// cells (GPU: through the real camera at the terrain height; CPU
+    /// fallback: the affine viewV2D basis around the look-at centre).
+    void drawSpawnPoints3D(QPainter &painter);
     void drawHud(QPainter &painter);
     QRect visibleCellRange() const;
 
@@ -579,6 +583,13 @@ private:
     /// across the view (x) and along the view direction (y, the kv-scaled
     /// depth axis). Used by the 3D brush preview ring.
     QPointF obliquePxPerCell() const;
+
+    /// CPU oblique fallback projection: map ground coordinates -> widget
+    /// position through the affine viewV2D basis around the look-at centre
+    /// (the inverse of the corner mapping in currentViewPolygon()). The
+    /// approximation the minimap footprint uses; the GPU path projects
+    /// through the real camera instead.
+    QPointF obliqueMapToWidgetF(const QPointF &mapPos) const;
 
     /// GPU oblique path: the stamp footprint projected through the perspective
     /// camera — the boundary of the disc/square of `brushRadius_` cells centred

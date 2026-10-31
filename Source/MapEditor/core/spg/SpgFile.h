@@ -1,7 +1,9 @@
 #pragma once
 
+#include "SpgTextCoding.h"
 #include "XPrmDocument.h"
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -27,7 +29,11 @@ namespace MapEditor {
 class SpgFile
 {
 public:
-    /// MissionDescriptionPrm.playersData[i].
+    /// MissionDescriptionPrm.playersData[i]. All strings are UTF-8 on this
+    /// API boundary: `name` is transcoded from/to the file encoding that
+    /// load() detected (Windows-1251 for the shipped Russian maps), so the
+    /// raw bytes in the document keep the original encoding on save. The
+    /// identifier fields (realPlayerType/belligerent/difficulty) are ASCII.
     struct PlayerData
     {
         int playerID = 0;
@@ -37,7 +43,7 @@ public:
         int clan = 0;
         std::string difficulty;       ///< identifier (DIFFICULTY_...)
         int handicap = 100;
-        std::string name;
+        std::string name;             ///< UTF-8 (file-encoded on disk)
 
     };
 
@@ -90,6 +96,50 @@ public:
     /// shifts by `dz` (see movePlayerGroup).
     bool setPlayerAnchor(int playerIndex, double x, double y, double dz);
 
+    /// Start-landing normalization (run before saving, together with
+    /// setFramesInstalledForStart which stores the frames "installed"):
+    ///
+    /// The game installs a frame at battle start at the STORED z (the frame
+    /// body has gravity = 0 — RigidBodyPrm "Unit Frame"), and only while the
+    /// frame bottom is at or slightly above the zero layer
+    /// (`position().z + boxMin().z - vMap.hZeroPlast < 2` is one-sided,
+    /// IronFrame.cpp:173). The grounded pose of the frame model is
+    /// `terrain height under the frame + kFrameOriginGroundOffset` — this
+    /// holds across every shipped attached=true map regardless of faction
+    /// (PENTOLL/XELA/COMPASS: frame z - ground = 114.58). The COMPASS
+    /// template stores a HOVER pose instead (ground + 114.58 + ~37, the
+    /// RigidBodyPrm flying_height = 40), which is correct only while the
+    /// frame waits to be installed — installed from that z it hangs in the
+    /// air (the EXTDEMO/MapDemo bug).
+    ///
+    /// So, per player: the frame z (and the packed frame slots riding with
+    /// it) is set to the grounded pose over `terrainHeight(frameX, frameY)`
+    /// (falling back to `zeroLayerHeight` off-map), and the squad z is
+    /// pulled down to `zeroLayerHeight` when it rests above it (a squad on
+    /// low terrain below the zero layer stays put — the one-sided game
+    /// check counts it as landed). `terrainHeight` returns whole-voxel
+    /// height or a negative value off-map. Idempotent.
+    static constexpr double kFrameOriginGroundOffset = 114.58;
+    bool restPlayersOnZeroLayer(
+        int zeroLayerHeight,
+        const std::function<int(int, int)>& terrainHeight);
+
+    /// "Installed at start" normalization (run before saving, after
+    /// restPlayersOnZeroLayer): every shipped battle map except the
+    /// COMPASS family stores the player frames as attached+powered with a
+    /// unique positive zeroLayerCounter — universalLoad then starts them
+    /// ATTACHED (the Quant attach path rests the frame on the zero layer
+    /// immediately, no hovering until a script/player installs it) and
+    /// loadZeroLayer pre-paints the zeroplast disc under each frame via
+    /// placeZeroLayer. The COMPASS template (and every editor map cloned
+    /// from it) has attached = false / powered = false / counter = 0 — the
+    /// frame hovers in ISOLATED mode at the stored z until manually
+    /// installed (the EXTDEMO/MapDemo "frame floats at start" bug). This
+    /// brings every frame to the installed state: attached = true,
+    /// powered = true, zeroLayerCounter = a fresh unique id (existing
+    /// nonzero counters of other units are kept and excluded). Idempotent.
+    bool setFramesInstalledForStart();
+
     // -----------------------------------------------------------------------
     // T8.4 — new battle maps from a template file
     // -----------------------------------------------------------------------
@@ -112,6 +162,9 @@ private:
     XPrmDocument doc_;
     XPrmObject* mission_ = nullptr;
     XPrmObject* save_ = nullptr;
+    /// Encoding of the editable strings (player names) in the loaded file —
+    /// detected at load() from the names, preserved by save().
+    SpgTextEncoding textEncoding_ = SpgTextEncoding::Utf8;
 };
 
 } // namespace MapEditor

@@ -1223,6 +1223,7 @@ void ViewportWidget::paintGL()
         // The brush works in the 3D view as well — the preview ring and the
         // pending line stroke are drawn in screen space at the cursor.
         if (gridVisible_) drawGrid3D(painter);
+        drawSpawnPoints3D(painter);
         if (brushPreviewVisible_) drawBrushPreview(painter);
         drawHud(painter);
         emitViewRectIfChanged();
@@ -1764,16 +1765,82 @@ void ViewportWidget::drawSpawnPoints(QPainter &painter)
 {
     if (spawns_.empty() || !renderer_->isBound()) return;
 
+    // The 2D view shows the colored rings only — the player names live in
+    // the Battle Map panel; text over the raster clutters the map (and the
+    // 3D view cannot place text on the projected ground at all).
     for (const SpawnPoint &s : spawns_) {
         QPointF pos = mapToScreen(s.mapX, s.mapY);
         painter.setPen(QPen(s.color, 2));
         painter.setBrush(Qt::NoBrush);
         painter.drawEllipse(pos, 7, 7);
-
-        painter.setPen(s.color);
-        painter.setBrush(Qt::NoBrush);
-        painter.drawText(pos.x() + 9, pos.y() - 3, s.label);
     }
+}
+
+void ViewportWidget::drawSpawnPoints3D(QPainter &painter)
+{
+    if (spawns_.empty() || !renderer_->isBound()) return;
+
+    painter.setRenderHint(QPainter::Antialiasing);
+    for (const SpawnPoint &s : spawns_) {
+        QPointF pos;
+        bool visible = false;
+        if (gpuActive()) {
+            // The real camera: project the spawn's ground point at the
+            // terrain surface height (device px -> widget px by the DPR).
+            // Points at/below the near plane are behind the camera.
+            double z = 0.0;
+            if (session_) {
+                const int terrain = session_->terrainHeightAt(s.mapX, s.mapY);
+                if (terrain > 0) {
+                    z = terrain;
+                }
+            }
+            double camZ = 0.0;
+            double sx = 0.0;
+            double sy = 0.0;
+            const qreal dpr = devicePixelRatioF();
+            visible = gpuView_->projectToScreenZ(
+                          s.mapX + 0.5, s.mapY + 0.5, z, camZ, sx, sy) &&
+                      camZ > gpuView_->nearPlaneZ();
+            pos = QPointF(sx / dpr, sy / dpr);
+        } else {
+            // CPU fallback: the affine viewV2D basis around the look-at
+            // centre — the same approximation the minimap footprint uses.
+            pos = obliqueMapToWidgetF(QPointF(s.mapX + 0.5, s.mapY + 0.5));
+            visible = QRectF(rect()).contains(pos);
+        }
+        if (!visible) {
+            continue;
+        }
+        // Filled disc in the player color with a thin dark rim so it reads
+        // over bright terrain.
+        painter.setPen(QPen(QColor(20, 20, 20, 190), 1));
+        painter.setBrush(s.color);
+        painter.drawEllipse(pos, 7.0, 7.0);
+    }
+}
+
+QPointF ViewportWidget::obliqueMapToWidgetF(const QPointF &mapPos) const
+{
+    const QSize buffer = obliqueBufferSize();
+    const double leanDeg = View3DRenderer::stableLeanDeg(
+        obliqueCamera_.leanDeg, obliqueCamera_.focusC, buffer.height() / 2);
+    const double kv = obliqueForwardScale(obliqueCamera_, leanDeg);
+    const double cellsPerPx =
+        (obliqueCamera_.focusC + obliqueCamera_.cameraDZ) /
+        static_cast<double>(qMax(1, obliqueCamera_.focusC));
+    const double theta = qDegreesToRadians(obliqueCamera_.turnAngleDeg);
+    const double cosT = std::cos(theta);
+    const double sinT = std::sin(theta);
+
+    // Inverse of the corner mapping in currentViewPolygon(): the widget
+    // offset (dx, dy) is lateral/forward in buffer space; kv stretches the
+    // forward axis.
+    const double o1 = (mapPos.x() - obliqueCenter_.x()) / cellsPerPx;
+    const double o2 = (mapPos.y() - obliqueCenter_.y()) / cellsPerPx;
+    const double dx = o1 * cosT + o2 * sinT;
+    const double dy = (o2 * cosT - o1 * sinT) / kv;
+    return QPointF(width() / 2.0 + dx, height() / 2.0 + dy);
 }
 
 // ---------------------------------------------------------------------------

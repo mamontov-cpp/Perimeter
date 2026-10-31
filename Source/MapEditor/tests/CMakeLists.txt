@@ -28,6 +28,8 @@ ADD_EXECUTABLE(map_editor_tests
         ImageDecalTests.cpp
         BrushThicknessTests.cpp
         PolygonBrushTests.cpp
+        SpgEncodingTests.cpp
+        SpgSpawnHeightTests.cpp
         MinimapRasterTests.cpp
         PaletteOpsTests.cpp
         WorldImagesTests.cpp

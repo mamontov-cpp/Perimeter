@@ -198,6 +198,10 @@ private:
     void refreshBattleMapUI();
     bool ensureWorldForBattleMap();
     void syncSpawnOverlay();
+    /// Bring spawn groups resting above the world's zero layer down to it
+    /// (SpgFile::restPlayersOnZeroLayer) so the frames start landed in the
+    /// game. No-op unless the map's world is loaded.
+    void normalizeBattleMapSpawnHeights();
     QString askBattleMapSaveName(bool &toWorldsFolder) const;
     /// *.spg file names in RESOURCE/Battle of the current game dir.
     QStringList battleMapTemplates() const;
