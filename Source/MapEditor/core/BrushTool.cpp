@@ -238,7 +238,7 @@ BrushTool::BrushTool(EditorSession& session)
 
 int BrushTool::maxRadius()
 {
-    return MAX_RADIUS_CIRCLEARR;
+    return kMaxBrushRadius;
 }
 
 int BrushTool::clampRadius(int radius)

@@ -217,8 +217,8 @@ bool runBrushToolTests()
     params.mode = BrushMode::Geo;
     params.effect = BrushEffect::ChangeHeight;
     params.direction = 1;
-    TEST_REQUIRE(brush.maxRadius() == MAX_RADIUS_CIRCLEARR,
-                 "maxRadius must track Terra's MAX_RADIUS_CIRCLEARR.");
+    TEST_REQUIRE(brush.maxRadius() == MapEditor::kMaxBrushRadius,
+                 "maxRadius must be the editor cap kMaxBrushRadius.");
 
     const RegionHeights before =
         RegionHeights::read(cx - region, cy - region, 2 * region, 2 * region);
@@ -419,13 +419,87 @@ bool runBrushToolTests()
     wild.direction = 3;
     TEST_REQUIRE(MapEditor::BrushTool::clampRadius(wild.radius) ==
                      MapEditor::BrushTool::maxRadius(),
-                 "the radius must clamp to MAX_RADIUS_CIRCLEARR.");
+                 "the radius must clamp to the editor cap (kMaxBrushRadius).");
+    TEST_REQUIRE(MapEditor::BrushTool::maxRadius() == 512,
+                 "the editor brush radius cap must be 512 cells.");
     TEST_REQUIRE(MapEditor::BrushTool::clampStrength(wild.strength) == 1,
                  "the strength must clamp into [1,100].");
     wild.strength = 4000;
     TEST_REQUIRE(MapEditor::BrushTool::clampStrength(wild.strength) == 100,
                  "the strength must clamp into [1,100].");
     std::printf("[PASS] radius/strength clamps hold for wild values.\n");
+
+    // ------------------------------------------------------------------
+    // 2.7: the radius cap is the editor's own kMaxBrushRadius = 512 (the
+    // masks are analytic, Terra's radius-table length does not apply): a
+    // radius-512 filled-square stamp touches the whole 1025x1025
+    // footprint, nothing outside it, and undoes byte-exact. The soot
+    // effect is used because it is height-independent (a raise could
+    // clamp against MAX_VX_HEIGHT on tall worlds like COMPASS).
+    // ------------------------------------------------------------------
+    TEST_REQUIRE(mapW >= 2 * MapEditor::kMaxBrushRadius + 3 &&
+                 mapH >= 2 * MapEditor::kMaxBrushRadius + 3,
+                 "the world is too small for the 512-radius stamp test.");
+    const int bigCx = mapW / 2;
+    const int bigCy = mapH / 2;
+
+    BrushParams bigParams;
+    bigParams.shape = BrushShape::FilledSquare;
+    bigParams.radius = MapEditor::kMaxBrushRadius;
+    bigParams.effect = BrushEffect::PlotSoot;
+
+    constexpr int bigR = 512;
+    constexpr int bigSide = 2 * bigR + 3; // footprint + the 1-cell margin
+    const RegionBytes bigBeforeBytes = RegionBytes::read(
+        bigCx - bigR - 1, bigCy - bigR - 1, bigSide, bigSide);
+
+    TEST_REQUIRE(brush.applyStamp(bigCx, bigCy, bigParams),
+                 "the 512-radius stamp was refused.");
+    TEST_REQUIRE(session.canUndo(),
+                 "the 512-radius stamp must enter the undo stack.");
+
+    // Every changed cell must lie inside the square footprint; at least
+    // one cell must change (so the stamp genuinely reached the rim cells).
+    std::size_t changedInside = 0;
+    std::size_t changedOutside = 0;
+    for (int j = 0; j < bigSide; ++j) {
+        for (int i = 0; i < bigSide; ++i) {
+            const std::size_t idx = static_cast<std::size_t>(j) * bigSide + i;
+            const bool changed =
+                bigBeforeBytes.geo[idx] != vMap.VxGBuf[(bigCy - bigR - 1 + j) * mapW +
+                                                       (bigCx - bigR - 1 + i)] ||
+                bigBeforeBytes.dam[idx] != vMap.VxDBuf[(bigCy - bigR - 1 + j) * mapW +
+                                                       (bigCx - bigR - 1 + i)] ||
+                bigBeforeBytes.atr[idx] != vMap.AtrBuf[(bigCy - bigR - 1 + j) * mapW +
+                                                       (bigCx - bigR - 1 + i)] ||
+                bigBeforeBytes.sur[idx] != vMap.SurBuf[(bigCy - bigR - 1 + j) * mapW +
+                                                       (bigCx - bigR - 1 + i)];
+            if (!changed) {
+                continue;
+            }
+            const int dx = i - bigR - 1;
+            const int dy = j - bigR - 1;
+            if (std::abs(dx) <= bigR && std::abs(dy) <= bigR) {
+                ++changedInside;
+            } else {
+                ++changedOutside;
+            }
+        }
+    }
+    TEST_REQUIRE(changedInside > 0,
+                 "the 512-radius stamp changed nothing inside its footprint.");
+    TEST_REQUIRE(changedOutside == 0,
+                 "the 512-radius stamp changed cells outside its footprint.");
+    std::printf("[PASS] the 512-radius stamp touches the whole 1025x1025 "
+                "footprint (%zu cells) and nothing outside it.\n",
+                changedInside);
+
+    TEST_REQUIRE(session.undo(), "the 512-radius stamp must be undoable.");
+    const RegionBytes bigRestored = RegionBytes::read(
+        bigCx - bigR - 1, bigCy - bigR - 1, bigSide, bigSide);
+    TEST_REQUIRE(bigRestored.equals(bigBeforeBytes),
+                 "undo() did not restore the 512-radius stamp byte-exact.");
+    std::printf("[PASS] undo() restores the 512-radius stamp byte-exact.\n");
 
     return true;
 }

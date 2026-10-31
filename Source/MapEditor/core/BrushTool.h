@@ -97,12 +97,19 @@ enum class BrushEffect
     VeryLightDam,   ///< T3.4: T2TE_PLOTTING_VERY_LIGHT_DAM.
 };
 
+/// The largest stamp radius the editor allows (map cells). The game's own
+/// tools are capped by Terra's xRad/yRad/maxRad table length
+/// (MAX_RADIUS_CIRCLEARR), but the editor builds its masks analytically from
+/// the same ring rounding (BrushMasks::circularRing), so that table length
+/// is not a cap here — 512 is a pure editor policy limit.
+inline constexpr int kMaxBrushRadius = 512;
+
 /// Full brush configuration (plan §5 T3.1: shape/radius/strength/mode/
 /// colorIndex/effect) + the parameters of the height tools (T3.2).
 struct BrushParams
 {
     BrushShape shape = BrushShape::FilledCircle;
-    int radius = 8;      ///< stamp half-size in map cells (clamped to the Terra radius tables).
+    int radius = 8;      ///< stamp half-size in map cells (clamped to kMaxBrushRadius).
     int strength = 30;   ///< 1..100: per-stamp delta in 1/32 m units *at full influence*.
     BrushMode mode = BrushMode::Geo;   ///< Geo/Dam target layer (rules per effect, T3.2).
     int colorIndex = 0;                ///< palette index for SetColor (0..255), geosurface<128, dam>=128.
@@ -228,7 +235,8 @@ class BrushTool
 public:
     explicit BrushTool(EditorSession& session);
 
-    /// Max possible stamp radius — Terra's radius tables length.
+    /// Max possible stamp radius — kMaxBrushRadius (an editor policy cap:
+    /// the masks are analytic, Terra's radius table length does not apply).
     static int maxRadius();
     /// Radius clamped into [0, maxRadius()].
     static int clampRadius(int radius);

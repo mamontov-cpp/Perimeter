@@ -131,6 +131,49 @@ bool runBrushMaskTests()
     std::printf("[PASS] circle masks coincide with Terra's radius tables.\n");
 
     // ------------------------------------------------------------------
+    // 1.2b: radii beyond Terra's tables. The editor cap is
+    // kMaxBrushRadius = 512, but the tables end at MAX_RADIUS_CIRCLEARR,
+    // so the membership is checked against the analytic ring rule
+    // (truncated sqrt) the tables themselves are built from.
+    // ------------------------------------------------------------------
+    {
+        constexpr int big = MapEditor::kMaxBrushRadius;
+        static_assert(big > MAX_RADIUS_CIRCLEARR,
+                      "the editor cap must exceed Terra's table length.");
+        const std::set<std::pair<int, int>> filled = maskCells(BrushMasks::filledCircle(big));
+        const std::set<std::pair<int, int>> outline =
+            maskCells(BrushMasks::circleOutline(big));
+
+        TEST_REQUIRE(filled.size() > outline.size(),
+                     "filledCircle(512) must be larger than its rim.");
+        // Disc membership: the truncated-sqrt ring decides, exactly like
+        // the table construction in vrtMap::landPrepare().
+        const auto inDisc = [&filled](int x, int y) {
+            return filled.count({x, y}) != 0;
+        };
+        TEST_REQUIRE(inDisc(0, 0) && inDisc(big, 0) && inDisc(-big, 0) &&
+                         inDisc(0, big) && inDisc(0, -big),
+                     "filledCircle(512) misses its axis tips.");
+        TEST_REQUIRE(inDisc(362, 362), // ring 511 (sqrt(2)*362 truncates to 511)
+                     "filledCircle(512) misses an interior ring-511 cell.");
+        TEST_REQUIRE(inDisc(508, 63),  // ring 511
+                     "filledCircle(512) misses an interior ring-511 cell.");
+        TEST_REQUIRE(!inDisc(480, 197), // ring 518
+                     "filledCircle(512) takes a cell beyond the radius.");
+        // Rim: ring exactly 512 — the outline of thickness 1.
+        const auto inRim = [&outline](int x, int y) {
+            return outline.count({x, y}) != 0;
+        };
+        TEST_REQUIRE(inRim(big, 0) && inRim(0, -big),
+                     "circleOutline(512) misses its ring-512 axis cells.");
+        TEST_REQUIRE(inRim(508, 64), // 508^2 + 64^2 = 262160, ring 512
+                     "circleOutline(512) misses a ring-512 cell.");
+        TEST_REQUIRE(!inRim(0, 0) && !inRim(508, 63),
+                     "circleOutline(512) takes cells below its ring.");
+    }
+    std::printf("[PASS] radius-512 masks follow the analytic ring rule.\n");
+
+    // ------------------------------------------------------------------
     // 1.3: square masks cover the full area / only the border.
     // ------------------------------------------------------------------
     const int r = 3;

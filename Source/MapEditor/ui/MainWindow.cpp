@@ -2038,7 +2038,7 @@ void MainWindow::buildBrushToolbar()
     bar->addAction(actShapeLine_);
 
     // Stamp half-size in map cells (BrushParams::radius, clamped by the tool
-    // to Terra's radius tables length).
+    // to BrushTool::maxRadius() = 512).
     brushRadiusSpin_ = new QSpinBox(bar);
     brushRadiusSpin_->setRange(0, MapEditor::BrushTool::maxRadius());
     brushRadiusSpin_->setSuffix(tr(" c"));
