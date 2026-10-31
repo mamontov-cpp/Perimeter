@@ -5,6 +5,7 @@
 
 #include <QApplication>
 #include <QDir>
+#include <QDoubleSpinBox>
 #include <QImage>
 #include <QMouseEvent>
 #include <QTimer>
@@ -164,6 +165,31 @@ int main(int argc, char *argv[])
             });
             QTimer::singleShot(22500, &window, [captureMini] {
                 captureMini("12_minimap_oblique_rot45");
+            });
+            // Rotation spinbox <-> 3D camera binding: after the rot45 camera
+            // set above the spinbox must mirror 45; editing it must drive
+            // the camera, and a camera-side change must re-sync the spinbox.
+            QTimer::singleShot(22800, &window, [&window] {
+                MapEditor::ViewportWidget *vp = window.debugViewport();
+                QDoubleSpinBox *spin = window.findChild<QDoubleSpinBox *>(
+                    QStringLiteral("camRotationSpin"));
+                if (!vp || !spin) {
+                    MapEditor::editorTrace(
+                        "autotest: rot spin check skipped (vp=%d spin=%d)",
+                        vp ? 1 : 0, spin ? 1 : 0);
+                    return;
+                }
+                const double mirrored = spin->value();
+                const MapEditor::View3DCamera savedCam = vp->obliqueCamera();
+                spin->setValue(90.0); // user edit -> camera rotation
+                const double driven = vp->rotationDeg();
+                vp->setRotationDeg(123.4); // camera-side change (orbit-like)
+                const double resynced = spin->value();
+                vp->setObliqueCamera(savedCam); // leave the camera as found
+                MapEditor::editorTrace(
+                    "autotest: rot spin mirror=%.1f editDrivesVp=%.1f "
+                    "vpChangeResyncs=%.1f restored=%.1f",
+                    mirrored, driven, resynced, vp->rotationDeg());
             });
             // Brush preview vs the real stamp footprint, the user's repro
             // camera: rot 15, lean 155, lift -500, focus 1950, radius 64

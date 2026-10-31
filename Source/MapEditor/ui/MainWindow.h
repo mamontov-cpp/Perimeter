@@ -19,6 +19,7 @@ class QDialog;
 class QLabel;
 class QMenu;
 class QSpinBox;
+class QDoubleSpinBox;
 class QToolButton;
 class QToolBar;
 
@@ -230,6 +231,12 @@ private:
     /// Update the toolbar label that mirrors the oblique camera state.
     void updateViewReadout();
 
+    /// Mirror the active 3D camera rotation (ViewportWidget::rotationDeg)
+    /// into the View-toolbar rotation spinbox without re-firing its edit
+    /// signal. A no-op when the spinbox already shows the value (the camera
+    /// reports finer precision than the spinbox's single decimal).
+    void syncCameraRotationSpin();
+
     /// Show the world list dialog so the user can pick a world to load.
     void showWorldListDialog();
 
@@ -373,6 +380,12 @@ private:
 
     // Toolbar readout of the current 3D camera.
     QLabel *viewReadout_ = nullptr;
+
+    // Absolute 3D camera rotation (azimuth) spinbox on the View toolbar:
+    // mirrors the active camera rotation (editor turnAngleDeg / the game
+    // camera psi) and drives it on edit — the same knob as the rotate
+    // buttons and the orbit drag.
+    QDoubleSpinBox *camRotationSpin_ = nullptr;
 
     // Editable grid cell size in map cells (the fine grid overlay).
     QSpinBox *gridStepWSpin_ = nullptr;

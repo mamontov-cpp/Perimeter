@@ -576,6 +576,24 @@ void ViewportWidget::adjustObliqueFocus(int deltaCells)
     update();
 }
 
+double ViewportWidget::rotationDeg() const
+{
+    return gameCameraMode_ ? gameCamera_.psiDeg : obliqueCamera_.turnAngleDeg;
+}
+
+void ViewportWidget::setRotationDeg(double deg)
+{
+    // Absolute counterpart of adjustObliqueRotation: both camera models keep
+    // the azimuth in [0,360), so the delta route lands exactly on the wrap
+    // of the requested value. The adjust* helpers emit
+    // obliqueCameraChanged() themselves (and no-op without a move).
+    if (gameCameraMode_) {
+        adjustGameRotation(wrapDegrees(deg) - gameCamera_.psiDeg);
+    } else {
+        adjustObliqueRotation(wrapDegrees(deg) - obliqueCamera_.turnAngleDeg);
+    }
+}
+
 void ViewportWidget::resetObliqueView()
 {
     if (gameCameraMode_) {
@@ -585,6 +603,7 @@ void ViewportWidget::resetObliqueView()
         gameCamera_.centerY = renderer_ ? renderer_->height() / 2.0 : 0.0;
         needs3DRedraw_ = true;
         applyGpuCamera();
+        emit obliqueCameraChanged(obliqueCamera_);
         update();
         return;
     }
@@ -622,6 +641,8 @@ bool ViewportWidget::setGameCameraMode(bool gameMode, const QPointF &presetCente
             gameCamera_.distance = kGameDistanceMin;
             needs3DRedraw_ = true;
             applyGpuCamera();
+            // The rotation moved — same signal the rotation helpers emit.
+            emit obliqueCameraChanged(obliqueCamera_);
             update();
         }
         return true;
@@ -645,9 +666,16 @@ bool ViewportWidget::setGameCameraMode(bool gameMode, const QPointF &presetCente
 
 void ViewportWidget::adjustGameRotation(double deltaDeg)
 {
-    gameCamera_.psiDeg = wrapDegrees(gameCamera_.psiDeg + deltaDeg);
+    const double next = wrapDegrees(gameCamera_.psiDeg + deltaDeg);
+    if (next == gameCamera_.psiDeg) {
+        return;
+    }
+    gameCamera_.psiDeg = next;
     needs3DRedraw_ = true;
     applyGpuCamera();
+    // The same signal the editor-camera helpers emit — MainWindow's rotation
+    // control reads rotationDeg(), which follows the active camera model.
+    emit obliqueCameraChanged(obliqueCamera_);
     update();
 }
 

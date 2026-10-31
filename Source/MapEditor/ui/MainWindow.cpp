@@ -35,6 +35,7 @@ namespace fs = std::filesystem;
 #include <QCloseEvent>
 #include <QDialog>
 #include <QDockWidget>
+#include <QDoubleSpinBox>
 #include <QFile>
 #include <QFileDialog>
 #include <QFormLayout>
@@ -737,7 +738,9 @@ void MainWindow::buildViewport()
             });
 
     // Keep the camera preset pair (like in game / like in editor) in sync
-    // when the viewport's game camera mode changes.
+    // when the viewport's game camera mode changes. The switch also changes
+    // WHICH rotation the spinbox mirrors (the game preset psi=0 vs the
+    // editor turnAngleDeg), so refresh it here.
     connect(viewport_, &MapEditor::ViewportWidget::gameCameraModeChanged,
             this, [this](bool gameMode) {
                 if (actGameCamera_) {
@@ -746,6 +749,7 @@ void MainWindow::buildViewport()
                 if (actEditorCamera_) {
                     actEditorCamera_->setChecked(!gameMode);
                 }
+                syncCameraRotationSpin();
             });
 
     /// Initial style button state (the viewport defaults to Smooth; post-T3.3
@@ -1156,7 +1160,25 @@ void MainWindow::onViewportViewModeChanged(int mode)
 
 void MainWindow::onObliqueCameraChanged(const MapEditor::View3DCamera &)
 {
+    syncCameraRotationSpin();
     updateViewReadout();
+}
+
+void MainWindow::syncCameraRotationSpin()
+{
+    if (!camRotationSpin_ || !viewport_) {
+        return;
+    }
+    // The spinbox shows a single decimal; compare at that precision so a
+    // camera change below the display step does not re-write the control.
+    const double shown =
+        std::round(viewport_->rotationDeg() * 10.0) / 10.0;
+    if (std::abs(camRotationSpin_->value() - shown) < 1e-9) {
+        return;
+    }
+    camRotationSpin_->blockSignals(true);
+    camRotationSpin_->setValue(shown);
+    camRotationSpin_->blockSignals(false);
 }
 
 void MainWindow::onEditorModeChanged(int mode)
@@ -1226,8 +1248,11 @@ void MainWindow::updateViewReadout()
     }
     if (viewport_->viewMode() == MapEditor::ViewportWidget::ViewMode::Oblique) {
         const MapEditor::View3DCamera &cam = viewport_->obliqueCamera();
+        // rot follows the ACTIVE camera model (game psi in the game camera
+        // mode) so the readout agrees with the rotation spinbox; the other
+        // fields are editor-camera knobs either way.
         viewReadout_->setText(tr("3D    rot %1\u00B0  tilt %2\u00B0  lift %3  focus %4")
-                                  .arg(qRound(cam.turnAngleDeg))
+                                  .arg(qRound(viewport_->rotationDeg()))
                                   .arg(qRound(cam.leanDeg))
                                   .arg(cam.cameraDZ)
                                   .arg(cam.focusC));
@@ -1694,6 +1719,28 @@ void MainWindow::buildViewToolbar()
     bar->addSeparator();
     bar->addAction(actRotateLeft_);
     bar->addAction(actRotateRight_);
+    // Absolute camera rotation (azimuth) of the 3D view, degrees — the same
+    // knob the rotate buttons and the orbit drag move. Wraps across the
+    // 360/0 edge like the buttons do; follows the active camera model (the
+    // editor turnAngleDeg or the game camera psi, see ViewportWidget).
+    camRotationSpin_ = new QDoubleSpinBox(bar);
+    camRotationSpin_->setObjectName(QStringLiteral("camRotationSpin"));
+    camRotationSpin_->setRange(0.0, 360.0);
+    camRotationSpin_->setDecimals(1);
+    camRotationSpin_->setSingleStep(5.0);
+    camRotationSpin_->setWrapping(true);
+    camRotationSpin_->setSuffix(tr("\u00B0"));
+    camRotationSpin_->setToolTip(
+        tr("3D camera rotation (azimuth) in degrees. Edits the same camera "
+           "rotation as the rotate buttons and the Alt+left orbit drag; "
+           "wraps 360\u00B0 \u2192 0\u00B0."));
+    connect(camRotationSpin_, &QDoubleSpinBox::valueChanged, this,
+            [this](double value) {
+                if (viewport_) {
+                    viewport_->setRotationDeg(value);
+                }
+            });
+    bar->addWidget(camRotationSpin_);
     bar->addAction(actTiltUp_);
     bar->addAction(actTiltDown_);
     bar->addSeparator();

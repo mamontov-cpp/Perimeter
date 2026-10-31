@@ -260,6 +260,16 @@ public:
     void adjustObliqueLift(int deltaCells);      ///< ± cameraDZ cells.
     void adjustObliqueFocus(int deltaCells);     ///< ± focal length cells.
 
+    /// The rotation (azimuth) of the ACTIVE 3D camera in degrees [0,360) —
+    /// the editor turnAngleDeg, or the game camera psi in the game camera
+    /// mode.
+    double rotationDeg() const;
+    /// Set the rotation of the active 3D camera to an absolute value
+    /// (wrapped into [0,360) like the orbit drag does). Routes to the game
+    /// psi in the game camera mode; no-op (no signal) when the value is
+    /// already there.
+    void setRotationDeg(double deg);
+
     /// Back to the default camera and map centre.
     void resetObliqueView();
 
@@ -390,7 +400,10 @@ signals:
     /// Emitted after setRenderStyle().
     void renderStyleChanged(MapEditor::ViewportWidget::RenderStyle style);
     /// Emitted after every successful 3D camera change (toolbar, wheel,
-    /// orbit, pan) so MainWindow can refresh its readout/labels.
+    /// orbit, pan) so MainWindow can refresh its readout/labels. Also fired
+    /// when the GAME camera mode rotates/resets — the payload is the
+    /// (unchanged) editor camera there, so consumers needing the effective
+    /// azimuth must read rotationDeg().
     void obliqueCameraChanged(const MapEditor::View3DCamera &camera);
     /// Emitted after a repaint in which currentViewRect() changed (pan, zoom,
     /// orbit, mode switch, resize, world load/unload) — main consumers are
