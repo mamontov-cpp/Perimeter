@@ -124,6 +124,7 @@ enum class BrushPreviewShape
 {
     Circle,
     Square,
+    Polygon,   ///< regular polygon — vertices from BrushMasks::regularPolygonVertices
 };
 
 class ViewportWidget : public QOpenGLWidget
@@ -342,6 +343,10 @@ public:
     int brushPreviewRadius() const { return brushRadius_; }
     int brushPreviewInnerRadius() const { return brushPreviewInnerRadius_; }
     void setBrushPreviewVisible(bool visible);
+    /// Regular-polygon preview geometry (BrushPreviewShape::Polygon): the
+    /// vertex count and the first-vertex angle offset in degrees — the same
+    /// values BrushParams carries, so the outline shows exactly the stamp.
+    void setBrushPreviewPolygon(int sides, double angleDeg);
 
     void setGridVisible(bool visible);
     bool isGridVisible() const { return gridVisible_; }
@@ -660,6 +665,9 @@ private:
     int brushRadius_ = kFineGridCell;
     /// Inner radius of the band for the outline shapes; 0 = no inner ring.
     int brushPreviewInnerRadius_ = 0;
+    /// Regular-polygon preview geometry (BrushPreviewShape::Polygon).
+    int brushPolygonSides_ = 6;
+    double brushPolygonAngleDeg_ = 0.0;
     bool brushPreviewVisible_ = false;
     bool gridVisible_ = false;
     /// Editable grid cell size in map cells (kFineGridCell = Terra's kmGrid).

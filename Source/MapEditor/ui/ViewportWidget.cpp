@@ -757,6 +757,37 @@ void ViewportWidget::setBrushPreview(BrushPreviewShape shape, int radius, int in
     update();
 }
 
+void ViewportWidget::setBrushPreviewPolygon(int sides, double angleDeg)
+{
+    brushPolygonSides_ = sides;
+    brushPolygonAngleDeg_ = angleDeg;
+    update();
+}
+
+namespace {
+
+/// Preview contour of the regular-polygon shape in widget space: the stamp
+/// vertex offsets (map cells, y down) scaled by (scaleX, scaleY) around
+/// `center`. Used by the 2D view (zoom, zoom) and the 3D CPU fallback
+/// (obliquePxPerCell); the GPU path projects the contour through the real
+/// camera instead (projectedBrushContour).
+QPolygonF polygonPreviewContour(double radiusCells, int sides, double angleDeg,
+                                double scaleX, double scaleY,
+                                const QPointF &center)
+{
+    const std::vector<std::pair<double, double>> vertices =
+        MapEditor::BrushMasks::regularPolygonVertices(radiusCells, sides, angleDeg);
+    QPolygonF poly;
+    poly.reserve(static_cast<int>(vertices.size()));
+    for (const std::pair<double, double> &v : vertices) {
+        poly << QPointF(center.x() + v.first * scaleX,
+                        center.y() + v.second * scaleY);
+    }
+    return poly;
+}
+
+} // namespace
+
 void ViewportWidget::setBrushPreviewVisible(bool visible)
 {
     brushPreviewVisible_ = visible;
@@ -1625,6 +1656,16 @@ void ViewportWidget::drawBrushPreview(QPainter &painter)
                     const double iry = qMax(minDim, brushPreviewInnerRadius_ * pxPerCell.y());
                     painter.drawEllipse(center, irx, iry);
                 }
+            } else if (brushShape_ == BrushPreviewShape::Polygon) {
+                painter.drawPolygon(polygonPreviewContour(
+                    brushRadius_, brushPolygonSides_, brushPolygonAngleDeg_,
+                    pxPerCell.x(), pxPerCell.y(), center));
+                if (brushPreviewInnerRadius_ > 0) {
+                    painter.drawPolygon(polygonPreviewContour(
+                        brushPreviewInnerRadius_, brushPolygonSides_,
+                        brushPolygonAngleDeg_, pxPerCell.x(), pxPerCell.y(),
+                        center));
+                }
             } else {
                 painter.drawRect(QRectF(center.x() - rx, center.y() - ry,
                                         rx * 2.0, ry * 2.0));
@@ -1652,6 +1693,15 @@ void ViewportWidget::drawBrushPreview(QPainter &painter)
         if (brushPreviewInnerRadius_ > 0) {
             const double screenInner = brushPreviewInnerRadius_ * zoom_;
             painter.drawEllipse(center, screenInner, screenInner);
+        }
+    } else if (brushShape_ == BrushPreviewShape::Polygon) {
+        painter.drawPolygon(polygonPreviewContour(
+            brushRadius_, brushPolygonSides_, brushPolygonAngleDeg_,
+            zoom_, zoom_, center));
+        if (brushPreviewInnerRadius_ > 0) {
+            painter.drawPolygon(polygonPreviewContour(
+                brushPreviewInnerRadius_, brushPolygonSides_,
+                brushPolygonAngleDeg_, zoom_, zoom_, center));
         }
     } else {
         QRectF r(center.x() - screenR, center.y() - screenR,
@@ -2314,6 +2364,25 @@ QPolygonF ViewportWidget::projectedBrushContour() const
             const double a = 2.0 * M_PI * i / steps;
             pts.push_back(cx + r * std::cos(a));
             pts.push_back(cy + r * std::sin(a));
+        }
+    } else if (brushShape_ == BrushPreviewShape::Polygon) {
+        // The ideal (unrounded) vertex loop, subdivided along every edge so
+        // the terrain height variation shows up in the projection — the same
+        // treatment the square corners get below.
+        const std::vector<std::pair<double, double>> vertices =
+            MapEditor::BrushMasks::regularPolygonVertices(
+                r, brushPolygonSides_, brushPolygonAngleDeg_);
+        const int seg = qBound(2, static_cast<int>(r) / 8, 16);
+        pts.reserve(vertices.size() * static_cast<std::size_t>(seg) * 2);
+        for (std::size_t e = 0; e < vertices.size(); ++e) {
+            const std::pair<double, double> &a = vertices[e];
+            const std::pair<double, double> &b =
+                vertices[(e + 1) % vertices.size()];
+            for (int i = 0; i < seg; ++i) {
+                const double t = i / static_cast<double>(seg);
+                pts.push_back(cx + a.first + (b.first - a.first) * t);
+                pts.push_back(cy + a.second + (b.second - a.second) * t);
+            }
         }
     } else {
         const int seg = qBound(2, static_cast<int>(r) / 8, 16);

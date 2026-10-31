@@ -350,9 +350,18 @@ private:
     QAction *actShapeSquare_ = nullptr;
     QAction *actShapeCircleOutline_ = nullptr;
     QAction *actShapeSquareOutline_ = nullptr;
+    // Regular-polygon stamps: filled and outline (the outline takes the
+    // stroke width, like the circle/square outlines).
+    QAction *actShapePolygon_ = nullptr;
+    QAction *actShapePolygonOutline_ = nullptr;
     QAction *actShapeLine_ = nullptr;
     // T3.1 — stamp half-size in map cells (BrushParams::radius).
     QSpinBox *brushRadiusSpin_ = nullptr;
+    // Regular-polygon stamp params (BrushParams::polygonSides /
+    // polygonAngleDeg): the vertex count (3..20) and the first-vertex angle
+    // (0..360°, wrapping). Enabled only with a polygon shape.
+    QSpinBox *polygonSidesSpin_ = nullptr;
+    QDoubleSpinBox *polygonAngleSpin_ = nullptr;
     // Stroke width in cells of the unfilled shapes (CircleOutline,
     // SquareOutline, Line). 1 = original one-cell border. Only enabled when
     // an unfilled shape is active; ignored for the filled shapes.

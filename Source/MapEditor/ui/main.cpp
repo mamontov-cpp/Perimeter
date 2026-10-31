@@ -313,6 +313,54 @@ int main(int argc, char *argv[])
                 QApplication::sendEvent(vp, &release);
                 vp->repaint();
             };
+
+            // ------------------------------------------------------------
+            // Regular-polygon stamp: the shape params (vertex count + angle)
+            // reach the brush through the same params path the toolbar
+            // spinboxes drive — stamp a filled pentagon in the 2D view,
+            // verify pixels moved, undo and verify they are back (the world
+            // must stay unmodified so the window closes unattended).
+            // ------------------------------------------------------------
+            QTimer::singleShot(33500, &window, [&window, brushStampAt,
+                                                stampDiff] {
+                MapEditor::ViewportWidget *vp = window.debugViewport();
+                MapEditor::BrushTool *bt = window.debugBrushTool();
+                if (!vp || !bt) return;
+                vp->setViewMode(MapEditor::ViewportWidget::ViewMode::TopDown);
+                MapEditor::BrushParams params = bt->params();
+                params.shape = MapEditor::BrushShape::FilledPolygon;
+                params.polygonSides = 5;
+                params.polygonAngleDeg = 10.0;
+                params.radius = 16;
+                params.thickness = 0;
+                params.effect = MapEditor::BrushEffect::ChangeHeight;
+                params.mode = MapEditor::BrushMode::Geo;
+                params.direction = 1;
+                bt->setParams(params);
+                vp->repaint();
+                const QPoint pos(vp->width() / 2, vp->height() / 2);
+                const QImage before = vp->grabFramebuffer();
+                brushStampAt(pos);
+                const QImage after = vp->grabFramebuffer();
+                MapEditor::editorTrace(
+                    "autotest: polygon stamp at (%d,%d) cursor cell (%d,%d) "
+                    "pixels changed=%d",
+                    pos.x(), pos.y(), vp->cursorCell().x(),
+                    vp->cursorCell().y(), stampDiff(after, before));
+            });
+            QTimer::singleShot(34000, &window, [&window, stampDiff] {
+                MapEditor::ViewportWidget *vp = window.debugViewport();
+                if (!vp) return;
+                const QImage before = vp->grabFramebuffer();
+                const bool invoked = QMetaObject::invokeMethod(
+                    &window, "onActionUndo", Qt::DirectConnection);
+                vp->repaint();
+                const QImage undone = vp->grabFramebuffer();
+                MapEditor::editorTrace(
+                    "autotest: polygon stamp undo invoked=%d pixels "
+                    "restored=%d",
+                    invoked ? 1 : 0, stampDiff(undone, before));
+            });
             auto gameBefore = std::make_shared<QImage>();
             QTimer::singleShot(34500, &window, [&window] {
                 MapEditor::ViewportWidget *vp = window.debugViewport();

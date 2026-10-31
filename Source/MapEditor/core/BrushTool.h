@@ -4,6 +4,7 @@
 #include "ImageDecal.h"
 
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 // ============================================================================
@@ -49,6 +50,8 @@ enum class BrushShape
     FilledSquare,   ///< solid square, |dx|<=radius and |dy|<=radius.
     CircleOutline,  ///< ring band at radius (Terra's own `maxRad[r]` ring at thickness 1).
     SquareOutline,  ///< square border band at radius.
+    FilledPolygon,  ///< solid regular polygon inscribed into the radius circle.
+    PolygonOutline, ///< regular-polygon border band at the radius (inset like the other outlines).
     Line,           ///< Bresenham line, circle stamp; endpoints via applyLine().
 };
 
@@ -104,6 +107,10 @@ enum class BrushEffect
 /// is not a cap here — 512 is a pure editor policy limit.
 inline constexpr int kMaxBrushRadius = 512;
 
+/// Regular-polygon stamp vertex-count domain (BrushParams::polygonSides).
+inline constexpr int kMinPolygonSides = 3;
+inline constexpr int kMaxPolygonSides = 20;
+
 /// Full brush configuration (plan §5 T3.1: shape/radius/strength/mode/
 /// colorIndex/effect) + the parameters of the height tools (T3.2).
 struct BrushParams
@@ -134,6 +141,16 @@ struct BrushParams
     /// Clamped into [0, maxThickness(radius)].
     int thickness = 0;
 
+    /// Regular-polygon shapes (FilledPolygon / PolygonOutline): the vertex
+    /// count, clamped to [kMinPolygonSides, kMaxPolygonSides].
+    int polygonSides = 6;
+    /// Regular-polygon shapes: the angle offset of the first vertex in
+    /// degrees, wrapped into [0,360). 0 points the vertex at +x (map east);
+    /// the angle grows towards +y — on screen that is CLOCKWISE, because the
+    /// map raster's y axis grows downwards (same convention the 2D preview
+    /// and the GPU contour projection draw).
+    double polygonAngleDeg = 0.0;
+
     /// T3.5 (reworked): when true, the loaded image mask (BrushTool::
     /// setImageMask) replaces the shape/radius stamp as the brush geometry
     /// for every terrain effect — the image pixel value is the per-cell
@@ -150,6 +167,8 @@ struct BrushParams
                direction == other.direction &&
                heightLevel == other.heightLevel &&
                thickness == other.thickness &&
+               polygonSides == other.polygonSides &&
+               polygonAngleDeg == other.polygonAngleDeg &&
                useImageMask == other.useImageMask;
     }
 };
@@ -198,10 +217,31 @@ public:
     static BrushMask filledSquare(int radius);
     /// Square border band: max(|dx|,|dy|) in [radius-thickness+1, radius].
     static BrushMask squareOutline(int radius, int thickness = 1);
+    /// Vertices of the regular polygon the polygon shapes are built from:
+    /// `sides` points on the circle of `radius` cells, the first vertex at
+    /// `angleOffsetDeg` (0 = +x / map east, growing towards +y — clockwise
+    /// on screen, the map raster's y axis grows downwards). Qt-free so the
+    /// UI preview reuses exactly the same geometry. `sides` is clamped to
+    /// [BrushTool::kMinPolygonSides, BrushTool::kMaxPolygonSides].
+    static std::vector<std::pair<double, double>>
+    regularPolygonVertices(double radius, int sides, double angleOffsetDeg);
+    /// Filled regular polygon inscribed into the radius circle (even-odd
+    /// fill of the vertex loop), with the vertices rounded to whole cells
+    /// like every other mask here.
+    static BrushMask filledPolygon(int radius, int sides, double angleOffsetDeg);
+    /// Regular-polygon border band: the cells within `thickness` of the
+    /// boundary, growing INWARD from the outer edge (plus the sub-cell
+    /// fringe straddling the ideal edge — the same inset-band rule the
+    /// circle/square outlines use), so a thick stroke never leaves the
+    /// radius footprint. thickness <= 0 → the one-cell boundary stroke.
+    static BrushMask polygonOutline(int radius, int sides, double angleOffsetDeg,
+                                    int thickness);
     /// Mask builder for a BrushShape (Line has no stamps without endpoints —
     /// use stampLine(); returns an empty mask there). Thickness is ignored for
-    /// the filled shapes and for Line (which uses its own stamp logic).
-    static BrushMask byShape(BrushShape shape, int radius, int thickness = 1);
+    /// the filled shapes and for Line (which uses its own stamp logic); the
+    /// polygon params are used by the polygon shapes only.
+    static BrushMask byShape(BrushShape shape, int radius, int thickness = 1,
+                             int polygonSides = 6, double polygonAngleDeg = 0.0);
 
     /// The Line shape: Bresenham from (x0,y0) to (x1,y1), union of
     /// filled-circle stamps of the given radius. Each map cell is counted
@@ -218,6 +258,7 @@ public:
     {
         return shape == BrushShape::CircleOutline ||
                shape == BrushShape::SquareOutline ||
+               shape == BrushShape::PolygonOutline ||
                shape == BrushShape::Line;
     }
 
@@ -248,6 +289,11 @@ public:
     /// Thickness clamped into [0, maxThickness(radius)]; 0 = "auto" (the
     /// pre-thickness behaviour of the shape).
     static int clampThickness(int thickness, int radius);
+    /// Regular-polygon vertex count clamped into
+    /// [kMinPolygonSides, kMaxPolygonSides].
+    static int clampPolygonSides(int sides);
+    /// Regular-polygon first-vertex angle wrapped into [0,360).
+    static double clampPolygonAngleDeg(double deg);
     /// Largest stroke width the unfilled shapes can take: the stamp's own
     /// extent (2*radius+1 cells) — a thicker band would leave the footprint.
     static int maxThickness(int radius);

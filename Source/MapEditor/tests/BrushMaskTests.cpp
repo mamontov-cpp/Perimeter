@@ -275,6 +275,106 @@ bool runBrushMaskTests()
                  "Line has no endpoints — byShape must produce an empty mask.");
     std::printf("[PASS] byShape() routes the shapes, Line stays endpoint-bound.\n");
 
+    // ------------------------------------------------------------------
+    // 1.6: regular-polygon geometry. Vertices sit on the radius circle at
+    // angleOffset + i*(360/sides) (0 = +x, growing towards +y); the filled
+    // mask is the even-odd fill, the outline is the inset boundary band.
+    // ------------------------------------------------------------------
+    {
+        // Vertex math: a radius-32 square polygon at offset 0 has its
+        // vertices on the axes; at 45 degrees they sit on the diagonals.
+        const auto v0 = BrushMasks::regularPolygonVertices(32, 4, 0.0);
+        TEST_REQUIRE(v0.size() == 4, "a 4-sided polygon must have 4 vertices.");
+        TEST_REQUIRE(std::lround(v0[0].first) == 32 && std::lround(v0[0].second) == 0 &&
+                         std::lround(v0[1].first) == 0 && std::lround(v0[1].second) == 32 &&
+                         std::lround(v0[2].first) == -32 && std::lround(v0[2].second) == 0 &&
+                         std::lround(v0[3].first) == 0 && std::lround(v0[3].second) == -32,
+                     "square-polygon vertices must sit on the axes at offset 0.");
+        const auto v45 = BrushMasks::regularPolygonVertices(32, 4, 45.0);
+        TEST_REQUIRE(std::lround(v45[0].first) == 23 && std::lround(v45[0].second) == 23,
+                     "45° offset must rotate the first vertex to the diagonal.");
+        // Sides clamp: 2 or 100 both produce a valid polygon.
+        TEST_REQUIRE(BrushMasks::regularPolygonVertices(8, 2, 0.0).size() == 3,
+                     "sides below 3 must clamp to 3.");
+        TEST_REQUIRE(BrushMasks::regularPolygonVertices(8, 100, 0.0).size() ==
+                         static_cast<std::size_t>(MapEditor::kMaxPolygonSides),
+                     "sides above 20 must clamp to 20.");
+
+        // Filled diamond (4 sides, offset 0, radius 32): axis tips in, the
+        // corners of the bbox out, interior/exterior by the L1 norm.
+        const BrushMask diamond = BrushMasks::filledPolygon(32, 4, 0.0);
+        TEST_REQUIRE(diamond.sx == 65 && diamond.x == -32,
+                     "polygon masks keep the (2r+1)^2 centred bbox.");
+        const std::set<std::pair<int, int>> diamondCells = maskCells(diamond);
+        const auto has = [&diamondCells](int x, int y) {
+            return diamondCells.count({x, y}) != 0;
+        };
+        TEST_REQUIRE(has(0, 0) && has(32, 0) && has(0, 32) && has(-32, 0) &&
+                         has(0, -32),
+                     "the filled diamond misses its centre or axis tips.");
+        TEST_REQUIRE(has(15, 15) && !has(17, 17),
+                     "diamond interior/exterior cells mismatch the L1 norm.");
+        TEST_REQUIRE(!has(32, 32) && !has(32, -32),
+                     "the filled diamond takes bbox corners outside the polygon.");
+
+        // Rotation: a 45° offset turns the diamond into an axis-aligned
+        // square on the diagonals (vertex rounding keeps both fills valid).
+        const std::set<std::pair<int, int>> rotated =
+            maskCells(BrushMasks::filledPolygon(32, 4, 45.0));
+        TEST_REQUIRE(rotated.count({23, 23}) && rotated.count({-23, 23}) &&
+                         rotated.count({23, -23}),
+                     "the 45°-rotated square misses its diagonal tips.");
+        TEST_REQUIRE(rotated.count({23, 0}) && !rotated.count({24, 24}),
+                     "the rotated square fill/boundary cells mismatch.");
+        TEST_REQUIRE(!rotated.count({32, 0}),
+                     "the rotated square must not reach the old axis tip.");
+
+        // Outline: the one-cell band hugs the boundary (axis tips in, centre
+        // out), thicker bands grow inward and never leave the footprint.
+        const std::set<std::pair<int, int>> rim = maskCells(
+            BrushMasks::polygonOutline(32, 4, 0.0, 1));
+        TEST_REQUIRE(rim.count({32, 0}) && rim.count({0, 32}) && !rim.count({0, 0}),
+                     "the one-cell polygon rim misses the boundary or takes the centre.");
+        TEST_REQUIRE(std::all_of(rim.begin(), rim.end(),
+                                 [](const std::pair<int, int>& c) {
+                                     return std::abs(c.first) <= 32 &&
+                                            std::abs(c.second) <= 32;
+                                 }),
+                     "the polygon rim leaves the radius footprint.");
+        const std::set<std::pair<int, int>> wide = maskCells(
+            BrushMasks::polygonOutline(32, 4, 0.0, 6));
+        TEST_REQUIRE(wide.size() > rim.size(),
+                     "a thicker polygon band must cover more cells.");
+        TEST_REQUIRE(!wide.count({0, 0}),
+                     "thickness 6 must not reach the diamond centre (sd = 32/sqrt(2) ~= 22.6).");
+        TEST_REQUIRE(wide.count({28, 0}),
+                     "thickness 6 must include the sd = 4*sqrt(2) ~= 5.7 cell (28,0).");
+        // Inset rule: the band of every thickness stays inside the fill.
+        TEST_REQUIRE(std::all_of(wide.begin(), wide.end(),
+                                 [&diamondCells](const std::pair<int, int>& c) {
+                                     // The fringe straddles the ideal edge by
+                                     // up to one cell — allow the boundary
+                                     // ring but never a full cell beyond it.
+                                     return diamondCells.count(c) ||
+                                            diamondCells.count({c.first - 1, c.second}) ||
+                                            diamondCells.count({c.first + 1, c.second}) ||
+                                            diamondCells.count({c.first, c.second - 1}) ||
+                                            diamondCells.count({c.first, c.second + 1});
+                                 }),
+                     "the polygon band must stay within one cell of the fill.");
+
+        // byShape routes the polygon shapes with their params.
+        TEST_REQUIRE(maskCells(BrushMasks::byShape(
+                         MapEditor::BrushShape::FilledPolygon, 8, 1, 5, 10.0))
+                         .size() > 0,
+                     "byShape must route FilledPolygon.");
+        TEST_REQUIRE(maskCells(BrushMasks::byShape(
+                         MapEditor::BrushShape::PolygonOutline, 8, 3, 5, 10.0))
+                         .size() > 0,
+                     "byShape must route PolygonOutline.");
+    }
+    std::printf("[PASS] regular-polygon geometry: vertices, fill, inset band.\n");
+
     return true;
 }
 

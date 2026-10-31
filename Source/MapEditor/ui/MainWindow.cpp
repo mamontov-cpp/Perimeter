@@ -485,6 +485,26 @@ QIcon makeShapeIcon(MapEditor::BrushShape shape)
         p.setBrush(Qt::NoBrush);
         p.drawRect(QRectF(4.5, 4.5, 13.0, 13.0));
         break;
+    case MapEditor::BrushShape::FilledPolygon:
+    case MapEditor::BrushShape::PolygonOutline:
+        // A hexagon in the icon regardless of the configured side count —
+        // the glyph stands for the regular-polygon family.
+        p.setPen(QPen(shape == MapEditor::BrushShape::FilledPolygon ? kInk : kAccent,
+                      1.8));
+        if (shape == MapEditor::BrushShape::FilledPolygon) {
+            p.setBrush(fill);
+        } else {
+            p.setBrush(Qt::NoBrush);
+        }
+        {
+            QPolygonF hex;
+            for (int i = 0; i < 6; ++i) {
+                const double a = 3.14159265358979323846 / 180.0 * (60.0 * i - 90.0);
+                hex << QPointF(11.0 + 7.5 * std::cos(a), 11.0 + 7.5 * std::sin(a));
+            }
+            p.drawPolygon(hex);
+        }
+        break;
     case MapEditor::BrushShape::Line:
         p.setPen(QPen(kInk, 2.0, Qt::SolidLine, Qt::RoundCap));
         p.drawLine(QPointF(5.0, 16.0), QPointF(17.0, 6.0));
@@ -1992,6 +2012,15 @@ void MainWindow::createBrushActions()
     actShapeSquareOutline_ = addShape(
         MapEditor::BrushShape::SquareOutline, tr("Square Outline"),
         tr("One-cell square border at the radius — draws rectangular borders."));
+    actShapePolygon_ = addShape(
+        MapEditor::BrushShape::FilledPolygon, tr("Polygon"),
+        tr("Filled regular-polygon stamp inscribed into the radius circle. "
+           "The vertex count and the first-vertex angle are set with the "
+           "spinboxes next to it."));
+    actShapePolygonOutline_ = addShape(
+        MapEditor::BrushShape::PolygonOutline, tr("Polygon Outline"),
+        tr("Regular-polygon border at the radius — the band grows inward "
+           "with the stroke width, like the circle/square outlines."));
     actShapeLine_ = addShape(
         MapEditor::BrushShape::Line, tr("Line"),
         tr("Two-point stroke: press marks the start, release draws a "
@@ -2082,6 +2111,8 @@ void MainWindow::buildBrushToolbar()
     bar->addAction(actShapeSquare_);
     bar->addAction(actShapeCircleOutline_);
     bar->addAction(actShapeSquareOutline_);
+    bar->addAction(actShapePolygon_);
+    bar->addAction(actShapePolygonOutline_);
     bar->addAction(actShapeLine_);
 
     // Stamp half-size in map cells (BrushParams::radius, clamped by the tool
@@ -2117,6 +2148,46 @@ void MainWindow::buildBrushToolbar()
         syncBrushControls();
     });
     bar->addWidget(brushThicknessSpin_);
+
+    // Regular-polygon stamp params (FilledPolygon / PolygonOutline): the
+    // vertex count and the first-vertex angle. Enabled only with a polygon
+    // shape, like the stroke width is only enabled for the unfilled shapes.
+    polygonSidesSpin_ = new QSpinBox(bar);
+    polygonSidesSpin_->setObjectName(QStringLiteral("polygonSidesSpin"));
+    polygonSidesSpin_->setRange(MapEditor::kMinPolygonSides,
+                                MapEditor::kMaxPolygonSides);
+    polygonSidesSpin_->setValue(6);
+    polygonSidesSpin_->setToolTip(
+        tr("Vertex count of the regular-polygon stamp (3..20). The polygon "
+           "is inscribed into the radius circle, so the brush radius is the "
+           "circumradius, exactly like the circle brush."));
+    connect(polygonSidesSpin_, &QSpinBox::valueChanged, this, [this](int value) {
+        MapEditor::BrushParams params = brushTool_->params();
+        params.polygonSides = value;
+        brushTool_->setParams(params);
+        syncBrushControls();
+    });
+    bar->addWidget(polygonSidesSpin_);
+
+    polygonAngleSpin_ = new QDoubleSpinBox(bar);
+    polygonAngleSpin_->setObjectName(QStringLiteral("polygonAngleSpin"));
+    polygonAngleSpin_->setRange(0.0, 360.0);
+    polygonAngleSpin_->setDecimals(1);
+    polygonAngleSpin_->setSingleStep(15.0);
+    polygonAngleSpin_->setWrapping(true);
+    polygonAngleSpin_->setSuffix(tr("\u00B0"));
+    polygonAngleSpin_->setToolTip(
+        tr("Angle offset of the first polygon vertex in degrees (0..360, "
+           "wraps 360\u00B0 \u2192 0\u00B0). 0\u00B0 points the vertex at map "
+           "east (+x); the angle grows clockwise on screen."));
+    connect(polygonAngleSpin_, &QDoubleSpinBox::valueChanged, this,
+            [this](double value) {
+                MapEditor::BrushParams params = brushTool_->params();
+                params.polygonAngleDeg = value;
+                brushTool_->setParams(params);
+                syncBrushControls();
+            });
+    bar->addWidget(polygonAngleSpin_);
     bar->addSeparator();
 
     // T3.2 type buttons: raise / lower / the two levellers.
@@ -2339,8 +2410,32 @@ void MainWindow::syncBrushControls()
         params.shape == MapEditor::BrushShape::CircleOutline);
     if (actShapeSquareOutline_) actShapeSquareOutline_->setChecked(!imageMaskActive && !decalActive &&
         params.shape == MapEditor::BrushShape::SquareOutline);
+    if (actShapePolygon_) actShapePolygon_->setChecked(!imageMaskActive && !decalActive &&
+        params.shape == MapEditor::BrushShape::FilledPolygon);
+    if (actShapePolygonOutline_) actShapePolygonOutline_->setChecked(!imageMaskActive && !decalActive &&
+        params.shape == MapEditor::BrushShape::PolygonOutline);
     if (actShapeLine_) actShapeLine_->setChecked(!imageMaskActive && !decalActive &&
         params.shape == MapEditor::BrushShape::Line);
+
+    // Regular-polygon params mirror the tool (the shape buttons' exclusive
+    // group only carries the shape itself).
+    if (polygonSidesSpin_ && polygonSidesSpin_->value() != params.polygonSides) {
+        polygonSidesSpin_->blockSignals(true);
+        polygonSidesSpin_->setValue(params.polygonSides);
+        polygonSidesSpin_->blockSignals(false);
+    }
+    if (polygonAngleSpin_) {
+        const double shownAngle =
+            std::round(MapEditor::BrushTool::clampPolygonAngleDeg(
+                           params.polygonAngleDeg) *
+                       10.0) /
+            10.0;
+        if (std::abs(polygonAngleSpin_->value() - shownAngle) > 1e-9) {
+            polygonAngleSpin_->blockSignals(true);
+            polygonAngleSpin_->setValue(shownAngle);
+            polygonAngleSpin_->blockSignals(false);
+        }
+    }
 
     // T3.3/T4.2 — the color index spinbox paints (SetColor) and displays the
     // last sampled pixel (PickColor).
@@ -2358,6 +2453,9 @@ void MainWindow::syncBrushControls()
     // preview only follows the brush — the View/Eyedropper modes hide it in
     // the viewport (drawBrushPreview) anyway.
     if (viewport_) {
+        const bool polygonPreview = !imageMaskActive && !decalActive &&
+            (params.shape == MapEditor::BrushShape::FilledPolygon ||
+             params.shape == MapEditor::BrushShape::PolygonOutline);
         const bool squarePreview = imageMaskActive || decalActive ||
             params.shape == MapEditor::BrushShape::FilledSquare ||
             params.shape == MapEditor::BrushShape::SquareOutline;
@@ -2372,17 +2470,24 @@ void MainWindow::syncBrushControls()
         // Inner ring of the band for the outline shapes; 0 = no inner ring.
         // thickness 0 ("auto") → the original one-cell ring, so no inner ring;
         // the Line shape's stroke is centred on the path, not a concentric
-        // band, so its preview keeps the outer footprint only.
+        // band, so its preview keeps the outer footprint only. The polygon
+        // inner contour is the same polygon at the reduced radius — the
+        // polygon band is distance-based, so that is the closest simple
+        // inset the preview can draw.
         int previewInner = 0;
         if (!imageMaskActive && !decalActive && params.thickness > 0 &&
             (params.shape == MapEditor::BrushShape::CircleOutline ||
-             params.shape == MapEditor::BrushShape::SquareOutline)) {
+             params.shape == MapEditor::BrushShape::SquareOutline ||
+             params.shape == MapEditor::BrushShape::PolygonOutline)) {
             previewInner = std::max(0, params.radius - params.thickness + 1);
         }
         viewport_->setBrushPreview(
-            squarePreview ? MapEditor::BrushPreviewShape::Square
-                          : MapEditor::BrushPreviewShape::Circle,
+            polygonPreview ? MapEditor::BrushPreviewShape::Polygon
+            : squarePreview ? MapEditor::BrushPreviewShape::Square
+                            : MapEditor::BrushPreviewShape::Circle,
             previewRadius, previewInner);
+        viewport_->setBrushPreviewPolygon(params.polygonSides,
+                                          params.polygonAngleDeg);
     }
 
     // Enabled/disabled states depend on the effect AND on the session state
@@ -3506,6 +3611,7 @@ void MainWindow::updateActionStates()
                             actLoadBrushImage_,
                             actShapeCircle_, actShapeSquare_,
                             actShapeCircleOutline_, actShapeSquareOutline_,
+                            actShapePolygon_, actShapePolygonOutline_,
                             actShapeLine_}) {
         if (action) {
             action->setEnabled(worldLoaded);
@@ -3532,6 +3638,25 @@ void MainWindow::updateActionStates()
             worldLoaded && brushTool_ &&
             !brushTool_->params().useImageMask && !decalEffect &&
             brushTool_->params().effect != MapEditor::BrushEffect::PickColor);
+    }
+    // The polygon params apply only with a polygon shape selected (and the
+    // same image/decal/pick exclusions the radius has: those replace the
+    // generated shape stamp entirely).
+    if (polygonSidesSpin_ || polygonAngleSpin_) {
+        const bool polygonShape =
+            brushTool_ &&
+            (brushTool_->params().shape == MapEditor::BrushShape::FilledPolygon ||
+             brushTool_->params().shape == MapEditor::BrushShape::PolygonOutline);
+        const bool polygonEnabled =
+            worldLoaded && brushTool_ && polygonShape &&
+            !brushTool_->params().useImageMask && !decalEffect &&
+            brushTool_->params().effect != MapEditor::BrushEffect::PickColor;
+        if (polygonSidesSpin_) {
+            polygonSidesSpin_->setEnabled(polygonEnabled);
+        }
+        if (polygonAngleSpin_) {
+            polygonAngleSpin_->setEnabled(polygonEnabled);
+        }
     }
     // T3.5 — the image scale applies to whichever image stamp is active: the
     // influence mask or the ImageDecal decal.

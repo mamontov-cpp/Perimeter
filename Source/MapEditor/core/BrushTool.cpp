@@ -10,6 +10,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
+#include <limits>
 #include <utility>
 
 #include "terra.h"
@@ -125,13 +127,156 @@ BrushMask BrushMasks::circleOutline(int radius, int thickness) { return buildCir
 BrushMask BrushMasks::filledSquare(int radius) { return buildSquare(radius, false, 0); }
 BrushMask BrushMasks::squareOutline(int radius, int thickness) { return buildSquare(radius, true, thickness); }
 
-BrushMask BrushMasks::byShape(BrushShape shape, int radius, int thickness)
+std::vector<std::pair<double, double>>
+BrushMasks::regularPolygonVertices(double radius, int sides, double angleOffsetDeg)
+{
+    sides = BrushTool::clampPolygonSides(sides);
+    std::vector<std::pair<double, double>> vertices;
+    vertices.reserve(static_cast<std::size_t>(sides));
+    const double step = 2.0 * 3.14159265358979323846 / sides;
+    const double start = angleOffsetDeg * 3.14159265358979323846 / 180.0;
+    for (int i = 0; i < sides; ++i) {
+        const double a = start + step * i;
+        vertices.emplace_back(radius * std::cos(a), radius * std::sin(a));
+    }
+    return vertices;
+}
+
+namespace {
+
+/// Even-odd point-in-polygon test over the (already cell-rounded) vertex
+/// loop, evaluated at the integer cell centre (dx,dy).
+bool pointInPolygon(const std::vector<std::pair<double, double>>& vertices,
+                    double dx, double dy)
+{
+    bool inside = false;
+    const std::size_t n = vertices.size();
+    for (std::size_t i = 0, j = n - 1; i < n; j = i++) {
+        const double xi = vertices[i].first;
+        const double yi = vertices[i].second;
+        const double xj = vertices[j].first;
+        const double yj = vertices[j].second;
+        if ((yi > dy) != (yj > dy) &&
+            dx < (xj - xi) * (dy - yi) / (yj - yi) + xi) {
+            inside = !inside;
+        }
+    }
+    return inside;
+}
+
+/// Distance from the point (dx,dy) to the closest point of the polygon
+/// boundary (the vertex loop as line segments).
+double distanceToPolygonBoundary(
+    const std::vector<std::pair<double, double>>& vertices, double dx, double dy)
+{
+    double best = std::numeric_limits<double>::max();
+    const std::size_t n = vertices.size();
+    for (std::size_t i = 0, j = n - 1; i < n; j = i++) {
+        const double x0 = vertices[j].first;
+        const double y0 = vertices[j].second;
+        const double x1 = vertices[i].first;
+        const double y1 = vertices[i].second;
+        const double ex = x1 - x0;
+        const double ey = y1 - y0;
+        const double len2 = ex * ex + ey * ey;
+        double t = 0.0;
+        if (len2 > 0.0) {
+            t = ((dx - x0) * ex + (dy - y0) * ey) / len2;
+            t = std::clamp(t, 0.0, 1.0);
+        }
+        const double cx = x0 + ex * t;
+        const double cy = y0 + ey * t;
+        const double ddx = dx - cx;
+        const double ddy = dy - cy;
+        best = std::min(best, ddx * ddx + ddy * ddy);
+    }
+    return std::sqrt(best);
+}
+
+/// Shared bbox/raster pass for the polygon masks: evaluates `member(dx,dy)`
+/// over the (2r+1)^2 stamp bbox and fills the influence grid.
+BrushMask rasterizePolygon(int radius,
+                           const std::vector<std::pair<double, double>>& vertices,
+                           const std::function<bool(double, double)>& member)
+{
+    const int side = 2 * radius + 1;
+    BrushMask mask = symmetricMask(side);
+    for (int dy = 0; dy < side; ++dy) {
+        const double y = dy + mask.y;
+        for (int dx = 0; dx < side; ++dx) {
+            if (member(dx + mask.x, y)) {
+                setCell(mask, dx, dy);
+            }
+        }
+    }
+    return mask;
+}
+
+} // namespace
+
+BrushMask BrushMasks::filledPolygon(int radius, int sides, double angleOffsetDeg)
+{
+    if (radius < 0) {
+        radius = 0;
+    }
+    // Round the vertices to whole cells like every other mask, then fill.
+    // Cells whose centre lands exactly on an edge/vertex (even-odd is
+    // degenerate there) join the fill via the sub-cell boundary rule.
+    const std::vector<std::pair<double, double>> raw =
+        regularPolygonVertices(radius, sides, angleOffsetDeg);
+    std::vector<std::pair<double, double>> vertices;
+    vertices.reserve(raw.size());
+    for (const auto& v : raw) {
+        vertices.emplace_back(std::lround(v.first), std::lround(v.second));
+    }
+    return rasterizePolygon(radius, vertices,
+                            [&vertices](double x, double y) {
+                                return pointInPolygon(vertices, x, y) ||
+                                       distanceToPolygonBoundary(vertices, x, y) < 0.5;
+                            });
+}
+
+BrushMask BrushMasks::polygonOutline(int radius, int sides, double angleOffsetDeg,
+                                     int thickness)
+{
+    if (radius < 0) {
+        radius = 0;
+    }
+    const int band = std::max(1, thickness);
+    const std::vector<std::pair<double, double>> raw =
+        regularPolygonVertices(radius, sides, angleOffsetDeg);
+    std::vector<std::pair<double, double>> vertices;
+    vertices.reserve(raw.size());
+    for (const auto& v : raw) {
+        vertices.emplace_back(std::lround(v.first), std::lround(v.second));
+    }
+    // Inset band, the polygon analog of the circle rings [r-t+1, r] / the
+    // square edges [r-t+1, r]: cells whose SIGNED distance to the boundary
+    // (positive inside) stays below the band width, plus the sub-cell
+    // fringe straddling the ideal edge (sd > -1) — a polygon vertex is at
+    // most 1/2 cell off the rounded boundary, so the stroke never breaks.
+    return rasterizePolygon(radius, vertices,
+                            [&vertices, band](double x, double y) {
+                                const double dist =
+                                    distanceToPolygonBoundary(vertices, x, y);
+                                const double sd =
+                                    pointInPolygon(vertices, x, y) ? dist : -dist;
+                                return sd > -1.0 && sd < band;
+                            });
+}
+
+BrushMask BrushMasks::byShape(BrushShape shape, int radius, int thickness,
+                              int polygonSides, double polygonAngleDeg)
 {
     switch (shape) {
     case BrushShape::FilledCircle:  return filledCircle(radius);
     case BrushShape::CircleOutline: return circleOutline(radius, thickness);
     case BrushShape::FilledSquare:  return filledSquare(radius);
     case BrushShape::SquareOutline: return squareOutline(radius, thickness);
+    case BrushShape::FilledPolygon:
+        return filledPolygon(radius, polygonSides, polygonAngleDeg);
+    case BrushShape::PolygonOutline:
+        return polygonOutline(radius, polygonSides, polygonAngleDeg, thickness);
     case BrushShape::Line:
         // Line has no stamp without endpoints — lineStamp() builds the
         // mask with its own stamp radius logic.
@@ -222,6 +367,8 @@ BrushParams clampedParams(const BrushParams& params)
     clamped.strength = BrushTool::clampStrength(clamped.strength);
     clamped.heightLevel = BrushTool::clampHeightLevel(clamped.heightLevel);
     clamped.thickness = BrushTool::clampThickness(clamped.thickness, clamped.radius);
+    clamped.polygonSides = BrushTool::clampPolygonSides(clamped.polygonSides);
+    clamped.polygonAngleDeg = BrushTool::clampPolygonAngleDeg(clamped.polygonAngleDeg);
     if (clamped.direction != 0) {
         clamped.direction = clamped.direction > 0 ? 1 : -1;
     }
@@ -264,6 +411,20 @@ int BrushTool::maxThickness(int radius)
 int BrushTool::clampThickness(int thickness, int radius)
 {
     return std::clamp(thickness, 0, maxThickness(radius));
+}
+
+int BrushTool::clampPolygonSides(int sides)
+{
+    return std::clamp(sides, kMinPolygonSides, kMaxPolygonSides);
+}
+
+double BrushTool::clampPolygonAngleDeg(double deg)
+{
+    double wrapped = std::fmod(deg, 360.0);
+    if (wrapped < 0.0) {
+        wrapped += 360.0;
+    }
+    return wrapped;
 }
 
 bool BrushTool::effectSupported(BrushEffect effect)
@@ -372,7 +533,9 @@ bool BrushTool::applyStamp(int cx, int cy, const BrushParams& params)
         mask.translate(cx, cy);
         return applyMask(mask, clamped);
     }
-    BrushMask mask = BrushMasks::byShape(clamped.shape, clamped.radius, clamped.thickness);
+    BrushMask mask = BrushMasks::byShape(clamped.shape, clamped.radius,
+                                         clamped.thickness, clamped.polygonSides,
+                                         clamped.polygonAngleDeg);
     if (mask.empty()) {
         return false;
     }
