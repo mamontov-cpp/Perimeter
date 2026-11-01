@@ -29,6 +29,10 @@
 #include "terra.h"
 #include "xerrhand.h"
 
+#include "WorldParams.h"
+
+#include <zlib.h>
+
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
@@ -81,6 +85,8 @@ bool preserveVmpLegacyHeader(const fs::path& original, const fs::path& saved)
 // renderer, so they are not persistent map data; however, so that "load then
 // save" reproduces the source file byte-for-byte, the editor merges the shadow
 // bits back from the file it loaded before writing it out.
+// `originalVmp` must be the RAW (uncompressed) layout — for an S2T1 source
+// the caller decompresses the payload first (see runWorldRoundTripTests).
 void restoreRuntimeShadowBits(const std::vector<std::uint8_t>& originalVmp)
 {
     constexpr std::uint8_t shadowBit = 0x20; // At_SHADOW
@@ -199,47 +205,52 @@ bool runWorldRoundTripTests()
     MapEditor::init_content_root();
     std::printf("  Temporary content root: %s\n", tempRoot.u8string().c_str());
 
+    // The source file may be stored S2T1 (compressed): the byte-compare
+    // below then needs (a) the shadow merge to run over the DECOMPRESSED
+    // layout and (b) the saved S2T0 (save3Buf always writes uncompressed)
+    // converted back to S2T1 with the same compressor — deterministic, so
+    // the result matches the source file byte-for-byte either way.
+    const int sourceCompression =
+        MapEditor::vmpCompressionOfFile(origVmp);
+    TEST_REQUIRE(sourceCompression == 0 || sourceCompression == 1,
+                 "unexpected output.vmp storage format at: %s",
+                 origVmp.u8string().c_str());
+    std::vector<std::uint8_t> shadowSource = origVmpBytes;
+    if (sourceCompression == 1) {
+        // XBuffer::compress payload layout after the sVmpHeader:
+        //   [u32 original_len][u32 compressed_len][zlib stream]
+        const std::size_t headerSize = sizeof(vrtMap::sVmpHeader);
+        const uLongf rawSize = static_cast<uLongf>(vMap.H_SIZE) * vMap.V_SIZE * 4;
+        TEST_REQUIRE(origVmpBytes.size() > headerSize + 8,
+                     "the S2T1 fixture is too small.");
+        std::uint32_t storedLen = 0;
+        std::uint32_t storedComp = 0;
+        std::memcpy(&storedLen, origVmpBytes.data() + headerSize, 4);
+        std::memcpy(&storedComp, origVmpBytes.data() + headerSize + 4, 4);
+        TEST_REQUIRE(storedLen == rawSize,
+                     "the S2T1 payload length mismatch (%u vs %u).",
+                     static_cast<unsigned>(storedLen),
+                     static_cast<unsigned>(rawSize));
+        TEST_REQUIRE(headerSize + 8 + storedComp <= origVmpBytes.size(),
+                     "the S2T1 compressed length overruns the file.");
+        std::vector<std::uint8_t> raw(headerSize + rawSize);
+        std::memcpy(raw.data(), origVmpBytes.data(), headerSize);
+        uLongf produced = rawSize;
+        const int zrc = uncompress(
+            raw.data() + headerSize, &produced,
+            origVmpBytes.data() + headerSize + 8, storedComp);
+        TEST_REQUIRE(zrc == Z_OK && produced == rawSize,
+                     "could not decompress the S2T1 fixture (%d).", zrc);
+        shadowSource = std::move(raw);
+    }
+
     // Keep the runtime-only shadow flags from the original file (see above).
-    restoreRuntimeShadowBits(origVmpBytes);
+    restoreRuntimeShadowBits(shadowSource);
 
     vMap.save3Buf();
 
     const fs::path savedVmp = tempWorldDir / "output.vmp";
     const fs::path savedIni = tempWorldDir / "world.ini";
-
-    TEST_REQUIRE(preserveVmpLegacyHeader(origVmp, savedVmp),
-                 "Could not preserve the legacy VMP header fields.");
-
-    // ------------------------------------------------------------------
-    // Step 5: Byte-compare output.vmp.
-    // ------------------------------------------------------------------
-    std::printf("\nStep 5: Byte-comparing output.vmp...\n");
-    const std::vector<std::uint8_t> savedVmpBytes =
-        MapEditor::Tests::readFileBytes(savedVmp);
-    TEST_REQUIRE(!savedVmpBytes.empty(),
-                 "save3Buf() did not produce output.vmp at: %s",
-                 savedVmp.u8string().c_str());
-
-    if (savedVmpBytes != origVmpBytes) {
-        std::fprintf(stderr,
-                     "[FAIL] output.vmp differs!\n"
-                     "  Original size: %zu bytes\n"
-                     "  Saved size:    %zu bytes\n",
-                     origVmpBytes.size(), savedVmpBytes.size());
-        const std::size_t minLength =
-            std::min(origVmpBytes.size(), savedVmpBytes.size());
-        for (std::size_t i = 0; i < minLength; ++i) {
-            if (origVmpBytes[i] != savedVmpBytes[i]) {
-                std::fprintf(stderr,
-                             "  First diff at offset %zu: 0x%02X vs 0x%02X\n",
-                             i, origVmpBytes[i], savedVmpBytes[i]);
-                break;
-            }
-        }
-        TEST_REQUIRE(false, "output.vmp differs.");
-    }
-    std::printf("[PASS] output.vmp is byte-identical (size=%zu bytes).\n",
-                savedVmpBytes.size());
 
     // ------------------------------------------------------------------
     // Step 6: world.ini must survive the round-trip.
@@ -277,6 +288,47 @@ bool runWorldRoundTripTests()
     } else {
         std::printf("[INFO] world.ini was reformatted (semantically equal), as expected.\n");
     }
+
+    // ------------------------------------------------------------------
+    // Step 5 (runs after the stability save above so the converted file is
+    // the final state): byte-compare output.vmp. save3Buf always writes
+    // S2T0, so an S2T1 source is converted back with the same deterministic
+    // compressor before the comparison.
+    // ------------------------------------------------------------------
+    std::printf("\nStep 5: Byte-comparing output.vmp...\n");
+    if (sourceCompression == 1) {
+        TEST_REQUIRE(MapEditor::convertVmpCompression(savedVmp, 1),
+                     "could not convert the saved output.vmp back to S2T1.");
+    }
+    TEST_REQUIRE(preserveVmpLegacyHeader(origVmp, savedVmp),
+                 "Could not preserve the legacy VMP header fields.");
+
+    const std::vector<std::uint8_t> savedVmpBytes =
+        MapEditor::Tests::readFileBytes(savedVmp);
+    TEST_REQUIRE(!savedVmpBytes.empty(),
+                 "save3Buf() did not produce output.vmp at: %s",
+                 savedVmp.u8string().c_str());
+
+    if (savedVmpBytes != origVmpBytes) {
+        std::fprintf(stderr,
+                     "[FAIL] output.vmp differs!\n"
+                     "  Original size: %zu bytes\n"
+                     "  Saved size:    %zu bytes\n",
+                     origVmpBytes.size(), savedVmpBytes.size());
+        const std::size_t minLength =
+            std::min(origVmpBytes.size(), savedVmpBytes.size());
+        for (std::size_t i = 0; i < minLength; ++i) {
+            if (origVmpBytes[i] != savedVmpBytes[i]) {
+                std::fprintf(stderr,
+                             "  First diff at offset %zu: 0x%02X vs 0x%02X\n",
+                             i, origVmpBytes[i], savedVmpBytes[i]);
+                break;
+            }
+        }
+        TEST_REQUIRE(false, "output.vmp differs.");
+    }
+    std::printf("[PASS] output.vmp is byte-identical (size=%zu bytes).\n",
+                savedVmpBytes.size());
 
     // Publish the saved world and its values to the WorldFiles tests.
     ctx.originalWorldDir = originalWorldDir;

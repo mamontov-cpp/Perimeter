@@ -760,6 +760,14 @@ void EditorSession::recordUndoArea(int x, int y, int width, int height)
         }
     }
 
+    // Inside an undo group the snapshot is collected, not pushed — the
+    // group merges into ONE entry at endUndoGroup().
+    if (undoGroupActive_) {
+        undoGroup_.push_back(std::move(snapshot));
+        setModified(true);
+        return;
+    }
+
     // A new edit discards every undone snapshot after the current position
     // (they no longer correspond to any reachable world state).
     undoStack_.resize(undoPos_);
@@ -792,6 +800,113 @@ void EditorSession::recordUndoArea(int x, int y, int width, int height)
     // modified from this point on. undo()/redo() re-derive the flag
     // exactly against the last saved position afterwards.
     setModified(true);
+}
+
+void EditorSession::beginUndoGroup()
+{
+    // Nested groups are not used; treat a stray begin as a restart.
+    undoGroup_.clear();
+    undoGroupActive_ = true;
+    // The group as a whole is one fresh edit — drop the redo tail now, the
+    // same thing recordUndoArea() does for a standalone snapshot.
+    undoStack_.resize(undoPos_);
+}
+
+bool EditorSession::endUndoGroup()
+{
+    undoGroupActive_ = false;
+    if (undoGroup_.empty()) {
+        return false;
+    }
+
+    // Merge the collected snapshots into one entry over the union
+    // rectangle. The snapshots were captured in edit order, so for every
+    // cell the EARLIEST snapshot covering it holds the pre-group state
+    // (later snapshots may already contain earlier edits of this group).
+    const UndoAreaSnapshot& first = undoGroup_.front();
+    int x0 = first.x;
+    int y0 = first.y;
+    int x1 = first.x + first.sx;
+    int y1 = first.y + first.sy;
+    for (const UndoAreaSnapshot& snap : undoGroup_) {
+        x0 = std::min(x0, snap.x);
+        y0 = std::min(y0, snap.y);
+        x1 = std::max(x1, snap.x + snap.sx);
+        y1 = std::max(y1, snap.y + snap.sy);
+    }
+    const int sx = x1 - x0;
+    const int sy = y1 - y0;
+
+    UndoAreaSnapshot merged;
+    merged.x = x0;
+    merged.y = y0;
+    merged.sx = sx;
+    merged.sy = sy;
+    const std::size_t cells = static_cast<std::size_t>(sx) * sy;
+    // Cells no snapshot covers were never edited by the group (mask-clipped
+    // or render-side effects only) — their pre-state equals the CURRENT
+    // buffer content, so seed the merged entry with it and overwrite the
+    // covered cells with the captured pre-states below.
+    merged.geo.resize(cells);
+    merged.dam.resize(cells);
+    merged.atr.resize(cells);
+    merged.sur.resize(cells);
+    std::size_t seed = 0;
+    for (int j = 0; j < sy; ++j) {
+        const int row = (y0 + j) * static_cast<int>(vMap.H_SIZE) + x0;
+        for (int i = 0; i < sx; ++i, ++seed) {
+            const int off = row + i;
+            merged.geo[seed] = vMap.VxGBuf[off];
+            merged.dam[seed] = vMap.VxDBuf[off];
+            merged.atr[seed] = vMap.AtrBuf[off];
+            merged.sur[seed] = vMap.SurBuf[off];
+        }
+    }
+
+    std::vector<bool> covered(cells, false);
+    for (const UndoAreaSnapshot& snap : undoGroup_) {
+        for (int j = 0; j < snap.sy; ++j) {
+            const int my = snap.y + j - y0;
+            for (int i = 0; i < snap.sx; ++i) {
+                const std::size_t mIdx =
+                    static_cast<std::size_t>(my) * sx + (snap.x + i - x0);
+                if (covered[mIdx]) {
+                    continue; // an earlier snapshot already has the pre-state
+                }
+                const std::size_t sIdx =
+                    static_cast<std::size_t>(j) * snap.sx + i;
+                merged.geo[mIdx] = snap.geo[sIdx];
+                merged.dam[mIdx] = snap.dam[sIdx];
+                merged.atr[mIdx] = snap.atr[sIdx];
+                merged.sur[mIdx] = snap.sur[sIdx];
+                covered[mIdx] = true;
+            }
+        }
+    }
+
+    undoGroup_.clear();
+    undoStack_.push_back(std::move(merged));
+    ++undoPos_;
+
+    // The same memory bound as recordUndoArea().
+    std::size_t totalCells = 0;
+    for (const UndoAreaSnapshot& snap : undoStack_) {
+        totalCells += static_cast<std::size_t>(snap.sx) * snap.sy;
+    }
+    while (totalCells > kMaxUndoCells && !undoStack_.empty()) {
+        totalCells -= static_cast<std::size_t>(undoStack_.front().sx) *
+                      undoStack_.front().sy;
+        undoStack_.erase(undoStack_.begin());
+        if (savedUndoPos_ > 0) {
+            --savedUndoPos_;
+        } else {
+            hasSavedUndoPos_ = false;
+        }
+        if (undoPos_ > 0) {
+            --undoPos_;
+        }
+    }
+    return true;
 }
 
 bool EditorSession::undo()
@@ -830,6 +945,8 @@ void EditorSession::clearUndoHistory()
     undoPos_ = 0;
     savedUndoPos_ = 0;
     hasSavedUndoPos_ = false;
+    undoGroup_.clear();
+    undoGroupActive_ = false;
 }
 
 bool EditorSession::canUndo() const

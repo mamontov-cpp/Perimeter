@@ -98,6 +98,12 @@ enum class BrushEffect
                     ///< brush; no buffer is written.
     PlotSoot,       ///< T3.4: T2TE_PLOTTING_SOOT.
     VeryLightDam,   ///< T3.4: T2TE_PLOTTING_VERY_LIGHT_DAM.
+    /// Scripted brush (JavaScript via duktape): applyStamp() runs
+    /// params.script once at the stamp centre; the script drives the
+    /// editor brush API (raise/lower/set height, zeroplast, soot, very
+    /// light dam, palette painting). Dam mode only; the whole evaluation
+    /// is ONE undo entry and honours a time limit (see ScriptedBrush).
+    Script,
 };
 
 /// The largest stamp radius the editor allows (map cells). The game's own
@@ -151,6 +157,11 @@ struct BrushParams
     /// and the GPU contour projection draw).
     double polygonAngleDeg = 0.0;
 
+    /// Scripted brush (BrushEffect::Script): the JavaScript source executed
+    /// at the stamp centre. Edited in the script editor dialog; empty means
+    /// "not configured yet" (the stamp refuses with a clear error).
+    std::string script;
+
     /// T3.5 (reworked): when true, the loaded image mask (BrushTool::
     /// setImageMask) replaces the shape/radius stamp as the brush geometry
     /// for every terrain effect — the image pixel value is the per-cell
@@ -169,6 +180,7 @@ struct BrushParams
                thickness == other.thickness &&
                polygonSides == other.polygonSides &&
                polygonAngleDeg == other.polygonAngleDeg &&
+               script == other.script &&
                useImageMask == other.useImageMask;
     }
 };
@@ -333,6 +345,10 @@ public:
     bool applyLine(int x0, int y0, int x1, int y1);
     bool applyLine(int x0, int y0, int x1, int y1, const BrushParams& params);
 
+    /// The message of the last failed Script-effect evaluation (empty after
+    /// a successful stamp). The UI shows it in a critical message box.
+    const std::string& lastScriptError() const { return lastScriptError_; }
+
     /// Apply an absolute (already positioned) mask. Entry point for later
     /// tools with their own geometry (brush-image T3.5); the public
     /// applyStamp/applyLine funnels across here too.
@@ -398,6 +414,10 @@ private:
     /// T4.2: the last index pickColorAt() sampled (SurBuf at the click cell).
     unsigned char lastPickedColorIndex_ = 0;
     bool hasPickedColor_ = false;
+
+    /// Scripted brush: message of the last failed evaluation (see
+    /// lastScriptError()).
+    std::string lastScriptError_;
 };
 
 } // namespace MapEditor

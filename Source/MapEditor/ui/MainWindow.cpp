@@ -517,6 +517,73 @@ QIcon makeShapeIcon(MapEditor::BrushShape shape)
     return QIcon(pm);
 }
 
+/// Scripted brush type glyph: a ground tile with a "JS" scroll running over
+/// it — the script replaces the plain stamp with scripted actions.
+QIcon makeScriptBrushIcon()
+{
+    QPixmap pm(22, 22);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    // Ground tile.
+    p.setPen(QPen(kInk, 1.4));
+    p.setBrush(QColor(235, 235, 235));
+    p.drawRect(QRectF(3.5, 10.5, 15.0, 8.0));
+    p.setPen(Qt::NoPen);
+    p.setBrush(QColor(120, 170, 220, 210));
+    p.drawRect(QRectF(5.0, 12.0, 12.0, 3.4));
+    p.setBrush(QColor(90, 150, 90, 210));
+    p.drawRect(QRectF(5.0, 15.4, 12.0, 2.4));
+    // Script scroll with "JS".
+    p.setPen(QPen(kInk, 1.2));
+    p.setBrush(QColor(255, 250, 230));
+    p.drawRoundedRect(QRectF(4.0, 2.5, 14.0, 10.0), 2.0, 2.0);
+    // Rolled edges.
+    p.setBrush(kAccent);
+    p.drawEllipse(QPointF(4.0, 7.5), 1.6, 1.9);
+    p.drawEllipse(QPointF(18.0, 7.5), 1.6, 1.9);
+    QFont font = p.font();
+    font.setBold(true);
+    font.setPixelSize(7);
+    p.setFont(font);
+    p.setPen(QColor(0x8a, 0x4f, 0x0f));
+    p.drawText(QRectF(4.0, 2.5, 14.0, 10.0), Qt::AlignCenter,
+               QStringLiteral("JS"));
+    return QIcon(pm);
+}
+
+/// Script-editor action glyph: a pencil over a script page.
+QIcon makeScriptEditIcon()
+{
+    QPixmap pm(22, 22);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    // Page with text lines.
+    p.setPen(QPen(kInk, 1.3));
+    p.setBrush(QColor(252, 252, 248));
+    p.drawRect(QRectF(4.0, 2.5, 12.5, 15.5));
+    p.setPen(QPen(QColor(150, 160, 175), 1.1));
+    for (int i = 0; i < 4; ++i) {
+        p.drawLine(QPointF(6.0, 6.2 + i * 3.0), QPointF(14.5, 6.2 + i * 3.0));
+    }
+    // Pencil across the corner.
+    p.save();
+    p.translate(13.5, 13.0);
+    p.rotate(45.0);
+    p.setPen(QPen(kInk, 0.9));
+    p.setBrush(QColor(255, 200, 60));
+    p.drawRect(QRectF(-1.6, -7.5, 3.2, 11.0));
+    p.setBrush(QColor(240, 230, 210));
+    p.drawPolygon(QPolygonF({QPointF(-1.6, 3.5), QPointF(1.6, 3.5),
+                             QPointF(0.0, 6.5)}));
+    p.setBrush(QColor(60, 60, 60));
+    p.drawPolygon(QPolygonF({QPointF(-0.7, 5.2), QPointF(0.7, 5.2),
+                             QPointF(0.0, 6.5)}));
+    p.restore();
+    return QIcon(pm);
+}
+
 /// T3.5: Convert a QImage to a BrushMask (pixel alpha → influence).
 /// Transparent pixels (alpha = 0) carry no effect; non-transparent ones
 /// influence the brush proportionally to their alpha (anti-aliased edges
@@ -712,6 +779,10 @@ void MainWindow::buildViewport()
     // actions live.
     connect(viewport_, &MapEditor::ViewportWidget::worldEdited,
             this, &MainWindow::updateStatusBar);
+
+    // A failed scripted-brush stamp: critical message box per spec.
+    connect(viewport_, &MapEditor::ViewportWidget::brushScriptError, this,
+            &MainWindow::onBrushScriptError);
 
     // Keep the toolbar in sync with whatever the viewport does (mouse
     // orbit/pan/zoom change the camera too, not only the actions).
@@ -1225,8 +1296,18 @@ void MainWindow::onMinimapCellClicked(int mapX, int mapY)
     }
 }
 
+void MainWindow::onBrushScriptError(const QString& message)
+{
+    // Spec: application errors of the scripted brush go to a critical
+    // message box (syntax problems are caught by the editor dialog's
+    // OK-button check; this path covers runtime errors, timeouts and
+    // misconfiguration like an empty script).
+    QMessageBox::critical(this, tr("Scripted Brush Error"), message);
+}
+
 void MainWindow::onEyedropperPicked(int mapX, int mapY, unsigned char surIndex)
 {
+
     // T4.2 — BrushTool::pickColorAt already stored the sampled pixel and put
     // it into params().colorIndex; the eyedropper readout slots the color
     // brush in for painting the sampled color afterwards. The SurBuf value
@@ -1890,6 +1971,74 @@ void MainWindow::createBrushActions()
            "Equivalent to the game's initial dam deployment."),
          MapEditor::BrushEffect::VeryLightDam, 0);
 
+    // Scripted brush (JavaScript via duktape, Dam mode only). Selecting the
+    // type forces the Dam layer; the pencil button next to it opens the
+    // script editor window.
+    actBrushScript_ = addType(
+        makeScriptBrushIcon(), tr("Scripted Brush"),
+        tr("Runs a JavaScript (duktape) script at every stamp: the script "
+           "drives the editor brush API — raiseHeight/lowerHeight/setHeight/"
+           "setToZP/paintSoot/paintVeryLightDam at explicit positions and "
+           "radii, and paintColor with an RGB colour (nearest Dam palette "
+           "entry). Dam layer only. The whole stamp evaluation is ONE undo "
+           "step; a 20 s time limit applies. Edit the script with the "
+           "pencil button next to this one."),
+        MapEditor::BrushEffect::Script, 0);
+    // The scripted brush operates on the Dam layer only: selecting it
+    // switches the mode, mirroring the zeroplast brushes.
+    connect(actBrushScript_, &QAction::triggered, this, [this] {
+        MapEditor::BrushParams params = brushTool_->params();
+        params.mode = MapEditor::BrushMode::Dam;
+        brushTool_->setParams(params);
+        syncBrushControls();
+    });
+
+    actBrushScriptEdit_ = new QAction(makeScriptEditIcon(),
+                                      tr("Edit Scri&pt..."), this);
+    actBrushScriptEdit_->setToolTip(
+        tr("Open the script editor: write the JavaScript the scripted brush "
+           "runs per stamp, pick the stamp preview shape. OK compiles the "
+           "script (syntax check) and keeps the dialog open on errors."));
+    connect(actBrushScriptEdit_, &QAction::triggered, this, [this] {
+        // Seed a starter example the first time the window opens.
+        QString seed = brushScript_;
+        if (seed.isEmpty()) {
+            seed = QStringLiteral(
+                "// Scripted brush: runs once per stamp at the cursor.\n"
+                "// Available API (Dam layer only):\n"
+                "//   getCurrentPos() -> {x, y}\n"
+                "//   getCurrentRadius() / getCurrentThickness() / getCurrentHeight()\n"
+                "//   raiseHeight(pos, height, radius, square)\n"
+                "//   lowerHeight(pos, height, radius, square)\n"
+                "//   setHeight(pos, height, radius, square)\n"
+                "//   setToZP(pos, radius, square)\n"
+                "//   paintSoot(pos, radius, square)\n"
+                "//   paintVeryLightDam(pos, radius, square)\n"
+                "//   paintColor(pos, red, green, blue, radius, square)\n"
+                "\n"
+                "var p = getCurrentPos();\n"
+                "var r = getCurrentRadius();\n"
+                "// Example: a zeroplast pad with a coloured rim.\n"
+                "setToZP({x: p.x, y: p.y}, r, false);\n"
+                "paintColor({x: p.x, y: p.y - r - 2}, 255, 200, 0, 2, false);\n");
+        }
+        MapEditor::ScriptEditorDialog dialog(this, seed, scriptStampShape_);
+        if (dialog.exec() != QDialog::Accepted) {
+            return;
+        }
+        brushScript_ = dialog.script();
+        scriptStampShape_ = dialog.stampShape();
+        // Keep the tool in step: the script the stamp will run.
+        MapEditor::BrushParams params = brushTool_->params();
+        params.script = brushScript_.toStdString();
+        brushTool_->setParams(params);
+        syncBrushControls();
+        statusBar()->showMessage(tr("Scripted brush script updated "
+                                    "(%1 characters).")
+                                     .arg(brushScript_.size()),
+                                 5000);
+    });
+
     // T3.5 — load brush image from file. The loaded image becomes the stamp
     // mask of the CURRENT brush type (raise/lower/level/... — the image
     // pixel value is the per-cell influence) until a stamp shape is picked
@@ -1951,10 +2100,11 @@ void MainWindow::createBrushActions()
             // The zeroplast brushes are a Dam-mode tool (the zeroplast
             // belongs to the dam domain) — the UI keeps them disabled in the
             // Geo mode, so a type left active by the switch falls back to a
-            // plain raise.
+            // plain raise. Same for the scripted brush (Dam mode only).
             if (mode == MapEditor::BrushMode::Geo &&
                 (params.effect == MapEditor::BrushEffect::Align4ZP ||
-                 params.effect == MapEditor::BrushEffect::ImageDecal)) {
+                 params.effect == MapEditor::BrushEffect::ImageDecal ||
+                 params.effect == MapEditor::BrushEffect::Script)) {
                 params.effect = MapEditor::BrushEffect::ChangeHeight;
                 params.direction = 1;
             }
@@ -2199,13 +2349,15 @@ void MainWindow::buildBrushToolbar()
     // The height value of the height tools — whole voxels (0..255). One
     // control, meaning per type: the raise/lower step (per stamp at full
     // influence) for Raise/Lower Terrain, the target height for "Level to
-    // Height" (the domain BrushTool::clampHeightLevel enforces too).
+    // Height" and the value getCurrentHeight() reports for the scripted
+    // brush (the domain BrushTool::clampHeightLevel enforces too).
     brushLevelSpin_ = new QSpinBox(bar);
     brushLevelSpin_->setRange(0, 255);
     brushLevelSpin_->setSuffix(tr(" vox"));
     connect(brushLevelSpin_, &QSpinBox::valueChanged, this, [this](int value) {
         MapEditor::BrushParams params = brushTool_->params();
-        if (params.effect == MapEditor::BrushEffect::AlignVariableH) {
+        if (params.effect == MapEditor::BrushEffect::AlignVariableH ||
+            params.effect == MapEditor::BrushEffect::Script) {
             params.heightLevel = value;
         } else {
             params.strength = MapEditor::BrushTool::clampStrength(value);
@@ -2261,6 +2413,10 @@ void MainWindow::buildBrushToolbar()
     // T3.4 — soot/very-light-dam buttons.
     bar->addAction(actBrushSoot_);
     bar->addAction(actBrushVeryLightDam_);
+
+    // Scripted brush (type + script editor window).
+    bar->addAction(actBrushScript_);
+    bar->addAction(actBrushScriptEdit_);
 
     bar->addSeparator();
 
@@ -2329,22 +2485,28 @@ void MainWindow::syncBrushControls()
     syncType(actBrushSoot_, params.effect == MapEditor::BrushEffect::PlotSoot);
     syncType(actBrushVeryLightDam_,
              params.effect == MapEditor::BrushEffect::VeryLightDam);
+    syncType(actBrushScript_, params.effect == MapEditor::BrushEffect::Script);
 
     if (brushLevelSpin_) {
         // One height control for the height tools: the raise/lower step for
-        // ChangeHeight, the target height for AlignVariableH (every other
+        // ChangeHeight, the target height for AlignVariableH (and the value
+        // getCurrentHeight() reports for the scripted brush; every other
         // type does not consume it — the value display keeps the last
         // choice of the height tools).
-        const int shown = params.effect == MapEditor::BrushEffect::AlignVariableH
-            ? params.heightLevel
-            : params.strength;
+        const bool showsTarget =
+            params.effect == MapEditor::BrushEffect::AlignVariableH ||
+            params.effect == MapEditor::BrushEffect::Script;
+        const int shown = showsTarget ? params.heightLevel : params.strength;
         brushLevelSpin_->setToolTip(
-            params.effect == MapEditor::BrushEffect::AlignVariableH
-                ? tr("Target height of the \"Level to Height\" brush "
-                     "(whole voxels; 1 voxel = 1/32 m).")
-                : tr("Height change per stamp of the Raise/Lower Terrain "
-                     "brush, at full mask influence (whole voxels; "
-                     "1 voxel = 1/32 m)."));
+            params.effect == MapEditor::BrushEffect::Script
+                ? tr("Height value the scripted brush script reads through "
+                     "getCurrentHeight() (whole voxels; 1 voxel = 1/32 m).")
+                : showsTarget
+                    ? tr("Target height of the \"Level to Height\" brush "
+                         "(whole voxels; 1 voxel = 1/32 m).")
+                    : tr("Height change per stamp of the Raise/Lower Terrain "
+                         "brush, at full mask influence (whole voxels; "
+                         "1 voxel = 1/32 m)."));
         if (brushLevelSpin_->value() != shown) {
             brushLevelSpin_->blockSignals(true);
             brushLevelSpin_->setValue(shown);
@@ -2453,6 +2615,8 @@ void MainWindow::syncBrushControls()
     // preview only follows the brush — the View/Eyedropper modes hide it in
     // the viewport (drawBrushPreview) anyway.
     if (viewport_) {
+        const bool scriptPreview = !imageMaskActive && !decalActive &&
+            params.effect == MapEditor::BrushEffect::Script;
         const bool polygonPreview = !imageMaskActive && !decalActive &&
             (params.shape == MapEditor::BrushShape::FilledPolygon ||
              params.shape == MapEditor::BrushShape::PolygonOutline);
@@ -2482,7 +2646,11 @@ void MainWindow::syncBrushControls()
             previewInner = std::max(0, params.radius - params.thickness + 1);
         }
         viewport_->setBrushPreview(
-            polygonPreview ? MapEditor::BrushPreviewShape::Polygon
+            scriptPreview
+                ? (scriptStampShape_ == MapEditor::ScriptStampShape::Square
+                       ? MapEditor::BrushPreviewShape::Square
+                       : MapEditor::BrushPreviewShape::Circle)
+            : polygonPreview ? MapEditor::BrushPreviewShape::Polygon
             : squarePreview ? MapEditor::BrushPreviewShape::Square
                             : MapEditor::BrushPreviewShape::Circle,
             previewRadius, previewInner);
@@ -3608,6 +3776,7 @@ void MainWindow::updateActionStates()
                             actBrushPickColor_,
                             actBrushGeo_, actBrushDam_,
                             actBrushSoot_, actBrushVeryLightDam_,
+                            actBrushScript_, actBrushScriptEdit_,
                             actLoadBrushImage_,
                             actShapeCircle_, actShapeSquare_,
                             actShapeCircleOutline_, actShapeSquareOutline_,
@@ -3622,13 +3791,16 @@ void MainWindow::updateActionStates()
             action->setEnabled(worldLoaded && damMode);
         }
     }
-    // ImageDecal paints Dam palette indices only: the Geo layer is not
-    // available while the decal brush is selected (switching to Geo falls back
-    // to a plain raise, see the mode action).
+    // ImageDecal paints Dam palette indices only and the scripted brush
+    // operates on the Dam layer: the Geo layer is not available while either
+    // is selected (switching to Geo falls back to a plain raise, see the
+    // mode action).
     const bool decalEffect = brushTool_ &&
         brushTool_->params().effect == MapEditor::BrushEffect::ImageDecal;
+    const bool scriptEffect = brushTool_ &&
+        brushTool_->params().effect == MapEditor::BrushEffect::Script;
     if (actBrushGeo_) {
-        actBrushGeo_->setEnabled(worldLoaded && !decalEffect);
+        actBrushGeo_->setEnabled(worldLoaded && !decalEffect && !scriptEffect);
     }
     // T3.1 — the stamp radius applies to every form except the image stamps
     // (the brush image and the decal carry their own size) and the

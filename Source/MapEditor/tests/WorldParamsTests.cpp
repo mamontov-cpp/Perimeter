@@ -131,9 +131,16 @@ bool runWorldParamsTests()
                                         "3DF Parameters", "Function")
                                    .c_str()),
                  "3DF Function does not match world.ini.");
-    TEST_REQUIRE(params->compressedFormat == 0,
-                 "expected S2T0 for the freshly saved temp world, got %d.",
-                 params->compressedFormat);
+    // The storage format follows the source fixture (S2T0 by default; an
+    // S2T1-converted fixture round-trips as S2T1 — EditorSession keeps the
+    // on-disk format on Save).
+    TEST_REQUIRE(ctx.origVmpBytes.size() > 3 && ctx.origVmpBytes[3] >= '0' &&
+                     ctx.origVmpBytes[3] <= '1',
+                 "the source fixture has an unknown storage id.");
+    const int sourceFormat = ctx.origVmpBytes[3] - '0';
+    TEST_REQUIRE(params->compressedFormat == sourceFormat,
+                 "expected S2T%d for the freshly saved temp world, got %d.",
+                 sourceFormat, params->compressedFormat);
 
     // --- write into a scratch copy ----------------------------------------
     const fs::path copyDir = scratch / "world_copy";
@@ -194,12 +201,19 @@ bool runVmpCompressionTests()
                   fs::copy_options::overwrite_existing, ec);
     TEST_REQUIRE(!ec, "cannot copy output.vmp into the scratch dir.");
 
+    // The fixture world may be stored S2T1 (the editor preserves the format):
+    // normalise the copy to S2T0 first — conversion is part of what this
+    // test verifies.
+    if (MapEditor::vmpCompressionOfFile(original) != 0) {
+        TEST_REQUIRE(MapEditor::convertVmpCompression(original, 0),
+                     "normalising the fixture copy to S2T0 failed.");
+    }
+    TEST_REQUIRE(MapEditor::vmpCompressionOfFile(original) == 0,
+                 "expected S2T0 for the freshly saved world.");
     const std::vector<std::uint8_t> originalBytes =
         MapEditor::Tests::readFileBytes(original);
     TEST_REQUIRE(originalBytes.size() > sizeof(vrtMap::sVmpHeader),
                  "output.vmp copy is too small.");
-    TEST_REQUIRE(MapEditor::vmpCompressionOfFile(original) == 0,
-                 "expected S2T0 for the freshly saved world.");
 
     // Compress.
     const fs::path compressed = scratch / "output_work.vmp";

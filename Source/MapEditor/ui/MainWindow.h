@@ -7,6 +7,7 @@
 #include "BrushTool.h"
 #include "ImageDecal.h"
 #include "MarkerStore.h"
+#include "ScriptEditorDialog.h"
 #include "Validation.h"
 #include "spg/SpgFile.h"
 
@@ -130,6 +131,9 @@ private slots:
 
     /// Handle eyedropper pick: update the color brush palette index (T3.3).
     void onEyedropperPicked(int mapX, int mapY, unsigned char surIndex);
+    /// The scripted brush evaluation failed — show the message in a
+    /// critical message box (QMessageBox::critical per spec).
+    void onBrushScriptError(const QString& message);
 
     /// T3.5 — open a file dialog, load an image as brush mask.
     void onLoadBrushImage();
@@ -340,6 +344,16 @@ private:
     // marking itself happens through the "Level to Zeroplast" brush.
     QAction *actBrushSoot_ = nullptr;
     QAction *actBrushVeryLightDam_ = nullptr;
+    // Scripted brush (JavaScript via duktape, Dam mode only): the type
+    // action and the script-editor action (opens the editing window).
+    QAction *actBrushScript_ = nullptr;
+    QAction *actBrushScriptEdit_ = nullptr;
+    // The script source kept by the window (loaded into BrushParams::script
+    // when the scripted brush runs) and the stamp preview shape picked in
+    // the script editor.
+    QString brushScript_;
+    MapEditor::ScriptStampShape scriptStampShape_ =
+        MapEditor::ScriptStampShape::Circle;
     // T3.5 — load-image action: the loaded image becomes the stamp mask of
     // every terrain effect (BrushParams::useImageMask) until a stamp shape
     // is picked explicitly.

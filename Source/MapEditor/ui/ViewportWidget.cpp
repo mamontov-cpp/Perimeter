@@ -302,6 +302,13 @@ static bool applyBrushStampHere(ViewportWidget &viewport, const QPoint &cell)
         emit viewport.worldEdited();
         viewport.setNeeds3DRedraw();
         viewport.update();
+    } else if (brush->params().effect == MapEditor::BrushEffect::Script) {
+        // A failed scripted-brush evaluation: surface the error message
+        // (the dialog slot shows it as a critical message box).
+        const std::string error = brush->lastScriptError();
+        if (!error.empty()) {
+            emit viewport.brushScriptError(QString::fromStdString(error));
+        }
     }
     return changed;
 }

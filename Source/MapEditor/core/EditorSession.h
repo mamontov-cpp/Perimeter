@@ -206,6 +206,20 @@ public:
     /// Any snapshot previously undone is discarded (it becomes unreachable).
     void recordUndoArea(int x, int y, int width, int height);
 
+    /// Begin an undo group: recordUndoArea() calls collect their snapshots
+    /// instead of pushing them, and endUndoGroup() merges them into ONE undo
+    /// entry covering the union rectangle (earliest-covering snapshot wins
+    /// per cell, so the merged entry restores the exact pre-group state).
+    /// A new group discards the redo tail, exactly like a fresh edit.
+    /// Used by the scripted brush: one stroke = one undo step no matter how
+    /// many world edits the script performs.
+    void beginUndoGroup();
+    /// Merge the collected snapshots into a single undo entry. No-op (returns
+    /// false) when the group recorded nothing. Must follow beginUndoGroup().
+    bool endUndoGroup();
+    /// True between beginUndoGroup() and endUndoGroup().
+    bool isUndoGroupActive() const { return undoGroupActive_; }
+
     /// Undo the last terrain edit operation (restore the last not-yet-undone
     /// snapshot and mark the area for re-render). Returns true if an operation
     /// was undone.
@@ -380,6 +394,10 @@ private:
     /// Valid only while hasSavedUndoPos_ is true.
     size_t savedUndoPos_ = 0;
     bool hasSavedUndoPos_ = false;
+    /// Undo-group collection (see beginUndoGroup()): while active,
+    /// recordUndoArea() appends here instead of pushing entries.
+    bool undoGroupActive_ = false;
+    std::vector<UndoAreaSnapshot> undoGroup_;
 };
 
 } // namespace MapEditor

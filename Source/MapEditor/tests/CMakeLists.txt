@@ -30,6 +30,7 @@ ADD_EXECUTABLE(map_editor_tests
         PolygonBrushTests.cpp
         SpgEncodingTests.cpp
         SpgSpawnHeightTests.cpp
+        ScriptedBrushTests.cpp
         MinimapRasterTests.cpp
         PaletteOpsTests.cpp
         WorldImagesTests.cpp

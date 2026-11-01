@@ -32,6 +32,37 @@ ELSE()
 ENDIF()
 
 # ---------------------------------------------------------------------------
+# duktape — embedded ECMAScript engine for the scripted brush. Fetched as the
+# release tarball: the git repo only ships the uncombined src-input tree,
+# while the dist archive carries the ready src/duktape.c + duktape.h.
+# ---------------------------------------------------------------------------
+FetchContent_Declare(duktape
+        URL https://github.com/svaarala/duktape/releases/download/v2.7.0/duktape-2.7.0.tar.xz
+)
+FetchContent_MakeAvailable(duktape)
+
+# The stock release config force-#undefs DUK_USE_INTERRUPT_COUNTER; the
+# config header's trailing override section is the supported place to turn
+# it back on. The scripted brush enforces its time limit through
+# duk_set_interrupt(), which only exists with the feature compiled in.
+# (_deps is a build cache — this patch applies once, the repo is untouched.)
+SET(DUKTAPE_CONFIG_H "${duktape_SOURCE_DIR}/src/duk_config.h")
+FILE(READ "${DUKTAPE_CONFIG_H}" _duktape_config)
+IF(NOT _duktape_config MATCHES "MAP_EDITOR_EXEC_TIMEOUT_CHECK_V2")
+    FILE(APPEND "${DUKTAPE_CONFIG_H}"
+            "\n/* MapEditor override: executor interrupt counter + timeout check */\n"
+            "/* (the scripted brush enforces its stroke time limit through this). */\n"
+            "#define DUK_USE_INTERRUPT_COUNTER\n"
+            "#if defined(__cplusplus)\nextern \"C\" {\n#endif\n"
+            "int mapeditorTimeoutCheck(void *udata);\n"
+            "#if defined(__cplusplus)\n}\n#endif\n"
+            "#define DUK_USE_EXEC_TIMEOUT_CHECK(udata) mapeditorTimeoutCheck(udata) /* MAP_EDITOR_EXEC_TIMEOUT_CHECK_V2 */\n")
+ENDIF()
+
+ADD_LIBRARY(duktape STATIC ${duktape_SOURCE_DIR}/src/duktape.c)
+TARGET_INCLUDE_DIRECTORIES(duktape PUBLIC "${duktape_SOURCE_DIR}/src")
+
+# ---------------------------------------------------------------------------
 # MapEditorCore - editor logic without any Qt dependency
 # ---------------------------------------------------------------------------
 ADD_LIBRARY(MapEditorCore STATIC
@@ -50,12 +81,16 @@ ADD_LIBRARY(MapEditorCore STATIC
         core/WorldImages.cpp
         core/EditorSession.cpp
         core/BrushTool.cpp
+        core/ScriptedBrush.cpp
+        core/scripted_brush_timeout.c
         core/ImageDecal.cpp
         core/PaletteOps.cpp
         core/ColorMipmap.cpp
         core/ViewportRenderer.cpp
         core/View3DRenderer.cpp
 )
+
+TARGET_LINK_LIBRARIES(MapEditorCore PUBLIC duktape)
 
 TARGET_INCLUDE_DIRECTORIES(MapEditorCore PUBLIC
         "${CMAKE_CURRENT_SOURCE_DIR}/core"
@@ -281,6 +316,8 @@ SET(MAP_EDITOR_APP_SRCS
         ui/NewWorldWizard.h
         ui/MarkerPanel.cpp
         ui/MarkerPanel.h
+        ui/ScriptEditorDialog.cpp
+        ui/ScriptEditorDialog.h
 )
 
 ADD_EXECUTABLE(map_editor ${MAP_EDITOR_APP_SRCS})

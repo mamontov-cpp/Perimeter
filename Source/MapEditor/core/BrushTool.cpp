@@ -14,6 +14,8 @@
 #include <limits>
 #include <utility>
 
+#include "ScriptedBrush.h"
+
 #include "terra.h"
 
 namespace MapEditor {
@@ -439,6 +441,7 @@ bool BrushTool::effectSupported(BrushEffect effect)
     case BrushEffect::PickColor:    // T4.2 eyedropper: sample SurBuf pixel
     case BrushEffect::PlotSoot:        // T3.4 mark soot
     case BrushEffect::VeryLightDam:    // T3.4 very light dam
+    case BrushEffect::Script:          // scripted brush (routed in applyStamp)
         return true;
     default:
         return false;
@@ -522,6 +525,20 @@ bool BrushTool::applyStamp(int cx, int cy, const BrushParams& params)
         }
         return applyMask(mask, clamped);
     }
+    // Scripted brush: the script runs once at the stamp centre and drives
+    // the editor API itself — the shape/radius params only feed the
+    // getCurrent*() calls (the API takes explicit positions and radii).
+    // Routed BEFORE the image mask: the script's own geometry wins.
+    if (clamped.effect == BrushEffect::Script) {
+        lastScriptError_.clear();
+        std::string error;
+        const bool ok = runScriptedBrush(session_, *this, clamped, cx, cy,
+                                         error);
+        if (!ok) {
+            lastScriptError_ = error;
+        }
+        return ok;
+    }
     // T3.5: the loaded image mask replaces the shape stamp as the brush
     // geometry for every effect — the image pixel value is the per-cell
     // influence (raised/lowered/levelled/painted through the current effect).
@@ -561,7 +578,8 @@ bool BrushTool::applyLine(int x0, int y0, int x1, int y1, const BrushParams& par
     }
     // The decal is a rectangular image stamp with its own geometry: a line
     // stroke has no meaning for it (the viewport does not start one either).
-    if (clamped.effect == BrushEffect::ImageDecal) {
+    if (clamped.effect == BrushEffect::ImageDecal ||
+        clamped.effect == BrushEffect::Script) {
         return false;
     }
     const int stampRadius = BrushTool::lineStrokeRadius(clamped.radius, clamped.thickness);

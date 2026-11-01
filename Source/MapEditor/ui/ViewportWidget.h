@@ -421,6 +421,9 @@ signals:
     /// Emitted right after a brush stamp changed the world (T3.1) so the
     /// MainWindow can refresh the modified state in the status bar.
     void worldEdited();
+    /// Emitted when a scripted-brush stamp failed; carries the error
+    /// message (MainWindow shows it in a critical message box).
+    void brushScriptError(const QString& message);
     /// Emitted after a repaint that repainted terrain cells into the 2D cache
     /// (a brush stamp, undo/redo, an image import, a palette edit). Lighting
     /// has been recomputed (renderQuant) and the cache is final at this point,
