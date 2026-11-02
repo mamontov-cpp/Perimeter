@@ -77,6 +77,6 @@ int vmpCompressionOfFile(const std::filesystem::path& outputVmp);
 /// failure. A file already in the requested mode is left untouched (true).
 /// Uses the same XBuffer compress/uncompress as the game, so the payloads
 /// stay bit-identical to what compressWorlds produces.
-bool convertVmpCompression(const std::filesystem::path& outputVmp, int mode);
+[[nodiscard]] bool convertVmpCompression(const std::filesystem::path& outputVmp, int mode);
 
 } // namespace MapEditor

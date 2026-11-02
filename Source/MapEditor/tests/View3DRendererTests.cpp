@@ -18,6 +18,7 @@
 // ============================================================================
 
 #include "TestHarness.h"
+#include "EditorMath.h"
 
 // EditorSession + View3DRenderer (MapEditorCore) — the classes under test.
 #include "EditorSession.h"
@@ -225,7 +226,7 @@ bool runStableLeanTests()
     // scanned d range [-yside-200, yside] → for upright angles d0 > yside.
     auto verify = [] (double lean, int focus, int yside) {
         const double rad = View3DRenderer::stableLeanDeg(lean, focus, yside) *
-                           3.14159265358979323846 / 180.0;
+                           MapEditor::kDegToRad;
         const double absTan = std::fabs(std::tan(rad));
         return absTan * focus > yside + 8.0;
     };

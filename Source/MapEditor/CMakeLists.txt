@@ -82,7 +82,7 @@ ADD_LIBRARY(MapEditorCore STATIC
         core/EditorSession.cpp
         core/BrushTool.cpp
         core/ScriptedBrush.cpp
-        core/scripted_brush_timeout.c
+        core/scripted_brush_timeout.cpp
         core/ImageDecal.cpp
         core/PaletteOps.cpp
         core/ColorMipmap.cpp

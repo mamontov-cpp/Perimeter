@@ -90,7 +90,7 @@ struct PrepareResult
 /// `damPaletteRgb` points at the 256*3 RGB bytes of vrtMap::DamPal,
 /// `damEntryInUse` at 256 flags (non-zero = the world's dam layer already
 /// paints with that entry).
-PrepareResult prepare(const unsigned char* rgba, int width, int height,
+[[nodiscard]] PrepareResult prepare(const unsigned char* rgba, int width, int height,
                       const unsigned char* damPaletteRgb,
                       const unsigned char* damEntryInUse);
 

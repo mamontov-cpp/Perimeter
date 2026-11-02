@@ -5,6 +5,7 @@
 #include "ImageDecal.h"
 
 #include <algorithm>
+#include <climits>
 #include <cmath>
 #include <map>
 
@@ -73,13 +74,13 @@ int nearestPaletteEntry(const unsigned char* palette, std::uint32_t rgb)
     const int g = static_cast<int>((rgb >> 8) & 0xFF);
     const int b = static_cast<int>(rgb & 0xFF);
     int best = 0;
-    long bestDistance = -1;
+    long bestDistance = LONG_MAX;
     for (int i = 0; i < 256; ++i) {
         const int dr = static_cast<int>(palette[i * 3 + 0]) - r;
         const int dg = static_cast<int>(palette[i * 3 + 1]) - g;
         const int db = static_cast<int>(palette[i * 3 + 2]) - b;
         const long distance = dr * dr + dg * dg + db * db;
-        if (bestDistance < 0 || distance < bestDistance) {
+        if (distance < bestDistance) {
             bestDistance = distance;
             best = i;
         }

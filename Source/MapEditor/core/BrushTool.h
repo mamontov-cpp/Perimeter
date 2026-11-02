@@ -3,6 +3,7 @@
 #include "EditorSession.h"
 #include "ImageDecal.h"
 
+#include <cmath>
 #include <cstdint>
 #include <utility>
 #include <vector>
@@ -179,7 +180,9 @@ struct BrushParams
                heightLevel == other.heightLevel &&
                thickness == other.thickness &&
                polygonSides == other.polygonSides &&
-               polygonAngleDeg == other.polygonAngleDeg &&
+               // Epsilon compare: the angle comes out of wrapping/trig math
+               // where bit-exact equality is not guaranteed.
+               std::abs(polygonAngleDeg - other.polygonAngleDeg) < 1e-9 &&
                script == other.script &&
                useImageMask == other.useImageMask;
     }

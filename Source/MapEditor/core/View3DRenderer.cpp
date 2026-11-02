@@ -9,6 +9,7 @@
 #include "terra.h"
 
 #include "ColorMipmap.h"
+#include "EditorMath.h"
 #include "ViewportRenderer.h"
 
 #include <algorithm>
@@ -55,7 +56,7 @@ double View3DRenderer::stableLeanDeg(double leanDeg, int focusC, int yside)
     // margin. tan(180° - x) = -tan(x), so the condition
     //     tan(180° - lean) * focusC > yside + margin
     // is lean < 180° - atan((yside + margin) / focusC).
-    constexpr double kPi = 3.14159265358979323846;
+    // kPi lives in EditorMath.h.
     constexpr double kMarginCells = 16.0;
     const double safeCells = static_cast<double>(yside) + kMarginCells;
     const double tanRequired = safeCells / std::max(1.0, static_cast<double>(focusC));
@@ -108,6 +109,38 @@ void View3DRenderer::setCamera(const View3DCamera &camera)
 // Frame
 // ---------------------------------------------------------------------------
 
+namespace {
+
+/// RAII guard for the temporary AtrBuf rewrite in render(): remembers every
+/// cell converted from At_ZEROPLAST to plain At_LEVELED and restores the
+/// original bytes at scope exit — on every normal return path, and if the
+/// render below throws a C++ exception. (ErrH.Abort is [[noreturn]] and
+/// ends in the crash handler, so it needs no restoration.)
+class ZeroplastAtrGuard
+{
+public:
+    ZeroplastAtrGuard() = default;
+    void rewriteZeroplast(std::size_t off)
+    {
+        cells_.emplace_back(static_cast<int>(off), vMap.AtrBuf[off]);
+        vMap.AtrBuf[off] = static_cast<unsigned char>(
+            (vMap.AtrBuf[off] & ~At_ZPMASK) | At_LEVELED);
+    }
+    ~ZeroplastAtrGuard()
+    {
+        for (const auto& cell : cells_) {
+            vMap.AtrBuf[cell.first] = cell.second;
+        }
+    }
+    ZeroplastAtrGuard(const ZeroplastAtrGuard&) = delete;
+    ZeroplastAtrGuard& operator=(const ZeroplastAtrGuard&) = delete;
+
+private:
+    std::vector<std::pair<int, unsigned char>> cells_;
+};
+
+} // namespace
+
 void View3DRenderer::render(int cx, int cy)
 {
     if (!isWorldAvailable() || buffer_.empty()) {
@@ -122,7 +155,7 @@ void View3DRenderer::render(int cx, int cy)
     // the 2D modes do not read them, so aliasing is not a concern). The lean
     // member is int-degrees (VMAP.h:413) — round the editor-safe double into
     // it; turnAngleAroundZ is a float in radians.
-    constexpr double kPi = 3.14159265358979323846;
+    // kPi lives in EditorMath.h.
     const int yside = height_ / 2;
     vMap.turnAngleAroundZ =
         static_cast<float>(camera_.turnAngleDeg * kPi / 180.0);
@@ -146,17 +179,14 @@ void View3DRenderer::render(int cx, int cy)
     // fallback), so they render like every other leveled cell — own color
     // with the leveledSurfaceTexture on top (docs/context.md). The smooth
     // path with a bound pyramid reads the already-corrected 2D cache instead.
-    struct ZpCell { int off; unsigned char atr; };
-    std::vector<ZpCell> zeroplastCells;
+    // RAII: the guard restores every rewritten cell at scope exit.
+    ZeroplastAtrGuard atrGuard;
     if (vMap.AtrBuf && vMap.H_SIZE > 0 && vMap.V_SIZE > 0) {
         const std::size_t cells =
             static_cast<std::size_t>(vMap.H_SIZE) * vMap.V_SIZE;
         for (std::size_t off = 0; off < cells; ++off) {
             if ((vMap.AtrBuf[off] & At_ZPMASK) == At_ZEROPLAST) {
-                zeroplastCells.push_back({static_cast<int>(off),
-                                          vMap.AtrBuf[off]});
-                vMap.AtrBuf[off] = static_cast<unsigned char>(
-                    (vMap.AtrBuf[off] & ~At_ZPMASK) | At_LEVELED);
+                atrGuard.rewriteZeroplast(off);
             }
         }
     }
@@ -169,10 +199,6 @@ void View3DRenderer::render(int cx, int cy)
         renderSmooth(cx, cy, !smooth_);
     } else {
         viewV2DChunky(cx, cy);
-    }
-
-    for (const ZpCell &cell : zeroplastCells) {
-        vMap.AtrBuf[cell.off] = cell.atr;
     }
 }
 
@@ -601,10 +627,10 @@ void View3DRenderer::drawGridOverlay(int stepX, int stepY,
     const int focusC = clampFocus(camera_.focusC);
     const int cameraDZ = clampCameraDZ(camera_.cameraDZ, m_is_gpu_available);
     const double lean = stableLeanDeg(camera_.leanDeg, focusC, yside);
-    const double leanRad = lean * 3.14159265358979323846 / 180.0;
+    const double leanRad = lean * kDegToRad;
     const double tga = std::tan(leanRad);
     const double turnRad =
-        camera_.turnAngleDeg * 3.14159265358979323846 / 180.0;
+        camera_.turnAngleDeg * kDegToRad;
     const double cosT = std::cos(turnRad);
     const double sinT = std::sin(turnRad);
 
@@ -620,7 +646,7 @@ void View3DRenderer::drawGridOverlay(int stepX, int stepY,
     const double absCosLean = -std::cos(leanRad); // |cos| = 1/sqrt(1+tga^2)
     const double planeH = static_cast<double>(vMap.hZeroPlast);
     const int dh = static_cast<int>(xm::round(65536.0 *
-        (std::sin(leanRad - 3.14159265358979323846 / 2.0) * F /
+        (std::sin(leanRad - kPi / 2.0) * F /
          (F + Z))));
     const double planeRowOff = (dh * planeH) / 65536.0;
     const double ccx = lastCx_;             // unwrapped camera look-at (cells)
@@ -845,15 +871,15 @@ bool View3DRenderer::pickGroundCell(int cx, int cy, int col, int row,
     const int focusC = clampFocus(camera_.focusC);
     const int cameraDZ = clampCameraDZ(camera_.cameraDZ, m_is_gpu_available);
     const double lean = stableLeanDeg(camera_.leanDeg, focusC, yside);
-    const double leanRad = lean * 3.14159265358979323846 / 180.0;
-    const double turnRad = camera_.turnAngleDeg * 3.14159265358979323846 / 180.0;
+    const double leanRad = lean * kDegToRad;
+    const double turnRad = camera_.turnAngleDeg * kDegToRad;
 
     const float tga = static_cast<float>(std::tan(leanRad));
     const float cosT = static_cast<float>(std::cos(turnRad));
     const float sinT = static_cast<float>(std::sin(turnRad));
 
     const int dh = static_cast<int>(xm::round(65536.0 *
-        (std::sin(leanRad - 3.14159265358979323846 / 2.0) * focusC /
+        (std::sin(leanRad - kPi / 2.0) * focusC /
          static_cast<double>(focusC + cameraDZ))));
 
     const int x0 = vMap.XCYCL(cx) << 16;

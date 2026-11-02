@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <iostream>
 
 namespace MapEditor {
 
@@ -76,9 +77,8 @@ bool ViewportRenderer::bindWorld()
     unbindWorld();
 
     if (!worldBuffersPresent()) {
-        std::fprintf(stderr,
-                     "ViewportRenderer: no fully loaded world to bind "
-                     "(call EditorSession::loadWorld first).\n");
+        std::cerr << "ViewportRenderer: no fully loaded world to bind "
+                     "(call EditorSession::loadWorld first).\n";
         return false;
     }
 

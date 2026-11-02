@@ -7,6 +7,7 @@
 // ============================================================================
 
 #include "BrushTool.h"
+#include "EditorMath.h"
 
 #include <algorithm>
 #include <cmath>
@@ -135,8 +136,8 @@ BrushMasks::regularPolygonVertices(double radius, int sides, double angleOffsetD
     sides = BrushTool::clampPolygonSides(sides);
     std::vector<std::pair<double, double>> vertices;
     vertices.reserve(static_cast<std::size_t>(sides));
-    const double step = 2.0 * 3.14159265358979323846 / sides;
-    const double start = angleOffsetDeg * 3.14159265358979323846 / 180.0;
+    const double step = 2.0 * kPi / sides;
+    const double start = angleOffsetDeg * kDegToRad;
     for (int i = 0; i < sides; ++i) {
         const double a = start + step * i;
         vertices.emplace_back(radius * std::cos(a), radius * std::sin(a));
@@ -779,6 +780,11 @@ void damHeightChange(int off, int dV)
         }
         dV -= bump; // compensate the seed bump exactly
     }
+    // The toolzers below are function-local statics ON PURPOSE: they carry
+    // no cross-call state that matters (setHAppoximation() is (re)set before
+    // every tVoxSet), and the statics avoid reallocating Terra's internal
+    // tables per brush cell. BrushTool is strictly single-threaded (UI
+    // thread, see EditorSession) — do not use these from worker threads.
     static individualToolzer<T2TE_CHANGING_TERRAIN_HEIGHT> heightToolzer;
     heightToolzer.tVoxSet(off, dV);
 }

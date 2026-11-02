@@ -111,7 +111,7 @@ public:
     void unloadWorld();
 
     /// Return true if a world is currently loaded (vMap.VxGBuf != nullptr).
-    bool isWorldLoaded() const;
+    bool isWorldLoaded() const noexcept;
 
     // -----------------------------------------------------------------------
     // Change tracking
@@ -134,7 +134,10 @@ public:
     int32_t currentWorldIndex() const;
 
     /// Return the name of the currently loaded world (empty if none).
-    const std::string& currentWorldName() const;
+    /// Name of the currently loaded world (empty when none). Returned BY
+    /// VALUE on purpose: a reference into worldList_ would dangle when
+    /// scanWorlds() rebuilds the list while a caller holds it.
+    std::string currentWorldName() const;
 
     /// Map dimensions of the loaded world (0 when none is loaded).
     unsigned mapWidth() const;
@@ -156,7 +159,7 @@ public:
     int zeroLayerHeight() const;
 
     /// Return the current session state.
-    SessionState state() const;
+    SessionState state() const noexcept;
 
     // -----------------------------------------------------------------------
     // File-level access to world folders (WorldFiles)
@@ -176,14 +179,14 @@ public:
 
     /// Save the currently loaded world using Terra's save pipeline plus
     /// editor-side updates (images, ini normalization). Returns true on success.
-    bool saveWorld();
+    [[nodiscard]] bool saveWorld();
 
     /// Save the currently loaded world as a copy to a new world folder.
     /// Creates the target folder under RESOURCE/Worlds/<newWorldName> in the
     /// current game directory, copies all existing files from the source world,
     /// switches the session to operate on the new world and saves it. Returns
     /// true on success.
-    bool saveWorldAs(const std::string& newWorldName);
+    [[nodiscard]] bool saveWorldAs(const std::string& newWorldName);
 
     /// Check if there are unsaved changes that require warning before discarding.
     bool hasUnsavedChanges() const;
@@ -265,7 +268,7 @@ public:
     ///   compression -> session target: output.vmp is converted immediately
     ///                  and every save re-applies the format after save3Buf()
     /// Returns false when no world is loaded or a file write failed.
-    bool applyWorldSettings(const WorldParams& params);
+    [[nodiscard]] bool applyWorldSettings(const WorldParams& params);
 
     /// Target output.vmp compression (0 = S2T0, 1 = S2T1) that saveWorld()
     /// re-applies after Terra writes the buffers as S2T0.
@@ -358,7 +361,7 @@ public:
 
     /// True when the palette was changed since the last load/save (palette
     /// edits are outside the undo history, so this is tracked separately).
-    bool isPaletteModified() const { return paletteModified_; }
+    bool isPaletteModified() const noexcept { return paletteModified_; }
 
 private:
     /// Re-derive modified_ from the undo position vs. the position recorded at
@@ -398,6 +401,11 @@ private:
     /// recordUndoArea() appends here instead of pushing entries.
     bool undoGroupActive_ = false;
     std::vector<UndoAreaSnapshot> undoGroup_;
+
+    /// Bound the undo stack by kMaxUndoCells: drop the oldest entries in ONE
+    /// range erase (per-entry erase(begin) would re-move the tail on every
+    /// iteration) and shift undoPos_/savedUndoPos_ accordingly.
+    void trimUndoStack();
 };
 
 } // namespace MapEditor

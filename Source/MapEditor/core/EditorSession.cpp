@@ -322,7 +322,7 @@ void EditorSession::unloadWorld()
     }
 }
 
-bool EditorSession::isWorldLoaded() const
+bool EditorSession::isWorldLoaded() const noexcept
 {
     // vMap.VxGBuf is non-null only after a successful fullLoad().
     return vMap.VxGBuf != nullptr;
@@ -362,12 +362,11 @@ int32_t EditorSession::currentWorldIndex() const
     return currentWorldIndex_;
 }
 
-const std::string& EditorSession::currentWorldName() const
+std::string EditorSession::currentWorldName() const
 {
-    static const std::string empty;
     if (currentWorldIndex_ < 0 ||
         static_cast<size_t>(currentWorldIndex_) >= worldList_.size()) {
-        return empty;
+        return std::string();
     }
     return worldList_[static_cast<size_t>(currentWorldIndex_)].name;
 }
@@ -407,7 +406,7 @@ int EditorSession::terrainHeightAt(int x, int y) const
     return vMap.SGetAlt(x, y) >> VX_FRACTION;
 }
 
-SessionState EditorSession::state() const
+SessionState EditorSession::state() const noexcept
 {
     return state_;
 }
@@ -569,21 +568,18 @@ bool EditorSession::saveWorldAs(const std::string& newWorldName)
         return false;
     }
 
-    // Copy all entries (files and subdirectories) except maybe nothing - keep same structure.
-    for (const auto& entry : fs::directory_iterator(srcDir, fs::directory_options::skip_permission_denied, ec)) {
-        if (ec) break;
-        const auto& p = entry.path();
-        const auto rel = p.filename();
-        const fs::path target = destDir / rel;
-        if (entry.is_directory(ec)) {
-            if (ec) continue;
-            fs::copy(entry.path(), target,
-                     fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
-        } else if (entry.is_regular_file(ec)) {
-            if (ec) continue;
-            fs::copy_file(entry.path(), target, fs::copy_options::overwrite_existing, ec);
-        }
-        // Skip symlinks/others if any.
+    // Copy all entries (files and subdirectories), keeping the structure.
+    // One recursive fs::copy instead of a hand-rolled iterator loop — the
+    // copy_options cover the directory/file cases the loop spelled out.
+    ec.clear();
+    fs::copy(srcDir, destDir,
+             fs::copy_options::recursive |
+                 fs::copy_options::overwrite_existing,
+             ec);
+    if (ec) {
+        fprintf(stderr, "EditorSession::saveWorldAs: copying '%s' failed: %s\n",
+                srcDir.u8string().c_str(), ec.message().c_str());
+        return false;
     }
 
     // Update world.ini in the copy to reflect the new folder name if needed? 
@@ -776,25 +772,7 @@ void EditorSession::recordUndoArea(int x, int y, int width, int height)
 
     // Bound the memory usage by dropping the oldest snapshots; the same
     // trade-off Terra's dispatcher makes inside UndoDispatcher_PutPreChangedArea.
-    std::size_t totalCells = 0;
-    for (const UndoAreaSnapshot& snap : undoStack_) {
-        totalCells += static_cast<std::size_t>(snap.sx) * snap.sy;
-    }
-    while (totalCells > kMaxUndoCells && !undoStack_.empty()) {
-        totalCells -= static_cast<std::size_t>(undoStack_.front().sx) *
-                      undoStack_.front().sy;
-        undoStack_.erase(undoStack_.begin());
-        if (savedUndoPos_ > 0) {
-            --savedUndoPos_;
-        } else {
-            // The "saved" position was at/before the stack front and is gone —
-            // fall back to always reporting modified after undo/redo.
-            hasSavedUndoPos_ = false;
-        }
-        if (undoPos_ > 0) {
-            --undoPos_;
-        }
-    }
+    trimUndoStack();
 
     // A recorded area happens right before an edit, so the world counts as
     // modified from this point on. undo()/redo() re-derive the flag
@@ -889,24 +867,42 @@ bool EditorSession::endUndoGroup()
     ++undoPos_;
 
     // The same memory bound as recordUndoArea().
+    trimUndoStack();
+    return true;
+}
+
+void EditorSession::trimUndoStack()
+{
     std::size_t totalCells = 0;
     for (const UndoAreaSnapshot& snap : undoStack_) {
         totalCells += static_cast<std::size_t>(snap.sx) * snap.sy;
     }
-    while (totalCells > kMaxUndoCells && !undoStack_.empty()) {
-        totalCells -= static_cast<std::size_t>(undoStack_.front().sx) *
-                      undoStack_.front().sy;
-        undoStack_.erase(undoStack_.begin());
-        if (savedUndoPos_ > 0) {
-            --savedUndoPos_;
-        } else {
-            hasSavedUndoPos_ = false;
-        }
-        if (undoPos_ > 0) {
-            --undoPos_;
-        }
+    if (totalCells <= kMaxUndoCells) {
+        return;
     }
-    return true;
+    // Count how many front entries must go, then drop them in ONE range
+    // erase — per-entry erase(begin) would re-move the whole tail on every
+    // iteration (O(n*k) instead of O(n)).
+    std::size_t drop = 0;
+    std::size_t freed = 0;
+    while (totalCells - freed > kMaxUndoCells && drop < undoStack_.size()) {
+        freed += static_cast<std::size_t>(undoStack_[drop].sx) *
+                 undoStack_[drop].sy;
+        ++drop;
+    }
+    if (drop == 0) {
+        return;
+    }
+    undoStack_.erase(undoStack_.begin(), undoStack_.begin() + drop);
+    // undoPos_/savedUndoPos_ count entries from the front — shift them by
+    // the dropped amount; a saved mark inside the dropped range is gone.
+    if (savedUndoPos_ >= drop) {
+        savedUndoPos_ -= drop;
+    } else {
+        savedUndoPos_ = 0;
+        hasSavedUndoPos_ = false;
+    }
+    undoPos_ = undoPos_ >= drop ? undoPos_ - drop : 0;
 }
 
 bool EditorSession::undo()

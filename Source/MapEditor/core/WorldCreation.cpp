@@ -367,7 +367,11 @@ WorldCreateResult createNewWorld(EditorSession& session,
         std::optional<WorldParams> live = session.currentWorldParams();
         if (live) {
             live->compressedFormat = 1;
-            session.applyWorldSettings(*live);
+            if (!session.applyWorldSettings(*live)) {
+                result.error = "The new world was created but applying the "
+                               "storage compression failed.";
+                return result;
+            }
         }
     }
 

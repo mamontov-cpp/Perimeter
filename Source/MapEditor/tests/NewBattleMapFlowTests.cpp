@@ -12,6 +12,8 @@
 #include "TestHarness.h"
 #include "TestFiles.h"
 
+#include "EditorMath.h"
+
 #include "EditorSession.h"
 #include "WorldCreation.h"
 #include "errh_wrapper.h"
@@ -107,7 +109,7 @@ bool runNewBattleMapFlowTests()
         const int oldTerrain =
             session.terrainHeightAt(int(std::lround(ax)),
                                     int(std::lround(ay)));
-        const double angle = 2.0 * 3.14159265358979323846 * i / 4;
+        const double angle = 2.0 * MapEditor::kPi * i / 4;
         const double nx = mapW / 2.0 + radiusX * std::cos(angle);
         const double ny = mapH / 2.0 + radiusY * std::sin(angle);
         const int newTerrain =

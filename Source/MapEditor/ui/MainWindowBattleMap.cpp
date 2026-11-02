@@ -1,4 +1,5 @@
 // ============================================================================
+#include "EditorMath.h"
 // MainWindow — battle map (.spg) implementation (T8.2/T8.3/T8.4/T8.5).
 //
 // Split out of MainWindow.cpp: the battle-map flow (open/save/save-as/new,
@@ -422,7 +423,7 @@ void MainWindow::onNewBattleMapRequested(const QString &name,
             break;
         }
         const double angle =
-            2.0 * 3.14159265358979323846 * i / playerCount;
+            2.0 * MapEditor::kPi * i / playerCount;
         const double nx = mapW / 2.0 + radiusX * std::cos(angle);
         const double ny = mapH / 2.0 + radiusY * std::sin(angle);
         const int oldTerrain =

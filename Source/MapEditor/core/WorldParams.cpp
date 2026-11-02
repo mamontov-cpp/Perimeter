@@ -9,6 +9,7 @@
 #include <charconv>
 #include <cstdio>
 #include <cstring>
+#include <iostream>
 
 // XTool — XStream/XBuffer give the exact same VMP compression code path the
 // game uses (vrtMap::compressWorlds), and vrtMap::sVmpHeader is the on-disk
@@ -177,8 +178,8 @@ bool convertVmpCompression(const fs::path& outputVmp, int mode)
     XStream stream;
     stream.ErrHUsed = false;
     if (!stream.open(outputVmp.u8string(), XS_IN)) {
-        fprintf(stderr, "WorldParams: output.vmp not found: %s\n",
-                outputVmp.u8string().c_str());
+        std::cerr << "WorldParams: output.vmp not found: "
+                  << outputVmp.u8string() << '\n';
         return false;
     }
     vrtMap::sVmpHeader header;
@@ -204,14 +205,14 @@ bool convertVmpCompression(const fs::path& outputVmp, int mode)
         XBuffer packed(payloadBytes, false);
         stream.read(packed.buf, payloadBytes);
         if (packed.uncompress(raster) != 0) {
-            fprintf(stderr, "WorldParams: error decompressing %s\n",
-                    outputVmp.u8string().c_str());
+            std::cerr << "WorldParams: error decompressing "
+                      << outputVmp.u8string() << '\n';
             stream.close();
             return false;
         }
     } else {
-        fprintf(stderr, "WorldParams: unknown output.vmp id in %s\n",
-                outputVmp.u8string().c_str());
+        std::cerr << "WorldParams: unknown output.vmp id in "
+                  << outputVmp.u8string() << '\n';
         stream.close();
         return false;
     }
@@ -221,8 +222,8 @@ bool convertVmpCompression(const fs::path& outputVmp, int mode)
         header.setID("S2T1");
         XBuffer packed(raster.length(), true);
         if (raster.compress(packed) != 0) {
-            fprintf(stderr, "WorldParams: error compressing %s\n",
-                    outputVmp.u8string().c_str());
+            std::cerr << "WorldParams: error compressing "
+                      << outputVmp.u8string() << '\n';
             return false;
         }
         raster = std::move(packed);
@@ -231,8 +232,8 @@ bool convertVmpCompression(const fs::path& outputVmp, int mode)
     }
 
     if (!stream.open(outputVmp.u8string(), XS_OUT)) {
-        fprintf(stderr, "WorldParams: cannot reopen for write: %s\n",
-                outputVmp.u8string().c_str());
+        std::cerr << "WorldParams: cannot reopen for write: "
+                  << outputVmp.u8string() << '\n';
         return false;
     }
     stream.seek(0, XS_BEG);

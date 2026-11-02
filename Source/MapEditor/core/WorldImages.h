@@ -26,7 +26,7 @@ inline constexpr unsigned kMinimapMaxSize = 256;
 
 /// Write a 24-bit uncompressed true-color TGA (top-left origin) from a BGR
 /// byte buffer; `bgr` must hold width * height * 3 bytes.
-bool writeTga24(const std::filesystem::path& path, unsigned width,
+[[nodiscard]] bool writeTga24(const std::filesystem::path& path, unsigned width,
                 unsigned height, const std::vector<unsigned char>& bgr);
 
 /// Read a 24-bit uncompressed true-color TGA. Both origin descriptors are

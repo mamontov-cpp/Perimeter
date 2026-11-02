@@ -299,14 +299,12 @@ bool runScriptedBrush(EditorSession& session, BrushTool& brush,
     // runs — merges into ONE undo entry.
     session.beginUndoGroup();
 
+    // The timeout state is the heap user data: the executor calls
+    // mapeditorTimeoutCheck(heap_udata) on its interrupt interval (compiled
+    // into duktape via DUK_USE_EXEC_TIMEOUT_CHECK). Wall-clock deadline —
+    // see scripted_brush_timeout.h.
     MapEditorScriptTimeout timeout;
-    timeout.deadline =
-        timeoutMs < 0
-            ? (clock_t)-1
-            : clock() + static_cast<clock_t>(
-                            static_cast<double>(timeoutMs) *
-                            static_cast<double>(CLOCKS_PER_SEC) / 1000.0);
-    timeout.hit = 0;
+    mapeditorTimeoutSetDeadline(&timeout, timeoutMs);
 
     ScriptEnv env;
     env.session = &session;
@@ -316,9 +314,6 @@ bool runScriptedBrush(EditorSession& session, BrushTool& brush,
     env.centerY = cy;
     env.timeout = &timeout;
 
-    // The timeout state is the heap user data: the executor calls
-    // mapeditorTimeoutCheck(heap_udata) on its interrupt interval (compiled
-    // into duktape via DUK_USE_EXEC_TIMEOUT_CHECK).
     duk_context* ctx = duk_create_heap(nullptr, nullptr, nullptr, &timeout,
                                        nullptr);
     bool ok = false;

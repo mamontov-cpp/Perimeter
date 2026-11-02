@@ -211,7 +211,7 @@ public:
     // -----------------------------------------------------------------------
 
     /// Both files must exist and be exactly 768 bytes long.
-    bool readPalettes(GeoDamPalettes& palettes) const;
+    [[nodiscard]] bool readPalettes(GeoDamPalettes& palettes) const;
     bool writePalettes(const GeoDamPalettes& palettes) const;
 
     // -----------------------------------------------------------------------

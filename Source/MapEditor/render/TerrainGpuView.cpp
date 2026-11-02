@@ -7,6 +7,8 @@
 
 #include "TerrainGpuView.h"
 
+#include "EditorMath.h"
+
 #include "EditorSokolDevice.h"
 
 // Game render stack (compiled unmodified in MapEditorRender). NOTE:
@@ -30,9 +32,9 @@
 
 namespace {
 
-constexpr double kPi = 3.14159265358979323846;
+// kPi lives in EditorMath.h (shared math constants).
 
-inline double degToRad(double deg) { return deg * kPi / 180.0; }
+inline double degToRad(double deg) { return deg * MapEditor::kPi / 180.0; }
 
 inline double clampd(double v, double lo, double hi) {
     return v < lo ? lo : (v > hi ? hi : v);
@@ -223,7 +225,7 @@ void TerrainGpuView::applyCamera() {
     // degenerate angle (nadir lean=90 handled by clamping to >90).
     const double leanRad = degToRad(clampd(c.leanDeg, 90.5, 179.0));
     const double turnRad = degToRad(c.turnAngleDeg);
-    const double theta = leanRad - kPi / 2.0;      // polar angle from +Z
+    const double theta = leanRad - MapEditor::kPi / 2.0;      // polar angle from +Z
 
     // Camera height above the zeroplast plane (world units); combined with
     // the focal length below it yields the ground scale — the widget maps
@@ -240,14 +242,14 @@ void TerrainGpuView::applyCamera() {
     // Game matrix construction (terCameraType::update,
     // Source/Game/CameraManager.cpp) — copied verbatim with our spherical
     // parameters: psi = PI/2 + turn, theta = lean - PI/2, r = H/cos(theta).
-    const float psi = static_cast<float>(kPi / 2.0 + turnRad);
+    const float psi = static_cast<float>(MapEditor::kPi / 2.0 + turnRad);
     Vect3f position;
     position.setSpherical(psi, static_cast<float>(theta), static_cast<float>(r));
     position += lookAt;
 
     MatXf matrix = MatXf::ID;
     matrix.rot() = Mat3f(static_cast<float>(theta), X_AXIS)
-                 * Mat3f(static_cast<float>(kPi / 2.0 - psi), Z_AXIS);
+                 * Mat3f(static_cast<float>(MapEditor::kPi / 2.0 - psi), Z_AXIS);
     matrix *= MatXf(Mat3f::ID, -position);
 
     // CameraManager::SetCameraPosition flips (Source/Game/CameraManager.cpp):
@@ -317,7 +319,7 @@ void TerrainGpuView::applyGameCamera() {
     // game's psi/theta angles.
     MatXf matrix = MatXf::ID;
     matrix.rot() = Mat3f(static_cast<float>(theta), X_AXIS)
-                 * Mat3f(static_cast<float>(kPi / 2.0 - psi), Z_AXIS);
+                 * Mat3f(static_cast<float>(MapEditor::kPi / 2.0 - psi), Z_AXIS);
     matrix *= MatXf(Mat3f::ID, -position);
 
     // CameraManager::SetCameraPosition flips (Source/Game/CameraManager.cpp):

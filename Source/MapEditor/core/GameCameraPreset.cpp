@@ -4,6 +4,8 @@
 
 #include "GameCameraPreset.h"
 
+#include "EditorMath.h"
+
 #include "spg/SpgFile.h"
 
 #include <cmath>
@@ -15,7 +17,7 @@ namespace MapEditor {
 
 namespace {
 
-constexpr double kRadToDeg = 180.0 / 3.14159265358979323846;
+// kRadToDeg lives in EditorMath.h (shared math constants).
 
 /// Try one .spg file: the first camera spline point, then the player frame
 /// anchor. Returns true when the preset was filled from the file.

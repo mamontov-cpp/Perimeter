@@ -92,8 +92,8 @@ public:
     /// Resize the internal RGB565 buffer (width clamped to kMaxWindowSize and
     /// kept even for a 4-byte-aligned QImage row). Keeps camera settings.
     void resizeWindow(int windowWidth, int windowHeight);
-    int windowWidth() const { return width_; }
-    int windowHeight() const { return height_; }
+    int windowWidth() const noexcept { return width_; }
+    int windowHeight() const noexcept { return height_; }
 
     /// Replace the camera state (no clamping beyond render-time guarantees).
     void setCamera(const View3DCamera &camera);
@@ -116,7 +116,7 @@ public:
     /// source is attached (or it is unbound), so tests and the Chunky path
     /// keep the classic output.
     void setSmooth(bool smooth) { smooth_ = smooth; }
-    bool smooth() const { return smooth_; }
+    bool smooth() const noexcept { return smooth_; }
     /// Attach the pyramid source (not owned; typically the widget's
     /// ViewportRenderer). Required for the smooth path to engage.
     void setColorSource(const ViewportRenderer *source) { colorSource_ = source; }

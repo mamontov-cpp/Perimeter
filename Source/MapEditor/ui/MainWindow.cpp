@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "EditorMath.h"
 
 #include <View3DRenderer.h>
 #include <BrushTool.h>
@@ -68,7 +69,7 @@ namespace {
 // does not depend on any icon theme being installed.
 // ---------------------------------------------------------------------------
 
-constexpr qreal kDeg = 3.14159265358979323846 / 180.0;
+// kDegToRad lives in EditorMath.h (shared math constants).
 const QColor kInk(45, 45, 45);
 const QColor kAccent(0, 96, 170);
 
@@ -77,7 +78,7 @@ const QColor kAccent(0, 96, 170);
 void drawArrowHead(QPainter &p, const QPointF &tip, double directionDeg,
                    double length = 6.0, double halfWidth = 3.0)
 {
-    const double a = directionDeg * kDeg;
+    const double a = directionDeg * MapEditor::kDegToRad;
     const QPointF dir(std::cos(a), std::sin(a));
     const QPointF normal(-dir.y(), dir.x());
     QPolygonF head;
@@ -123,13 +124,13 @@ QIcon makeRotateIcon(bool mirror)
     const double radius = circle.width() / 2.0;
     const double endAngle = gapCenterDeg
         + (mirror ? -15.0 - spanDeg : 15.0 + spanDeg);
-    const double endAngleRad = endAngle * kDeg;
+    const double endAngleRad = endAngle * MapEditor::kDegToRad;
     const QPointF end(center.x() + radius * std::cos(endAngleRad),
                       center.y() - radius * std::sin(endAngleRad));
     // Tangent: for CCW arcs the position angle grows, for CW it shrinks.
     const double turn = mirror ? -1.0 : 1.0;
     drawArrowHead(p, end, std::atan2(turn * radius * std::cos(endAngleRad),
-                                     turn * radius * std::sin(endAngleRad)) / kDeg);
+                                     turn * radius * std::sin(endAngleRad)) / MapEditor::kDegToRad);
     return QIcon(pm);
 }
 
@@ -499,7 +500,7 @@ QIcon makeShapeIcon(MapEditor::BrushShape shape)
         {
             QPolygonF hex;
             for (int i = 0; i < 6; ++i) {
-                const double a = 3.14159265358979323846 / 180.0 * (60.0 * i - 90.0);
+                const double a = MapEditor::kDegToRad * (60.0 * i - 90.0);
                 hex << QPointF(11.0 + 7.5 * std::cos(a), 11.0 + 7.5 * std::sin(a));
             }
             p.drawPolygon(hex);
