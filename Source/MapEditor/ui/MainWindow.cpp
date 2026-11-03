@@ -413,6 +413,34 @@ QIcon makeEyedropperIcon()
     return QIcon(pm);
 }
 
+/// Place Spawn mode glyph: a map pin over a ground line — the spawn the
+/// click drops at the target cell.
+QIcon makePlaceSpawnIcon()
+{
+    QPixmap pm(22, 22);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setPen(QPen(kInk, 2.0));
+    drawGroundLine(p, 18.0);
+    // Pin: accent head with an ink tip onto the ground line.
+    p.setBrush(kAccent);
+    p.setPen(QPen(kInk, 1.5));
+    p.drawEllipse(QRectF(7.0, 2.5, 8.0, 8.0));
+    QPolygonF tip;
+    tip << QPointF(8.6, 9.0) << QPointF(13.4, 9.0) << QPointF(11.0, 15.5);
+    p.setPen(Qt::NoPen);
+    p.setBrush(kAccent);
+    p.drawPolygon(tip);
+    p.setPen(QPen(kInk, 1.5));
+    p.drawLine(QPointF(11.0, 15.5), QPointF(11.0, 18.0));
+    // The dot inside the head.
+    p.setBrush(kInk);
+    p.setPen(Qt::NoPen);
+    p.drawEllipse(QRectF(9.7, 5.2, 2.6, 2.6));
+    return QIcon(pm);
+}
+
 /// T3.5 — load-image action icon: folder with import arrow.
 QIcon makeLoadImageIcon()
 {
@@ -1529,6 +1557,10 @@ void MainWindow::onEditorModeChanged(int mode)
     if (actModeEyedropper_) {
         actModeEyedropper_->setChecked(
             mode == static_cast<int>(Viewport::EditorMode::Eyedropper));
+    }
+    if (actModePlaceSpawn_) {
+        actModePlaceSpawn_->setChecked(
+            mode == static_cast<int>(Viewport::EditorMode::PlaceSpawn));
     }
 }
 
@@ -2717,6 +2749,12 @@ void MainWindow::createBrushActions()
             if (!viewport_) {
                 return;
             }
+            // The Place Spawn mode needs a loaded battle map — there is no
+            // spawn to place otherwise (updateActionStates also disables the
+            // action; this guards the shortcut path).
+            if (mode == EditorMode::PlaceSpawn && !battleMap_.loaded()) {
+                return;
+            }
             // The brush type carries which tool the interaction works with:
             // entering the Eyedropper mode selects the PickColor type, and
             // returning to the Brush mode turns it back into an actually
@@ -2754,6 +2792,14 @@ void MainWindow::createBrushActions()
            "the Geo/Dam palette pixel under the cursor through the PickColor "
            "brush type (E). Same limited camera as the Brush mode."),
         QKeySequence(Qt::Key_E), EditorMode::Eyedropper);
+    actModePlaceSpawn_ = addEditorMode(
+        makePlaceSpawnIcon(), tr("Place &Spawn"),
+        tr("Move the selected battle-map player's spawn to the clicked cell: "
+           "frame, squad, units and camera relocate together, the height is "
+           "corrected by the terrain difference, and the move is one undo "
+           "step (S). Available with a battle map loaded — the world itself "
+           "is not touched."),
+        QKeySequence(Qt::Key_S), EditorMode::PlaceSpawn);
     actModeBrush_->setChecked(true);
 }
 
@@ -2774,6 +2820,7 @@ void MainWindow::buildBrushToolbar()
     bar->addAction(actModeView_);
     bar->addAction(actModeBrush_);
     bar->addAction(actModeEyedropper_);
+    bar->addAction(actModePlaceSpawn_);
     bar->addSeparator();
 
     // T3.1 form buttons: the stamp silhouette + the stamp half-size. The
@@ -3959,7 +4006,16 @@ void MainWindow::onActionHelp()
 
 void MainWindow::onActionUndo()
 {
-    if (session_->undo()) {
+    bool undone = session_->undo();
+    if (!undone && battleMap_.canUndoPlayerMove() &&
+        battleMap_.undoPlayerMove()) {
+        // A spawn relocation (Place Spawn mode): the panel list and the
+        // viewport overlay read the anchors — refresh both.
+        battleMapPanel_->refresh();
+        syncSpawnOverlay();
+        undone = true;
+    }
+    if (undone) {
         // regRender() marked the affected area; a repaint drains the dirty
         // rectangles and refreshes the raster.
         if (viewport_) {
@@ -3967,17 +4023,26 @@ void MainWindow::onActionUndo()
             viewport_->update();
         }
         updateStatusBar();
+        updateActionStates();
     }
 }
 
 void MainWindow::onActionRedo()
 {
-    if (session_->redo()) {
+    bool redone = session_->redo();
+    if (!redone && battleMap_.canRedoPlayerMove() &&
+        battleMap_.redoPlayerMove()) {
+        battleMapPanel_->refresh();
+        syncSpawnOverlay();
+        redone = true;
+    }
+    if (redone) {
         if (viewport_) {
             viewport_->setNeeds3DRedraw();
             viewport_->update();
         }
         updateStatusBar();
+        updateActionStates();
     }
 }
 
@@ -4280,6 +4345,16 @@ void MainWindow::updateActionStates()
         // Creating a battle map builds it for the currently loaded world.
         actNewBattleMap_->setEnabled(gameDirSet && worldLoaded);
     }
+    if (actModePlaceSpawn_) {
+        actModePlaceSpawn_->setEnabled(battleMapLoaded);
+        // The mode is meaningless without a battle map — drop back to the
+        // Brush mode when the map is closed while the mode is active.
+        if (!battleMapLoaded && viewport_ &&
+            viewport_->editorMode() ==
+                MapEditor::ViewportWidget::EditorMode::PlaceSpawn) {
+            viewport_->setEditorMode(MapEditor::ViewportWidget::EditorMode::Brush);
+        }
+    }
     if (actValidateBattleMap_) {
         actValidateBattleMap_->setEnabled(battleMapLoaded);
     }
@@ -4303,10 +4378,14 @@ void MainWindow::updateActionStates()
         }
     }
     if (actUndo_) {
-        actUndo_->setEnabled(worldLoaded && session_->canUndo());
+        // Terrain history first, then the battle-map spawn-move history
+        // (both are reverted by the same Ctrl+Z).
+        actUndo_->setEnabled((worldLoaded && session_->canUndo()) ||
+                             battleMap_.canUndoPlayerMove());
     }
     if (actRedo_) {
-        actRedo_->setEnabled(worldLoaded && session_->canRedo());
+        actRedo_->setEnabled((worldLoaded && session_->canRedo()) ||
+                             battleMap_.canRedoPlayerMove());
     }
     if (actClearUndoHistory_) {
         actClearUndoHistory_->setEnabled(worldLoaded);

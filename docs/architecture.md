@@ -997,14 +997,30 @@ drawGridOverlay (проекция сетки). Terra viewV2D остаётся т
   squad + stablePosition + frameSlots + камеры) двигаются вместе
   (`setPlayerAnchor`), dz передаёт вызывающий (дельта высот рельефа —
   `EditorSession::terrainHeightAt`); `setPlayerCount` клонирует/удаляет
-  элементы массивов с перенумерацией playerID (T8.4).
+  элементы массивов с перенумерацией playerID (T8.4). Переезды спавнов
+  бывают undoable: `setPlayerAnchorUndoable` пишет дельту в per-document
+  историю (`undoPlayerMove`/`redoPlayerMove` применяют ∓дельту — round-trip
+  точен, без перезаписи абсолютов; redo-хвост отбрасывается новым ходом,
+  `load()` историю чистит).
 - **UI** — `ui/BattleMapPanel` (док, клавиша B): список игроков, Go To,
-  Move to View Centre (z-коррекция), Edit Properties (playersData),
-  New Battle Map (шаблон из RESOURCE/Battle + число игроков + спавны по
-  эллипсу, zeroLayerHeight из мира). Файл-меню: Open Battle Map (автосмена
-  мира по worldName), Save/Save As (Battle/Worlds, предупреждение о
-  перезаписи; `.gmp`/`.dat` не читаются и не пишутся). Оверлей спавнов —
+  Move to View Centre (z-коррекция), Edit Properties (playersData +
+  Location X/Y), New Battle Map (шаблон из RESOURCE/Battle + число игроков +
+  спавны по эллипсу, zeroLayerHeight из мира). Файл-меню: Open Battle Map
+  (автосмена мира по worldName), Save/Save As (Battle/Worlds, предупреждение
+  о перезаписи; `.gmp`/`.dat` не читаются и не пишутся). Оверлей спавнов —
   `ViewportWidget::setSpawnPoints` (T2.2-хук).
+- **Place Spawn** — четвёртый editor-mode виджета (`ViewportWidget::
+  EditorMode::PlaceSpawn`, кнопка на тулбаре Brush рядом с View/Brush/
+  Eyedropper, клавиша `S`): клик эмитит `spawnPlacementRequested(x, y)`,
+  вьюпорт мир/`.spg сам не трогает; `MainWindow::onSpawnPlacementRequested`
+  двигает спавн ВЫБРАННОГО в панели игрока через
+  `SpgFile::setPlayerAnchorUndoable` (та же z-коррекция по рельефу, клик по
+  текущей клетке — no-op), после чего `BattleMapPanel::refresh()` +
+  `syncSpawnOverlay()`. Режим включён только при загруженной боевой карте
+  (`updateActionStates` его гасит и сбрасывает на Brush при закрытии карты).
+  Undo/redo общие с террейном: `onActionUndo/Redo` сначала спрашивают
+  террейн-историю, при пустой — историю переездов спавнов (две независимые
+  стеки, порядок LIFO внутри каждой; см. docs/context.md).
 
 ## 5.22. Валидация (T9)
 
@@ -1052,6 +1068,7 @@ Headless-тесты `map_editor_tests` (`tests/`), по файлу на моду
 | 60–61 | `ImageImportExportTests` | экспорт: heightmap == `SGetAlt>>5`, top-view/up.tga заголовки, чтение индексированного TGA + отказ true-color; импорт: RGB → ближайший индекс по слою клетки, гейт гео/дамба, whole-map undo байт-в-байт, indexed → SurBuf как есть (T6) |
 | 65 | `MarkerStoreTests` | JSON round-trip маркеров (поля, экранирование), CRUD/ids, путь сайдкара, файл round-trip (T7.1) |
 | 70–71 | `SpgTests` | load→save COMPASS.spg байт-в-байт (XPrm DOM + SpgFile); правки: worldName/playersData/zeroLayerHeight/movePlayerGroup (фрейм+сквад+stable+слоты+камера), setPlayerCount; неизвестные узлы (контролы UI) выживают (T8) |
+| 74 | `SpgPlayerMoveUndoTests` | `setPlayerAnchorUndoable`: undo восстанавливает якорь И frame z (пересохранённый файл), redo возвращает; два игрока стекаются/разматываются LIFO; новый ход отбрасывает redo-хвост; `load()` чистит историю (Place Spawn) |
 | 75 | `ValidationTests` | validateWorldFiles без ошибок; объёмный баланс плоского мира (fill/dig, допуск); validateBattleMap (чисто; ошибка отсутствия мира; out-of-bounds спавн с go-to); автофиксы (T9) |
 | 55–57 | `WorldParamsTests` | чтение `WorldParams` против `world.ini`/`Perimeter.ini` + round-trip записи в scratch-копию (включая ZP-цвет и ключ `[Storage]`); S2T0→S2T1→S2T0 конвертация `output.vmp` байт-в-байт, идемпотентность, отказы; интеграция `applyWorldSettings`/`saveWorld`: живой `hZeroPlast`, `f3d` в живую + в ini, ZP-цвет в `Perimeter.ini` копии, S2T1 переживает сохранение (T5.1) |
 | 78 | `BrushAlignDamOnGeoTests` | `AlignVariableH`/`Align4ZP` в Dam-режиме на гео-клетках (`VxDBuf == 0`) сеют дамбу (`seedDamLayer`), затем тулзер ведёт её к цели; `VxGBuf` неизменен (кроме снятия дамбы при опускании до гео), `SurBuf == veryLightDam`; bump `VxDBuf = 1` при `VxGBuf == 0`; undo байт-в-байт (T3.2) |

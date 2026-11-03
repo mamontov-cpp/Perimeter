@@ -108,6 +108,12 @@ QString BattleMapPanel::battleMapTitle() const
     return header_->text();
 }
 
+int BattleMapPanel::selectedPlayer() const
+{
+    const QListWidgetItem *item = list_->currentItem();
+    return item ? item->data(Qt::UserRole).toInt() : -1;
+}
+
 void BattleMapPanel::refresh()
 {
     if (!battleMap_.loaded()) {

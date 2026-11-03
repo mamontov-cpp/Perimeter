@@ -96,6 +96,21 @@ public:
     /// shifts by `dz` (see movePlayerGroup).
     bool setPlayerAnchor(int playerIndex, double x, double y, double dz);
 
+    /// Like setPlayerAnchor, but records the move in a per-document undo
+    /// history so undoPlayerMove()/redoPlayerMove() can walk it back (the
+    /// Place Spawn mode uses this). A new move discards the redo tail. The
+    /// history is cleared by load(). False when the anchor cannot be read.
+    bool setPlayerAnchorUndoable(int playerIndex, double x, double y,
+                                 double dz);
+    /// Revert the last recorded anchor move (the whole group moves back).
+    bool undoPlayerMove();
+    /// Re-apply the last undone anchor move.
+    bool redoPlayerMove();
+    bool canUndoPlayerMove() const { return !playerMoveUndo_.empty(); }
+    bool canRedoPlayerMove() const { return !playerMoveRedo_.empty(); }
+    /// Drop both histories (load() does this; save() keeps them).
+    void clearPlayerMoveHistory();
+
     /// Start-landing normalization (run before saving, together with
     /// setFramesInstalledForStart which stores the frames "installed"):
     ///
@@ -158,6 +173,20 @@ private:
     XPrmObject* playersArray();
     XPrmObject* playerFrame(int playerIndex);
     static XPrmObject* elementObject(XPrmObject* array, int index);
+
+    /// One recorded spawn relocation: the delta passed to movePlayerGroup.
+    /// Undo applies the negated delta, redo re-applies it — the values are
+    /// plain shifts, so the round trip restores the stored floats exactly
+    /// (no absolute re-write).
+    struct PlayerMoveStep
+    {
+        int playerIndex = 0;
+        double dx = 0;
+        double dy = 0;
+        double dz = 0;
+    };
+    std::vector<PlayerMoveStep> playerMoveUndo_;
+    std::vector<PlayerMoveStep> playerMoveRedo_;
 
     XPrmDocument doc_;
     XPrmObject* mission_ = nullptr;

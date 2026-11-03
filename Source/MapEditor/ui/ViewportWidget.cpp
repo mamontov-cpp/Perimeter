@@ -1865,8 +1865,11 @@ void ViewportWidget::drawHud(QPainter &painter)
     QString info;
     // The editor interaction mode the cursor carries right now.
     const QString modeLabel = editorMode_ == EditorMode::View
-        ? tr("View") : (editorMode_ == EditorMode::Eyedropper ? tr("Pipette")
-                                                              : tr("Brush"));
+        ? tr("View")
+        : (editorMode_ == EditorMode::Eyedropper
+               ? tr("Pipette")
+               : (editorMode_ == EditorMode::PlaceSpawn ? tr("Place Spawn")
+                                                        : tr("Brush")));
     if (viewMode_ == ViewMode::Oblique) {
         // The 3D camera line-up; lean is the value the active renderer will
         // actually use (the CPU voxel window clamps it into the stable
@@ -1957,6 +1960,26 @@ void ViewportWidget::mousePressEvent(QMouseEvent *event)
             lastPickCell_ = cell;
             setCursor(Qt::CrossCursor);
             pickColorAtCell(cell);
+        }
+        event->accept();
+        return;
+    }
+
+    if (event->button() == Qt::LeftButton
+            && editorMode_ == EditorMode::PlaceSpawn) {
+        // Place Spawn mode: a click relocates the selected battle-map
+        // player's spawn group — the move itself (terrain z-correction,
+        // undo recording) is the MainWindow's job; the viewport only
+        // announces the target cell. Press-only: a drag keeps the camera
+        // gestures (middle/right pan, wheel zoom) and does not repeat the
+        // placement, so one click is exactly one undo entry.
+        const QPoint pos = event->position().toPoint();
+        const QPoint cell = onMapCellAtWidgetPos(pos);
+        if (cell.x() >= 0 && cell.y() >= 0) {
+            cursorWidgetPos_ = pos;
+            cursorCell_ = cell;
+            setCursor(Qt::CrossCursor);
+            emit spawnPlacementRequested(cell.x(), cell.y());
         }
         event->accept();
         return;
@@ -2153,7 +2176,8 @@ void ViewportWidget::mouseDoubleClickEvent(QMouseEvent *event)
     // double-click still applies.
     if (event->button() == Qt::LeftButton
             && (editorMode_ == EditorMode::Brush
-                || editorMode_ == EditorMode::Eyedropper)) {
+                || editorMode_ == EditorMode::Eyedropper
+                || editorMode_ == EditorMode::PlaceSpawn)) {
         mousePressEvent(event);
         event->accept();
         return;

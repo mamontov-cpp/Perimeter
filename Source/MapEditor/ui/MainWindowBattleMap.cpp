@@ -83,6 +83,10 @@ void MainWindow::buildBattleMapDock()
                     viewport_->update();
                 }
             });
+    // Place Spawn mode: the viewport announces the clicked cell, the move
+    // itself happens here (terrain z-correction + undo recording).
+    connect(viewport_, &MapEditor::ViewportWidget::spawnPlacementRequested,
+            this, &MainWindow::onSpawnPlacementRequested);
     connect(battleMapPanel_,
             &MapEditor::BattleMapPanel::newBattleMapRequested, this,
             &MainWindow::onNewBattleMapRequested);
@@ -170,6 +174,64 @@ void MainWindow::syncSpawnOverlay()
     if (viewport_->hasWorld()) {
         viewport_->update();
     }
+}
+
+void MainWindow::onSpawnPlacementRequested(int mapX, int mapY)
+{
+    if (!battleMap_.loaded()) {
+        return;
+    }
+    const int player = battleMapPanel_->selectedPlayer();
+    if (player < 0) {
+        statusBar()->showMessage(
+            tr("Select a player in the Battle Map panel first — the Place "
+               "Spawn mode moves that player's spawn."),
+            5000);
+        return;
+    }
+
+    double oldX = 0;
+    double oldY = 0;
+    if (!battleMap_.playerAnchor(player, oldX, oldY)) {
+        statusBar()->showMessage(tr("Failed to read the player's spawn."),
+                                 4000);
+        return;
+    }
+    // Clicking the cell the spawn already sits on is a no-op — do not spam
+    // the undo history.
+    if (qRound(oldX) == mapX && qRound(oldY) == mapY) {
+        return;
+    }
+
+    // z_new = z_old + (terrain_new - terrain_old): the models keep their
+    // vertical offset over the ground (same rule as "Move to View Centre").
+    // Without the world loaded the heights are unknown and the offsets are
+    // kept as-is (dz = 0).
+    double dz = 0;
+    if (session_ && session_->isWorldLoaded()) {
+        const int oldTerrain =
+            session_->terrainHeightAt(qRound(oldX), qRound(oldY));
+        const int newTerrain = session_->terrainHeightAt(mapX, mapY);
+        if (oldTerrain < 0 || newTerrain < 0) {
+            statusBar()->showMessage(
+                tr("Cannot read the terrain height under the old or new "
+                   "spawn — the location was not changed."),
+                4000);
+            return;
+        }
+        dz = static_cast<double>(newTerrain - oldTerrain);
+    }
+
+    if (!battleMap_.setPlayerAnchorUndoable(player, mapX, mapY, dz)) {
+        statusBar()->showMessage(tr("Failed to move the spawn group."), 4000);
+        return;
+    }
+    // The .spg is modified in place — Save Battle Map persists it. The panel
+    // list and the viewport overlay read the anchors: refresh both, and the
+    // undo/redo actions pick up the new history depth.
+    battleMapPanel_->refresh();
+    syncSpawnOverlay();
+    updateActionStates();
 }
 
 void MainWindow::refreshBattleMapUI()

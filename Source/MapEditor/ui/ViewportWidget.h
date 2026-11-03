@@ -176,6 +176,10 @@ public:
         View,       ///< navigation only: drag pans (TopDown) / orbits (Oblique).
         Brush,      ///< left press/drag applies the brush stamp (both view modes).
         Eyedropper, ///< left press/drag samples the Geo/Dam pixel color (T4.2).
+        PlaceSpawn, ///< left click moves the selected battle-map player's spawn
+                    ///< group to the clicked cell (battle map loaded only; no
+                    ///< terrain edit — the anchor change is announced through
+                    ///< spawnPlacementRequested()).
     };
 
     /// Switch what a click in the world does. The mode is orthogonal to the
@@ -436,6 +440,11 @@ signals:
     /// Emitted when the eyedropper is triggered (T3.3/T4.2) — provides the
     /// map cell coordinates and the current SurBuf palette index at that cell.
     void eyedropperPicked(int mapX, int mapY, unsigned char surIndex);
+    /// Emitted on a left click in the PlaceSpawn editor mode — the map cell
+    /// the user wants to move the selected battle-map player's spawn group to.
+    /// MainWindow performs the move (terrain z-correction, undo recording);
+    /// the viewport itself never edits the world or the .spg in this mode.
+    void spawnPlacementRequested(int mapX, int mapY);
     /// Emitted once after the first successful GPU terrain view init (or
     /// after a reload that drops it back to the CPU path). MainWindow
     /// hides the freeze-dam action (which only makes sense for the CPU path)

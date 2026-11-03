@@ -131,6 +131,10 @@ private slots:
 
     /// Handle eyedropper pick: update the color brush palette index (T3.3).
     void onEyedropperPicked(int mapX, int mapY, unsigned char surIndex);
+    /// Place Spawn mode click: move the selected battle-map player's spawn
+    /// group to the clicked cell (terrain z-correction, undoable through
+    /// SpgFile::setPlayerAnchorUndoable).
+    void onSpawnPlacementRequested(int mapX, int mapY);
     /// The scripted brush evaluation failed — show the message in a
     /// critical message box (QMessageBox::critical per spec).
     void onBrushScriptError(const QString& message);
@@ -331,6 +335,7 @@ private:
     QAction *actModeView_ = nullptr;
     QAction *actModeBrush_ = nullptr;
     QAction *actModeEyedropper_ = nullptr;
+    QAction *actModePlaceSpawn_ = nullptr;
 
     // T3.2 — brush type (effect) actions: raise / lower / level to
     // zeroplast / level to an arbitrary height.

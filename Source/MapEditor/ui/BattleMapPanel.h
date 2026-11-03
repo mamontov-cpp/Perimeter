@@ -26,7 +26,9 @@ class EditorSession;
 //     world (SpgFile::setPlayerAnchor + EditorSession::terrainHeightAt);
 //   * "Edit Properties..." changes playersData (name / type / belligerent /
 //     color / clan / difficulty / handicap) and the spawn location (X/Y,
-//     moved with the same terrain z-correction as "Move to View Centre").
+//     moved with the same terrain z-correction as "Move to View Centre");
+//   * selectedPlayer() feeds the Place Spawn editor mode: a viewport click
+//     moves that player's spawn group (undoable, SpgFile history).
 //
 // The SpgFile itself lives in the MainWindow; the panel edits it through the
 // reference and announces every mutation via battleMapChanged() (autosave
@@ -44,6 +46,10 @@ public:
 
     /// Rebuild the list from the SpgFile (after load/save/new).
     void refresh();
+
+    /// Index of the player selected in the list (-1 when none). The Place
+    /// Spawn mode places THIS player's spawn group.
+    int selectedPlayer() const;
 
     /// Where "Move to View Centre" places the spawn — the MainWindow wires
     /// this to the viewport's current view rectangle.

@@ -133,6 +133,7 @@ bool SpgFile::load(const std::string& path)
     mission_ = nullptr;
     save_ = nullptr;
     textEncoding_ = SpgTextEncoding::Utf8;
+    clearPlayerMoveHistory();
     if (!doc_.load(path)) {
         return false;
     }
@@ -429,6 +430,54 @@ bool SpgFile::setPlayerAnchor(int playerIndex, double x, double y, double dz)
         return false;
     }
     return movePlayerGroup(playerIndex, x - oldX, y - oldY, dz);
+}
+
+bool SpgFile::setPlayerAnchorUndoable(int playerIndex, double x, double y,
+                                      double dz)
+{
+    double oldX = 0;
+    double oldY = 0;
+    if (!playerAnchor(playerIndex, oldX, oldY)) {
+        return false;
+    }
+    const double dx = x - oldX;
+    const double dy = y - oldY;
+    if (!movePlayerGroup(playerIndex, dx, dy, dz)) {
+        return false;
+    }
+    playerMoveUndo_.push_back(PlayerMoveStep{playerIndex, dx, dy, dz});
+    playerMoveRedo_.clear();
+    return true;
+}
+
+bool SpgFile::undoPlayerMove()
+{
+    if (playerMoveUndo_.empty()) {
+        return false;
+    }
+    const PlayerMoveStep step = playerMoveUndo_.back();
+    playerMoveUndo_.pop_back();
+    movePlayerGroup(step.playerIndex, -step.dx, -step.dy, -step.dz);
+    playerMoveRedo_.push_back(step);
+    return true;
+}
+
+bool SpgFile::redoPlayerMove()
+{
+    if (playerMoveRedo_.empty()) {
+        return false;
+    }
+    const PlayerMoveStep step = playerMoveRedo_.back();
+    playerMoveRedo_.pop_back();
+    movePlayerGroup(step.playerIndex, step.dx, step.dy, step.dz);
+    playerMoveUndo_.push_back(step);
+    return true;
+}
+
+void SpgFile::clearPlayerMoveHistory()
+{
+    playerMoveUndo_.clear();
+    playerMoveRedo_.clear();
 }
 
 bool SpgFile::restPlayersOnZeroLayer(
