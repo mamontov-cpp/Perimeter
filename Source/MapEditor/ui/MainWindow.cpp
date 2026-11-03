@@ -669,6 +669,80 @@ QIcon makeTricubicBrushIcon()
     return QIcon(pm);
 }
 
+/// Inflate-brush glyph: a mound with arrows growing out along its normals.
+QIcon makeInflateBrushIcon()
+{
+    QPixmap pm(22, 22);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    // The mound profile.
+    p.setPen(QPen(kInk, 1.4));
+    p.setBrush(QColor(235, 235, 235));
+    QPainterPath mound(QPointF(3.0, 18.0));
+    mound.cubicTo(QPointF(6.0, 17.0), QPointF(8.0, 9.0), QPointF(11.0, 8.0));
+    mound.cubicTo(QPointF(14.0, 9.0), QPointF(16.0, 17.0),
+                  QPointF(19.0, 18.0));
+    mound.closeSubpath();
+    p.drawPath(mound);
+    // Normal arrows (vertical on top, tilted on the flanks).
+    p.setPen(QPen(kAccent, 1.6, Qt::SolidLine, Qt::RoundCap));
+    p.setBrush(kAccent);
+    const struct { QPointF a, b; } arrows[] = {
+        {QPointF(11.0, 7.2), QPointF(11.0, 2.4)},
+        {QPointF(7.6, 11.0), QPointF(5.2, 7.2)},
+        {QPointF(14.4, 11.0), QPointF(16.8, 7.2)},
+    };
+    for (const auto& ar : arrows) {
+        p.drawLine(ar.a, ar.b);
+        const QPointF d = ar.b - ar.a;
+        const double l = std::hypot(d.x(), d.y());
+        const QPointF n(d.x() / l, d.y() / l);
+        const QPointF perp(-n.y(), n.x());
+        p.drawPolygon(QPolygonF({ar.b, ar.b - n * 2.6 + perp * 1.3,
+                                 ar.b - n * 2.6 - perp * 1.3}));
+    }
+    return QIcon(pm);
+}
+
+/// Deflate-brush glyph: the same mound caving in (arrows pointing down
+/// along the normals).
+QIcon makeDeflateBrushIcon()
+{
+    QPixmap pm(22, 22);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    // The pressed-down profile.
+    p.setPen(QPen(kInk, 1.4));
+    p.setBrush(QColor(235, 235, 235));
+    QPainterPath mound(QPointF(3.0, 18.0));
+    mound.cubicTo(QPointF(6.0, 17.0), QPointF(8.0, 14.0),
+                  QPointF(11.0, 13.2));
+    mound.cubicTo(QPointF(14.0, 14.0), QPointF(16.0, 17.0),
+                  QPointF(19.0, 18.0));
+    mound.closeSubpath();
+    p.drawPath(mound);
+    // Inward-pointing normal arrows.
+    p.setPen(QPen(kAccent, 1.6, Qt::SolidLine, Qt::RoundCap));
+    p.setBrush(kAccent);
+    const struct { QPointF a, b; } arrows[] = {
+        {QPointF(11.0, 1.8), QPointF(11.0, 6.6)},
+        {QPointF(4.6, 6.0), QPointF(7.4, 10.2)},
+        {QPointF(17.4, 6.0), QPointF(14.6, 10.2)},
+    };
+    for (const auto& ar : arrows) {
+        p.drawLine(ar.a, ar.b);
+        const QPointF d = ar.b - ar.a;
+        const double l = std::hypot(d.x(), d.y());
+        const QPointF n(d.x() / l, d.y() / l);
+        const QPointF perp(-n.y(), n.x());
+        p.drawPolygon(QPolygonF({ar.b, ar.b - n * 2.6 + perp * 1.3,
+                                 ar.b - n * 2.6 - perp * 1.3}));
+    }
+    return QIcon(pm);
+}
+
 /// T3.5: Convert a QImage to a BrushMask (pixel alpha → influence).
 /// Transparent pixels (alpha = 0) carry no effect; non-transparent ones
 /// influence the brush proportionally to their alpha (anti-aliased edges
@@ -1971,6 +2045,8 @@ void MainWindow::buildSculptToolbar()
     bar->addAction(actBrushSmooth_);
     bar->addAction(actBrushFlatten_);
     bar->addAction(actBrushTricubic_);
+    bar->addAction(actBrushInflate_);
+    bar->addAction(actBrushDeflate_);
 
     // The fraction spinbox (0..1) shared by both sculpting brushes: the part
     // of the distance towards the reference (average / fitted plane) that
@@ -2212,6 +2288,21 @@ void MainWindow::createBrushActions()
            "stride is smoothed away while curved large-scale forms survive "
            "smoothly. Uses the same fraction spinbox as Smooth/Flatten."),
         MapEditor::BrushEffect::Tricubic);
+    actBrushInflate_ = addSculptType(
+        makeInflateBrushIcon(), tr("Inflate"),
+        tr("Sculpting (Dam layer only): offsets the surface along its "
+           "voxel normals — every covered cell moves a fraction along the "
+           "outward normal, so bumps grow outward-and-up. Where displaced "
+           "parts intersect, the HIGHER height wins. Uses the same "
+           "fraction spinbox as Smooth/Flatten."),
+        MapEditor::BrushEffect::Inflate);
+    actBrushDeflate_ = addSculptType(
+        makeDeflateBrushIcon(), tr("Deflate"),
+        tr("Sculpting (Dam layer only): the inverse of Inflate — offsets "
+           "the surface along the inward voxel normals, so forms shrink "
+           "inward-and-down. Where displaced parts intersect, the LOWER "
+           "height wins. Uses the same fraction spinbox as Smooth/Flatten."),
+        MapEditor::BrushEffect::Deflate);
 
     // T3.5 — load brush image from file. The loaded image becomes the stamp
     // mask of the CURRENT brush type (raise/lower/level/... — the image
@@ -2282,7 +2373,9 @@ void MainWindow::createBrushActions()
                  params.effect == MapEditor::BrushEffect::Script ||
                  params.effect == MapEditor::BrushEffect::Smooth ||
                  params.effect == MapEditor::BrushEffect::Flatten ||
-                 params.effect == MapEditor::BrushEffect::Tricubic)) {
+                 params.effect == MapEditor::BrushEffect::Tricubic ||
+                 params.effect == MapEditor::BrushEffect::Inflate ||
+                 params.effect == MapEditor::BrushEffect::Deflate)) {
                 params.effect = MapEditor::BrushEffect::ChangeHeight;
                 params.direction = 1;
             }
@@ -2668,6 +2761,10 @@ void MainWindow::syncBrushControls()
     syncType(actBrushFlatten_, params.effect == MapEditor::BrushEffect::Flatten);
     syncType(actBrushTricubic_,
              params.effect == MapEditor::BrushEffect::Tricubic);
+    syncType(actBrushInflate_,
+             params.effect == MapEditor::BrushEffect::Inflate);
+    syncType(actBrushDeflate_,
+             params.effect == MapEditor::BrushEffect::Deflate);
 
     // Sculpting fraction spinbox mirrors the tool (shared by both types).
     if (sculptEffectSpin_) {
@@ -3971,7 +4068,8 @@ void MainWindow::updateActionStates()
                             actBrushSoot_, actBrushVeryLightDam_,
                             actBrushScript_, actBrushScriptEdit_,
                             actBrushSmooth_, actBrushFlatten_,
-                            actBrushTricubic_,
+                            actBrushTricubic_, actBrushInflate_,
+                            actBrushDeflate_,
                             actLoadBrushImage_,
                             actShapeCircle_, actShapeSquare_,
                             actShapeCircleOutline_, actShapeSquareOutline_,
@@ -3997,7 +4095,9 @@ void MainWindow::updateActionStates()
     const bool sculptEffect = brushTool_ &&
         (brushTool_->params().effect == MapEditor::BrushEffect::Smooth ||
          brushTool_->params().effect == MapEditor::BrushEffect::Flatten ||
-         brushTool_->params().effect == MapEditor::BrushEffect::Tricubic);
+         brushTool_->params().effect == MapEditor::BrushEffect::Tricubic ||
+         brushTool_->params().effect == MapEditor::BrushEffect::Inflate ||
+         brushTool_->params().effect == MapEditor::BrushEffect::Deflate);
     if (actBrushGeo_) {
         actBrushGeo_->setEnabled(worldLoaded && !decalEffect && !scriptEffect &&
                                  !sculptEffect);

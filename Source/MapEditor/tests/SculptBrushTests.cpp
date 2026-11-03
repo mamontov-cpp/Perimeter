@@ -461,14 +461,157 @@ bool runSculptBrushTests()
                 "noise.\n");
 
     // ------------------------------------------------------------------
-    // 4: Geo mode is refused without touching the world.
+    // 4: Inflate / Deflate — vertical normals lift a flat pad by the full
+    //    step; at a step edge the displaced parts intersect and the max
+    //    (inflate) / min (deflate) height wins.
+    // ------------------------------------------------------------------
+    cx += 64;
+    {
+        // The pad must reach beyond the stamp bbox (plus the lateral
+        // offset reach) so the rim normals are vertical.
+        BrushParams prep;
+        prep.effect = BrushEffect::Script;
+        prep.mode = BrushMode::Dam;
+        prep.radius = 4;
+        prep.script = "var p = getCurrentPos();\n"
+                      "for (var oy = -4; oy <= 4; oy += 4)\n"
+                      "  for (var ox = -4; ox <= 4; ox += 4)\n"
+                      "    setHeight({x: p.x + ox, y: p.y + oy}, " +
+                      std::to_string(kBase) + ", 6, true);\n";
+        std::string error;
+        TEST_REQUIRE(MapEditor::runScriptedBrush(session, scriptBrush, prep,
+                                                 cx, cy, error),
+                     "flat pad preparation failed: %s", error.c_str());
+        ++expectedUndos;
+
+        sculpt(BrushEffect::Inflate, 1.0);
+        ++expectedUndos;
+        for (const auto& [c, h] : measuredHeights()) {
+            TEST_REQUIRE(std::abs(h - (kBase + 4)) <= 1,
+                         "Inflate(1.0) over a flat pad must lift by the full "
+                         "step: expected %d at (%d,%d), got %d.",
+                         kBase + 4, c.first, c.second, h);
+        }
+    }
+
+    // A fresh pad for deflate (the inflated pad would leave a cliff right
+    // at the mask rim and tilt the rim normals).
+    cx += 64;
+    {
+        BrushParams prep;
+        prep.effect = BrushEffect::Script;
+        prep.mode = BrushMode::Dam;
+        prep.radius = 4;
+        prep.script = "var p = getCurrentPos();\n"
+                      "for (var oy = -4; oy <= 4; oy += 4)\n"
+                      "  for (var ox = -4; ox <= 4; ox += 4)\n"
+                      "    setHeight({x: p.x + ox, y: p.y + oy}, " +
+                      std::to_string(kBase) + ", 6, true);\n";
+        std::string error;
+        TEST_REQUIRE(MapEditor::runScriptedBrush(session, scriptBrush, prep,
+                                                 cx, cy, error),
+                     "flat pad preparation failed: %s", error.c_str());
+        ++expectedUndos;
+
+        sculpt(BrushEffect::Deflate, 1.0);
+        ++expectedUndos;
+        for (const auto& [c, h] : measuredHeights()) {
+            TEST_REQUIRE(std::abs(h - (kBase - 4)) <= 1,
+                         "Deflate(1.0) over a flat pad must lower by the full "
+                         "step: expected %d at (%d,%d), got %d.",
+                         kBase - 4, c.first, c.second, h);
+        }
+    }
+
+    // Fresh area: a step edge — left half at kBase, right half at +20.
+    cx += 64;
+    {
+        BrushParams prep;
+        prep.effect = BrushEffect::Script;
+        prep.mode = BrushMode::Dam;
+        prep.radius = 4;
+        prep.script = "var p = getCurrentPos();\n"
+                      "for (var dy = -7; dy <= 7; dy++)\n"
+                      "  for (var dx = -7; dx <= 7; dx++) {\n"
+                      "    var h = (dx >= 0) ? " +
+                      std::to_string(kBase + 20) + " : " +
+                      std::to_string(kBase) + ";\n"
+                      "    setHeight({x: p.x + dx, y: p.y + dy}, h, 1, "
+                      "false);\n"
+                      "  }\n";
+        std::string error;
+        TEST_REQUIRE(MapEditor::runScriptedBrush(session, scriptBrush, prep,
+                                                 cx, cy, error),
+                     "step preparation failed: %s", error.c_str());
+        ++expectedUndos;
+        TEST_REQUIRE(wholeAt(cx, cy) == kBase + 20 && wholeAt(cx - 2, cy) == kBase,
+                     "the step fixture is missing.");
+
+        // Inflate: the tilted normal at the edge throws the HIGH surface
+        // several cells left; max-merge lets it win over the low cells.
+        // (The scripted prep's last-writer-wins overlap shifts the edge by
+        // one column, so scan the whole low side for the carry.)
+        sculpt(BrushEffect::Inflate, 1.0);
+        ++expectedUndos;
+        int carriedUp = 0;
+        for (int dx = -6; dx <= -1; ++dx) {
+            carriedUp += wholeAt(cx + dx, cy) >= kBase + 12;
+        }
+        TEST_REQUIRE(carriedUp > 0,
+                     "Inflate must carry the high surface over the low side "
+                     "(max wins): no cell on the low side reached >= %d.",
+                     kBase + 12);
+    }
+
+    // Fresh step for deflate — the inflate above already disturbed the
+    // first one.
+    cx += 64;
+    {
+        BrushParams prep;
+        prep.effect = BrushEffect::Script;
+        prep.mode = BrushMode::Dam;
+        prep.radius = 4;
+        prep.script = "var p = getCurrentPos();\n"
+                      "for (var dy = -7; dy <= 7; dy++)\n"
+                      "  for (var dx = -7; dx <= 7; dx++) {\n"
+                      "    var h = (dx >= 0) ? " +
+                      std::to_string(kBase + 20) + " : " +
+                      std::to_string(kBase) + ";\n"
+                      "    setHeight({x: p.x + dx, y: p.y + dy}, h, 1, "
+                      "false);\n"
+                      "  }\n";
+        std::string error;
+        TEST_REQUIRE(MapEditor::runScriptedBrush(session, scriptBrush, prep,
+                                                 cx, cy, error),
+                     "step preparation failed: %s", error.c_str());
+        ++expectedUndos;
+
+        // Deflate: the low side's -normal points down-and-RIGHT, carrying
+        // the LOW surface under the high shelf; min-merge lets it win.
+        sculpt(BrushEffect::Deflate, 1.0);
+        ++expectedUndos;
+        int carriedDown = 0;
+        for (int dx = 1; dx <= 6; ++dx) {
+            carriedDown += wholeAt(cx + dx, cy) <= kBase + 2;
+        }
+        TEST_REQUIRE(carriedDown > 0,
+                     "Deflate must carry the low surface under the high side "
+                     "(min wins): no cell on the high side dropped to <= %d.",
+                     kBase + 2);
+    }
+    std::printf("[PASS] Inflate/Deflate lift flat pads by the step and "
+                "resolve intersections by max/min.\n");
+
+    // ------------------------------------------------------------------
+    // 5: Geo mode is refused without touching the world.
     // ------------------------------------------------------------------
     {
         const RegionBytes before =
             RegionBytes::read(regionX, regionY, regionSide, regionSide);
         const bool undoableBefore = session.canUndo();
         for (BrushEffect effect : {BrushEffect::Smooth, BrushEffect::Flatten,
-                                   BrushEffect::Tricubic}) {
+                                   BrushEffect::Tricubic, BrushEffect::Inflate,
+                                   BrushEffect::Deflate}) {
             BrushParams geo;
             geo.effect = effect;
             geo.mode = BrushMode::Geo;
@@ -487,7 +630,7 @@ bool runSculptBrushTests()
     std::printf("[PASS] the sculpt brushes refuse the Geo mode untouched.\n");
 
     // ------------------------------------------------------------------
-    // 5: clamps + the whole sequence undoes back to the pristine region.
+    // 6: clamps + the whole sequence undoes back to the pristine region.
     // ------------------------------------------------------------------
     TEST_REQUIRE(BrushTool::clampSculptEffect(1.5) == 1.0 &&
                      BrushTool::clampSculptEffect(-0.5) == 0.0 &&

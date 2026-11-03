@@ -13,6 +13,7 @@
 #include <cmath>
 #include <functional>
 #include <limits>
+#include <map>
 #include <utility>
 
 #include "ScriptedBrush.h"
@@ -452,6 +453,8 @@ bool BrushTool::effectSupported(BrushEffect effect)
     case BrushEffect::Smooth:          // sculpting (two-pass, in applyMask)
     case BrushEffect::Flatten:         // sculpting (two-pass, in applyMask)
     case BrushEffect::Tricubic:        // sculpting (two-pass, in applyMask)
+    case BrushEffect::Inflate:         // sculpting (two-pass, in applyMask)
+    case BrushEffect::Deflate:         // sculpting (two-pass, in applyMask)
         return true;
     default:
         return false;
@@ -630,7 +633,9 @@ bool BrushTool::applyMask(const BrushMask& absoluteMask, const BrushParams& para
     // not record an undo entry.
     if ((params.effect == BrushEffect::Smooth ||
          params.effect == BrushEffect::Flatten ||
-         params.effect == BrushEffect::Tricubic) &&
+         params.effect == BrushEffect::Tricubic ||
+         params.effect == BrushEffect::Inflate ||
+         params.effect == BrushEffect::Deflate) &&
         params.mode != BrushMode::Dam) {
         return false; // sculpting operates on the dam layer only
     }
@@ -641,7 +646,9 @@ bool BrushTool::applyMask(const BrushMask& absoluteMask, const BrushParams& para
     // --- per-cell routing below cannot serve it.                          ---
     if (params.effect == BrushEffect::Smooth ||
         params.effect == BrushEffect::Flatten ||
-        params.effect == BrushEffect::Tricubic) {
+        params.effect == BrushEffect::Tricubic ||
+        params.effect == BrushEffect::Inflate ||
+        params.effect == BrushEffect::Deflate) {
         return applySculpt(absoluteMask, params, bx, by, bxEnd, byEnd);
     }
 
@@ -752,6 +759,11 @@ SculptPlane fitSculptPlane(const std::vector<int>& dxs,
 /// Control-lattice stride (cells) for the Tricubic sculpting brush:
 /// features smaller than roughly this size are smoothed away.
 constexpr int kTricubicStride = 4;
+
+/// Full normal-offset step (whole voxels) for Inflate / Deflate at
+/// sculptEffect = 1.0 — the surface offset the reference is built with;
+/// the effect fraction scales the actual move towards it.
+constexpr int kInflateStepVoxels = 4;
 
 /// 1-D Catmull-Rom cubic through four samples at fractional position t.
 /// Reproduces arithmetic (linear) sample sequences EXACTLY at any t.
@@ -937,6 +949,80 @@ bool BrushTool::applySculpt(const BrushMask& absoluteMask,
                                           static_cast<double>(cx + dxs[k] - bx),
                                           static_cast<double>(cy + dys[k] - by));
             }
+        }
+    } else if (params.effect == BrushEffect::Inflate ||
+               params.effect == BrushEffect::Deflate) {
+        // Normal-offset reference: every covered cell displaces the
+        // pre-edit surface by a fixed step ALONG ITS VOXEL NORMAL
+        // (central-difference gradient of the height field, z-up unit
+        // normal). Displaced points rasterize into a target height field;
+        // columns hit by several points keep the HIGHEST z when inflating
+        // (the growing envelope) and the LOWEST when deflating (the
+        // shrinking one). A covered cell then moves towards the target
+        // height at its OWN column — points sliding sideways along steep
+        // slopes carry their height into neighbouring columns.
+        const int bw = bxEnd - bx;
+        const int bh = byEnd - by;
+        std::vector<int> bboxAlts(static_cast<std::size_t>(bw) * bh);
+        for (int j = 0; j < bh; ++j) {
+            for (int i = 0; i < bw; ++i) {
+                bboxAlts[static_cast<std::size_t>(j) * bw + i] =
+                    vMap.SGetAlt((by + j) * static_cast<int>(vMap.H_SIZE) +
+                                 (bx + i));
+            }
+        }
+        const auto heightAt = [&](int x, int y) {
+            return bboxAlts[static_cast<std::size_t>(
+                                std::clamp(y, 0, bh - 1)) * bw +
+                            std::clamp(x, 0, bw - 1)];
+        };
+        const bool inflate = params.effect == BrushEffect::Inflate;
+        const double step32 =
+            static_cast<double>(kInflateStepVoxels) * (1 << VX_FRACTION);
+        const int mapW = static_cast<int>(vMap.H_SIZE);
+        const int mapH = static_cast<int>(vMap.V_SIZE);
+        // Target height field: absolute column -> merged displaced height.
+        std::map<std::pair<int, int>, int> target;
+        for (std::size_t k = 0; k < offs.size(); ++k) {
+            const int xr = cx + dxs[k] - bx;
+            const int yr = cy + dys[k] - by;
+            const double gx =
+                (heightAt(xr + 1, yr) - heightAt(xr - 1, yr)) * 0.5;
+            const double gy =
+                (heightAt(xr, yr + 1) - heightAt(xr, yr - 1)) * 0.5;
+            const double len = std::sqrt(gx * gx + gy * gy + 1.0);
+            const double sign = inflate ? 1.0 : -1.0;
+            const double dz = sign * step32 / len; // 1/32 units
+            // Horizontal offset (cells): the normal's x/y components times
+            // the step — one len division only.
+            const double dxCells =
+                sign * static_cast<double>(kInflateStepVoxels) * (-gx / len);
+            const double dyCells =
+                sign * static_cast<double>(kInflateStepVoxels) * (-gy / len);
+            const int tx = static_cast<int>(std::llround(
+                static_cast<double>(cx + dxs[k]) + dxCells));
+            const int ty = static_cast<int>(std::llround(
+                static_cast<double>(cy + dys[k]) + dyCells));
+            if (tx < 0 || ty < 0 || tx >= mapW || ty >= mapH) {
+                continue; // displaced off the map — dropped
+            }
+            const int z = alts[k] + static_cast<int>(std::llround(dz));
+            const auto key = std::make_pair(tx, ty);
+            const auto it = target.find(key);
+            if (it == target.end()) {
+                target.emplace(key, z);
+            } else if (inflate) {
+                it->second = std::max(it->second, z);
+            } else {
+                it->second = std::min(it->second, z);
+            }
+        }
+        for (std::size_t k = 0; k < offs.size(); ++k) {
+            const auto it =
+                target.find(std::make_pair(cx + dxs[k], cy + dys[k]));
+            references[k] = it != target.end()
+                                ? static_cast<double>(it->second)
+                                : static_cast<double>(alts[k]);
         }
     } else {
         const SculptPlane plane = fitSculptPlane(dxs, dys, alts);

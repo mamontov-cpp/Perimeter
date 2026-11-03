@@ -126,6 +126,18 @@ enum class BrushEffect
     /// large-scale forms better than a global plane. Same sculptEffect
     /// fraction and toolzer write path as Smooth / Flatten.
     Tricubic,
+    /// Sculpting — Dam mode only. Offsets the pre-edit surface along its
+    /// VOXEL NORMALS (central-difference gradient): every covered cell
+    /// displaces by a fixed step along its normal, the displaced points
+    /// rasterize into a target height field (columns hit by several points
+    /// keep the HIGHEST z — the growing envelope), and each covered cell
+    /// moves the sculptEffect fraction towards the target height at its
+    /// column. Grows bumps/slopes outward-and-up.
+    Inflate,
+    /// Sculpting — Dam mode only. The exact inverse of Inflate: the offset
+    /// step is negative and overlapping displaced points keep the LOWEST z
+    /// (the shrinking envelope). Shrinks forms inward-and-down.
+    Deflate,
 };
 
 /// The largest stamp radius the editor allows (map cells). The game's own

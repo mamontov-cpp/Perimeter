@@ -354,10 +354,13 @@ private:
     // Sculpting brushes (Dam mode only): Smooth pulls the covered cells
     // towards the average height under the mask, Flatten towards a
     // least-squares plane, Tricubic towards the bicubic interpolation of a
-    // coarse lattice. The fraction spinbox below is shared by all three.
+    // coarse lattice, Inflate/Deflate offset the surface along its voxel
+    // normals. The fraction spinbox below is shared by all of them.
     QAction *actBrushSmooth_ = nullptr;
     QAction *actBrushFlatten_ = nullptr;
     QAction *actBrushTricubic_ = nullptr;
+    QAction *actBrushInflate_ = nullptr;
+    QAction *actBrushDeflate_ = nullptr;
     // The script source kept by the window (loaded into BrushParams::script
     // when the scripted brush runs) and the stamp preview shape picked in
     // the script editor.
