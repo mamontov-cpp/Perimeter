@@ -61,6 +61,9 @@ ScriptHighlighter::ScriptHighlighter(QTextDocument* parent)
         QStringLiteral("setHeight"),           QStringLiteral("setToZP"),
         QStringLiteral("paintSoot"),           QStringLiteral("paintVeryLightDam"),
         QStringLiteral("paintColor"),
+        QStringLiteral("getDamHeight"),        QStringLiteral("getGeoColor"),
+        QStringLiteral("getDamColor"),         QStringLiteral("showInfoMessageBox"),
+        QStringLiteral("showErrorMessageBox"),
     };
 
     // Order matters: API names before keywords (both word-anchored, no
@@ -166,6 +169,9 @@ ScriptEdit::ScriptEdit(QWidget* parent)
         "//   paintSoot(pos, radius, square)\n"
         "//   paintVeryLightDam(pos, radius, square)\n"
         "//   paintColor(pos, red, green, blue, radius, square)\n"
+        "//   getDamHeight(pos) -> int        getGeoColor(pos) / getDamColor(pos)"
+        " -> {r,g,b}\n"
+        "//   showInfoMessageBox(text) / showErrorMessageBox(text)\n"
         "// pos = {x: int, y: int}; radius >= 1; square = boolean. Dam layer only."));
 }
 

@@ -35,4 +35,11 @@ bool runScriptedBrush(EditorSession& session, BrushTool& brush,
                       const BrushParams& params, int cx, int cy,
                       std::string& errorOut, int timeoutMs = 20000);
 
+/// UI hook for the scripted brush's showInfoMessageBox/showErrorMessageBox:
+/// the core is Qt-free, so the UI layer installs this callback and the core
+/// forwards every message to it (isError selects the info/error mode).
+/// The hook may be null — messages are then dropped silently.
+void setScriptedBrushMessageHook(void (*hook)(bool isError,
+                                             const std::string& text));
+
 } // namespace MapEditor

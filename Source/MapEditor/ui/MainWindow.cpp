@@ -13,6 +13,7 @@
 #include <NewWorldWizard.h>
 #include <MarkerPanel.h>
 #include <PalettePanel.h>
+#include <ScriptedBrush.h>
 #include <ViewportRenderer.h>
 #include <ViewportWidget.h>
 #include <WorldFiles.h>
@@ -901,6 +902,23 @@ MainWindow::MainWindow(QWidget *parent)
 
     // T3.2 — the type/mode buttons of the Brush toolbar drive the tool.
     createBrushActions();
+
+    // The scripted brush's showInfoMessageBox/showErrorMessageBox execute in
+    // the Qt-free core — forward them to a QMessageBox here (information vs
+    // critical mode). A non-capturing lambda converts to the function
+    // pointer the hook takes.
+    MapEditor::setScriptedBrushMessageHook(
+        [](bool isError, const std::string& text) {
+            const QString message = QString::fromStdString(text);
+            if (isError) {
+                QMessageBox::critical(nullptr, QStringLiteral("Scripted Brush"),
+                                      message);
+            } else {
+                QMessageBox::information(nullptr,
+                                         QStringLiteral("Scripted Brush"),
+                                         message);
+            }
+        });
 
     buildMenuBar();
     buildViewToolbar();

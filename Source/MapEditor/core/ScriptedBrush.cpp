@@ -15,6 +15,13 @@
 //   paintVeryLightDam(pos, radius, square)
 //   paintColor(pos, red, green, blue, radius, square)
 //
+//   getDamHeight(pos)                  -> int     dam height (whole voxels,
+//                                                 0 where no dam)
+//   getGeoColor(pos)                   -> {r,g,b} SurBuf index resolved
+//   getDamColor(pos)                   -> {r,g,b} through the Geo/Dam palette
+//   showInfoMessageBox(text)           -> the UI message hook (info mode)
+//   showErrorMessageBox(text)           -> the UI message hook (error mode)
+//
 //   pos    = {x: int, y: int}             map cell
 //   radius = int >= 1 (circle radius or square half-side), clamped to the
 //            editor brush radius cap
@@ -26,7 +33,11 @@
 // Every op routes through BrushTool::applyMask with the Dam mode, so each
 // behaves exactly like the corresponding editor brush (layer gating,
 // hardness, SurBuf re-derivation, grid/render updates). All ops of one
-// evaluation share ONE undo entry via the session undo group.
+// evaluation share ONE undo entry via the session undo group. The read*
+// getters range-check the position (a pos outside the map throws). The
+// message boxes are forwarded to the hook installed with
+// setScriptedBrushMessageHook() — the Qt-free core never touches QMessageBox
+// itself.
 // ============================================================================
 
 #include "ScriptedBrush.h"
@@ -37,6 +48,8 @@
 
 #include "BrushTool.h"
 #include "EditorSession.h"
+
+#include "terra.h"
 
 // Global (non-namespaced) C linkage — must stay outside namespace MapEditor.
 #include "scripted_brush_timeout.h"
@@ -229,6 +242,96 @@ duk_ret_t apiPaintColor(duk_context* ctx)
     return applyOp(ctx, BrushEffect::SetColor, (r << 16) | (g << 8) | b, true);
 }
 
+/// Shared tail of the read* bindings: reads the {x, y} position and
+/// range-checks it against the loaded map. Throws a duktape error (which
+/// aborts the evaluation with a clear brush.js message) when the argument
+/// is not a position object or lies outside the map.
+void readMapPositionOrThrow(duk_context* ctx, int idx, int& off)
+{
+    int x = 0;
+    int y = 0;
+    if (!readPosition(ctx, idx, x, y)) {
+        duk_error(ctx, DUK_ERR_TYPE_ERROR,
+                  "first argument must be a position {x, y}");
+    }
+    if (x < 0 || y < 0 || x >= static_cast<int>(vMap.H_SIZE) ||
+        y >= static_cast<int>(vMap.V_SIZE)) {
+        duk_error(ctx, DUK_ERR_RANGE_ERROR,
+                  "position (%d, %d) is outside the map (%d x %d)", x, y,
+                  static_cast<int>(vMap.H_SIZE),
+                  static_cast<int>(vMap.V_SIZE));
+    }
+    off = y * static_cast<int>(vMap.H_SIZE) + x;
+}
+
+duk_ret_t apiGetDamHeight(duk_context* ctx)
+{
+    int off = 0;
+    readMapPositionOrThrow(ctx, 0, off);
+    // The dam height is the top surface while a dam is deployed; a dam-free
+    // cell has no dam layer at all — report 0 there (whole voxels, like the
+    // heights the height API takes).
+    const int height = vMap.VxDBuf[off] != 0
+        ? static_cast<int>(vMap.SGetAlt(off)) >> VX_FRACTION
+        : 0;
+    duk_push_int(ctx, height);
+    return 1;
+}
+
+/// Shared tail of getGeoColor/getDamColor: the SurBuf index of the cell
+/// resolved through the requested layer's palette (the game model: one
+/// index per cell, GeoPal or DamPal depending on the layer — vrtMap::
+/// convertPal2TableSurCol, VMAP.cpp:1367).
+duk_ret_t pushLayerColor(duk_context* ctx, EditorSession::PaletteLayer layer)
+{
+    int off = 0;
+    readMapPositionOrThrow(ctx, 0, off);
+    const unsigned int rgb =
+        getEnv(ctx)->session->paletteRgb(layer, vMap.SurBuf[off]);
+    duk_idx_t obj = duk_push_object(ctx);
+    duk_push_int(ctx, static_cast<int>((rgb >> 16) & 0xFF));
+    duk_put_prop_string(ctx, obj, "r");
+    duk_push_int(ctx, static_cast<int>((rgb >> 8) & 0xFF));
+    duk_put_prop_string(ctx, obj, "g");
+    duk_push_int(ctx, static_cast<int>(rgb & 0xFF));
+    duk_put_prop_string(ctx, obj, "b");
+    return 1;
+}
+
+duk_ret_t apiGetGeoColor(duk_context* ctx)
+{
+    return pushLayerColor(ctx, EditorSession::PaletteLayer::Geo);
+}
+
+duk_ret_t apiGetDamColor(duk_context* ctx)
+{
+    return pushLayerColor(ctx, EditorSession::PaletteLayer::Dam);
+}
+
+/// The message-box hook (installed by the Qt UI; see
+/// setScriptedBrushMessageHook). Null = messages drop silently.
+void (*g_messageBoxHook)(bool isError, const std::string& text) = nullptr;
+
+duk_ret_t apiShowMessageBox(duk_context* ctx, bool isError)
+{
+    // duk_safe_to_string: any JS value becomes readable text.
+    const std::string text = duk_safe_to_string(ctx, 0);
+    if (g_messageBoxHook) {
+        g_messageBoxHook(isError, text);
+    }
+    return 0;
+}
+
+duk_ret_t apiShowInfoMessageBox(duk_context* ctx)
+{
+    return apiShowMessageBox(ctx, false);
+}
+
+duk_ret_t apiShowErrorMessageBox(duk_context* ctx)
+{
+    return apiShowMessageBox(ctx, true);
+}
+
 /// Registers one global function.
 void registerBinding(duk_context* ctx, const char* name, duk_c_function fn,
                      duk_idx_t nargs)
@@ -336,6 +439,11 @@ bool runScriptedBrush(EditorSession& session, BrushTool& brush,
         registerBinding(ctx, "paintSoot", apiPaintSoot, 3);
         registerBinding(ctx, "paintVeryLightDam", apiPaintVeryLightDam, 3);
         registerBinding(ctx, "paintColor", apiPaintColor, 6);
+        registerBinding(ctx, "getDamHeight", apiGetDamHeight, 1);
+        registerBinding(ctx, "getGeoColor", apiGetGeoColor, 1);
+        registerBinding(ctx, "getDamColor", apiGetDamColor, 1);
+        registerBinding(ctx, "showInfoMessageBox", apiShowInfoMessageBox, 1);
+        registerBinding(ctx, "showErrorMessageBox", apiShowErrorMessageBox, 1);
 
         if (compileScript(ctx, params.script, errorOut)) {
             if (duk_pcall(ctx, 0) == DUK_EXEC_SUCCESS) {
@@ -355,6 +463,12 @@ bool runScriptedBrush(EditorSession& session, BrushTool& brush,
     // into the single undo entry.
     session.endUndoGroup();
     return ok;
+}
+
+void setScriptedBrushMessageHook(void (*hook)(bool isError,
+                                              const std::string& text))
+{
+    g_messageBoxHook = hook;
 }
 
 } // namespace MapEditor

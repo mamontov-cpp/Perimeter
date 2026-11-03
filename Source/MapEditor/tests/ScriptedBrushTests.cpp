@@ -35,6 +35,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -45,6 +46,16 @@ using MapEditor::BrushEffect;
 using MapEditor::BrushMode;
 using MapEditor::BrushParams;
 using MapEditor::BrushTool;
+
+/// Captures the showInfoMessageBox/showErrorMessageBox texts for the
+/// message-hook test (the core is Qt-free, so the test installs this hook
+/// instead of a QMessageBox).
+std::vector<std::pair<bool, std::string>> g_capturedMessages;
+
+void captureMessageHook(bool isError, const std::string& text)
+{
+    g_capturedMessages.emplace_back(isError, text);
+}
 
 /// Byte-exact four-buffer snapshot of a region (for the undo check).
 struct RegionBytes
@@ -330,6 +341,123 @@ bool runScriptedBrushTests()
                      "the abort must mention the time limit: %s", error.c_str());
     }
     std::printf("[PASS] the execution time limit aborts endless scripts.\n");
+
+    // ------------------------------------------------------------------
+    // 4: the getter/message API: getDamHeight, getGeoColor/getDamColor and
+    //    the message-box hook. The script checks the deterministic values
+    //    itself (a throw fails the stamp with the message) and writes the
+    //    read-back RGB channels into probe cells the C++ side compares
+    //    against the palette.
+    // ------------------------------------------------------------------
+    cx += 64;
+    {
+        // With no hook installed the message boxes must drop silently.
+        MapEditor::setScriptedBrushMessageHook(nullptr);
+        BrushParams silent = params;
+        silent.script = "showInfoMessageBox('dropped'); "
+                        "showErrorMessageBox('dropped');";
+        TEST_REQUIRE(brush.applyStamp(cx, cy, silent),
+                     "message boxes without a hook must not fail the stamp.");
+        TEST_REQUIRE(g_capturedMessages.empty(),
+                     "no hook must capture nothing.");
+
+        MapEditor::setScriptedBrushMessageHook(&captureMessageHook);
+        g_capturedMessages.clear();
+
+        params.script = R"JS(
+            var p = getCurrentPos();
+            // A dam pad at a known absolute height + a painted dammed cell.
+            setHeight({x: p.x + 8, y: p.y}, 55, 3, false);
+            setHeight({x: p.x - 8, y: p.y}, 30, 2, false);
+            paintColor({x: p.x - 8, y: p.y}, 255, 0, 0, 2, false);
+
+            if (getDamHeight({x: p.x + 8, y: p.y}) !== 55) {
+                throw new Error("getDamHeight must read 55, got " +
+                                getDamHeight({x: p.x + 8, y: p.y}));
+            }
+            if (getDamHeight({x: p.x + 40, y: p.y}) !== 0) {
+                throw new Error("getDamHeight on a dam-free cell must be 0");
+            }
+            var threw = false;
+            try { getDamHeight({x: -5, y: 0}); } catch (e) { threw = true; }
+            if (!threw) {
+                throw new Error("getDamHeight outside the map must throw");
+            }
+            threw = false;
+            try { getGeoColor({x: 1e6, y: 0}); } catch (e) { threw = true; }
+            if (!threw) {
+                throw new Error("getGeoColor outside the map must throw");
+            }
+
+            // The color getters return {r, g, b} numbers.
+            var gc = getGeoColor({x: p.x - 8, y: p.y});
+            var dc = getDamColor({x: p.x - 8, y: p.y});
+            if (typeof gc.r !== "number" || typeof gc.g !== "number" ||
+                typeof gc.b !== "number" ||
+                typeof dc.r !== "number" || typeof dc.g !== "number" ||
+                typeof dc.b !== "number") {
+                throw new Error("getGeoColor/getDamColor must return {r,g,b}");
+            }
+
+            // Write the read-back channels into probe cells for the C++
+            // side (one 3x3 stamp per channel, spaced so no probe is
+            // rewritten by a neighbour's stamp).
+            setHeight({x: p.x,      y: p.y + 20}, gc.r, 1, true);
+            setHeight({x: p.x + 4,  y: p.y + 20}, gc.g, 1, true);
+            setHeight({x: p.x + 8,  y: p.y + 20}, gc.b, 1, true);
+            setHeight({x: p.x + 16, y: p.y + 20}, dc.r, 1, true);
+            setHeight({x: p.x + 20, y: p.y + 20}, dc.g, 1, true);
+            setHeight({x: p.x + 24, y: p.y + 20}, dc.b, 1, true);
+
+            showInfoMessageBox("info text from script");
+            showErrorMessageBox("error text from script");
+        )JS";
+        TEST_REQUIRE(brush.applyStamp(cx, cy, params),
+                     "the getter/message stamp failed: %s",
+                     brush.lastScriptError().c_str());
+
+        // The probe cells carry the RGB channels the script read.
+        const auto wholeAt = [](int x, int y) {
+            return static_cast<int>(vMap.SGetAlt(x, y)) >> VX_FRACTION;
+        };
+        const int paintOff = cy * mapW + (cx - 8);
+        const int index = vMap.SurBuf[paintOff];
+        const unsigned int geoRgb = session.paletteRgb(
+            MapEditor::EditorSession::PaletteLayer::Geo, index);
+        const unsigned int damRgb = session.paletteRgb(
+            MapEditor::EditorSession::PaletteLayer::Dam, index);
+        TEST_REQUIRE(wholeAt(cx, cy + 20) == ((geoRgb >> 16) & 0xFF) &&
+                         wholeAt(cx + 4, cy + 20) == ((geoRgb >> 8) & 0xFF) &&
+                         wholeAt(cx + 8, cy + 20) == (geoRgb & 0xFF),
+                     "getGeoColor must resolve SurBuf[%d] through the Geo "
+                     "palette.", index);
+        TEST_REQUIRE(wholeAt(cx + 16, cy + 20) == ((damRgb >> 16) & 0xFF) &&
+                         wholeAt(cx + 20, cy + 20) == ((damRgb >> 8) & 0xFF) &&
+                         wholeAt(cx + 24, cy + 20) == (damRgb & 0xFF),
+                     "getDamColor must resolve SurBuf[%d] through the Dam "
+                     "palette.", index);
+
+        // Both message boxes reached the hook, in order, with their modes.
+        TEST_REQUIRE(g_capturedMessages.size() == 2,
+                     "exactly two message boxes expected, got %d.",
+                     static_cast<int>(g_capturedMessages.size()));
+        TEST_REQUIRE(!g_capturedMessages[0].first &&
+                         g_capturedMessages[0].second == "info text from script",
+                     "showInfoMessageBox must arrive as info text.");
+        TEST_REQUIRE(g_capturedMessages[1].first &&
+                         g_capturedMessages[1].second == "error text from script",
+                     "showErrorMessageBox must arrive as error text.");
+        MapEditor::setScriptedBrushMessageHook(nullptr);
+
+        // The whole evaluation (fixture + probes) is one undo entry.
+        TEST_REQUIRE(session.canUndo(),
+                     "the getter stamp must create one undo entry.");
+        TEST_REQUIRE(session.undo(), "the getter stamp undo failed.");
+        TEST_REQUIRE(wholeAt(cx + 8, cy) != 55,
+                     "undo must revert the fixture pad.");
+    }
+    std::printf("[PASS] getDamHeight/getGeoColor/getDamColor read the world "
+                "and the message boxes reach the hook.\n");
 
     return true;
 }

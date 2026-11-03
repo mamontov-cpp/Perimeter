@@ -2036,6 +2036,23 @@ void ViewportWidget::mouseMoveEvent(QMouseEvent *event)
         return;
     }
 
+    // A modal message box shown during stamp evaluation (the scripted
+    // brush's showInfoMessageBox/showErrorMessageBox, the script-error box)
+    // swallows the button release: the dialog eats it, the viewport never
+    // sees mouseReleaseEvent and the stroke flag would stay latched —
+    // stamping again on every later HOVER move. The physical button state
+    // is authoritative: clear a stale stroke/pick flag and never stamp
+    // unless the left button is really held.
+    const bool leftHeld = (event->buttons() & Qt::LeftButton) != 0;
+    if (brushPainting_ && !leftHeld) {
+        brushPainting_ = false;
+        setCursor(paintCursorShape());
+    }
+    if (picking_ && !leftHeld) {
+        picking_ = false;
+        setCursor(paintCursorShape());
+    }
+
     // Compute the cell under cursor in the CURRENT view mode (TopDown is a
     // linear map; Oblique ray-picks the voxel surface) and emit only when it
     // changes.
