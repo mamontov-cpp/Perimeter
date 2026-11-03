@@ -138,6 +138,13 @@ enum class BrushEffect
     /// step is negative and overlapping displaced points keep the LOWEST z
     /// (the shrinking envelope). Shrinks forms inward-and-down.
     Deflate,
+    /// Sculpting — Dam mode only. The reference is a normalized GAUSSIAN
+    /// BLUR of the pre-edit height field (convolution with an isotropic
+    /// kernel of params.blurRadius, sigma = blurRadius/2): every covered
+    /// cell moves the sculptEffect fraction towards its blurred height.
+    /// Preserves planes exactly (weights sum to 1); kills noise smaller
+    /// than the blur radius.
+    GaussianBlur,
 };
 
 /// The largest stamp radius the editor allows (map cells). The game's own
@@ -202,6 +209,11 @@ struct BrushParams
     /// stamp, smaller values blend progressively.
     double sculptEffect = 0.5;
 
+    /// GaussianBlur: the convolution radius in cells — strictly LESS than
+    /// the stamp radius (BrushTool::clampBlurRadius enforces it); the
+    /// kernel sigma is blurRadius/2.
+    int blurRadius = 4;
+
     /// T3.5 (reworked): when true, the loaded image mask (BrushTool::
     /// setImageMask) replaces the shape/radius stamp as the brush geometry
     /// for every terrain effect — the image pixel value is the per-cell
@@ -224,6 +236,7 @@ struct BrushParams
                std::abs(polygonAngleDeg - other.polygonAngleDeg) < 1e-9 &&
                // Same for the sculpt fraction (comes out of spinbox math).
                std::abs(sculptEffect - other.sculptEffect) < 1e-9 &&
+               blurRadius == other.blurRadius &&
                script == other.script &&
                useImageMask == other.useImageMask;
     }
@@ -352,6 +365,9 @@ public:
     static double clampPolygonAngleDeg(double deg);
     /// Sculpting fraction clamped into [0,1] (Smooth / Flatten).
     static double clampSculptEffect(double effect);
+    /// Gaussian-blur convolution radius clamped into
+    /// [1, stampRadius - 1] — the blur must stay smaller than the stamp.
+    static int clampBlurRadius(int blurRadius, int stampRadius);
     /// Largest stroke width the unfilled shapes can take: the stamp's own
     /// extent (2*radius+1 cells) — a thicker band would leave the footprint.
     static int maxThickness(int radius);

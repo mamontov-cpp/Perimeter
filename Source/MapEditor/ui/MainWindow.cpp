@@ -743,6 +743,38 @@ QIcon makeDeflateBrushIcon()
     return QIcon(pm);
 }
 
+/// Gaussian-blur glyph: a soft bell kernel over a noisy profile.
+QIcon makeGaussianBlurBrushIcon()
+{
+    QPixmap pm(22, 22);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    // Noisy profile (before).
+    p.setPen(QPen(QColor(100, 140, 180), 1.4, Qt::SolidLine, Qt::RoundCap));
+    QPolygonF noise;
+    noise << QPointF(3.0, 12.0) << QPointF(5.0, 9.0) << QPointF(7.0, 12.5)
+          << QPointF(9.0, 8.5) << QPointF(11.0, 12.0) << QPointF(13.0, 9.0)
+          << QPointF(15.0, 12.5) << QPointF(17.0, 9.5) << QPointF(19.0, 12.0);
+    p.drawPolyline(noise);
+    // The smooth blurred curve (after).
+    p.setPen(QPen(kAccent, 1.9, Qt::SolidLine, Qt::RoundCap));
+    QPainterPath smooth(QPointF(3.0, 12.0));
+    smooth.cubicTo(QPointF(7.0, 10.5), QPointF(9.0, 10.5), QPointF(11.0, 10.8));
+    smooth.cubicTo(QPointF(13.0, 11.0), QPointF(15.0, 10.6),
+                   QPointF(19.0, 12.0));
+    p.drawPath(smooth);
+    // The kernel bell.
+    p.setPen(QPen(kInk, 1.1));
+    p.setBrush(QColor(120, 170, 220, 90));
+    QPainterPath bell(QPointF(4.0, 19.0));
+    bell.cubicTo(QPointF(7.0, 18.6), QPointF(8.0, 15.5), QPointF(11.0, 15.2));
+    bell.cubicTo(QPointF(14.0, 15.5), QPointF(15.0, 18.6), QPointF(18.0, 19.0));
+    bell.closeSubpath();
+    p.drawPath(bell);
+    return QIcon(pm);
+}
+
 /// T3.5: Convert a QImage to a BrushMask (pixel alpha → influence).
 /// Transparent pixels (alpha = 0) carry no effect; non-transparent ones
 /// influence the brush proportionally to their alpha (anti-aliased edges
@@ -2047,6 +2079,7 @@ void MainWindow::buildSculptToolbar()
     bar->addAction(actBrushTricubic_);
     bar->addAction(actBrushInflate_);
     bar->addAction(actBrushDeflate_);
+    bar->addAction(actBrushGaussianBlur_);
 
     // The fraction spinbox (0..1) shared by both sculpting brushes: the part
     // of the distance towards the reference (average / fitted plane) that
@@ -2069,6 +2102,26 @@ void MainWindow::buildSculptToolbar()
                 brushTool_->setParams(params);
             });
     bar->addWidget(sculptEffectSpin_);
+
+    // The Gaussian-blur convolution radius: strictly less than the stamp
+    // radius — the maximum follows the brush-radius spinbox (synced in
+    // syncBrushControls, like the stroke width does).
+    blurRadiusSpin_ = new QSpinBox(bar);
+    blurRadiusSpin_->setObjectName(QStringLiteral("blurRadiusSpin"));
+    blurRadiusSpin_->setRange(1, MapEditor::BrushTool::maxRadius() - 1);
+    blurRadiusSpin_->setValue(4);
+    blurRadiusSpin_->setSuffix(tr(" c"));
+    blurRadiusSpin_->setToolTip(
+        tr("Gaussian-blur kernel radius in cells (strictly less than the "
+           "stamp radius; sigma = radius/2). Only active with the Gaussian "
+           "Blur brush."));
+    connect(blurRadiusSpin_, &QSpinBox::valueChanged, this, [this](int value) {
+        MapEditor::BrushParams params = brushTool_->params();
+        params.blurRadius = value;
+        brushTool_->setParams(params);
+        syncBrushControls();
+    });
+    bar->addWidget(blurRadiusSpin_);
 
     // Type buttons are created in createBrushActions() — mirror the rest of
     // the initial control state into the new toolbar.
@@ -2303,6 +2356,15 @@ void MainWindow::createBrushActions()
            "inward-and-down. Where displaced parts intersect, the LOWER "
            "height wins. Uses the same fraction spinbox as Smooth/Flatten."),
         MapEditor::BrushEffect::Deflate);
+    actBrushGaussianBlur_ = addSculptType(
+        makeGaussianBlurBrushIcon(), tr("Gaussian Blur"),
+        tr("Sculpting (Dam layer only): convolves the surface under the "
+           "stamp with a Gaussian kernel (radius = the blur-radius "
+           "spinbox, sigma = radius/2) and moves every covered cell a "
+           "fraction towards its blurred height — planes reproduce "
+           "exactly, noise smaller than the radius dies. Uses the same "
+           "fraction spinbox as the other sculpting brushes."),
+        MapEditor::BrushEffect::GaussianBlur);
 
     // T3.5 — load brush image from file. The loaded image becomes the stamp
     // mask of the CURRENT brush type (raise/lower/level/... — the image
@@ -2375,7 +2437,8 @@ void MainWindow::createBrushActions()
                  params.effect == MapEditor::BrushEffect::Flatten ||
                  params.effect == MapEditor::BrushEffect::Tricubic ||
                  params.effect == MapEditor::BrushEffect::Inflate ||
-                 params.effect == MapEditor::BrushEffect::Deflate)) {
+                 params.effect == MapEditor::BrushEffect::Deflate ||
+                 params.effect == MapEditor::BrushEffect::GaussianBlur)) {
                 params.effect = MapEditor::BrushEffect::ChangeHeight;
                 params.direction = 1;
             }
@@ -2765,6 +2828,21 @@ void MainWindow::syncBrushControls()
              params.effect == MapEditor::BrushEffect::Inflate);
     syncType(actBrushDeflate_,
              params.effect == MapEditor::BrushEffect::Deflate);
+    syncType(actBrushGaussianBlur_,
+             params.effect == MapEditor::BrushEffect::GaussianBlur);
+
+    // Blur radius mirrors the tool; its maximum follows the stamp radius
+    // (it must stay strictly smaller).
+    if (blurRadiusSpin_) {
+        const int maxBlur =
+            MapEditor::BrushTool::clampBlurRadius(INT_MAX, params.radius);
+        blurRadiusSpin_->setMaximum(maxBlur);
+        if (blurRadiusSpin_->value() != params.blurRadius) {
+            blurRadiusSpin_->blockSignals(true);
+            blurRadiusSpin_->setValue(params.blurRadius);
+            blurRadiusSpin_->blockSignals(false);
+        }
+    }
 
     // Sculpting fraction spinbox mirrors the tool (shared by both types).
     if (sculptEffectSpin_) {
@@ -4069,7 +4147,7 @@ void MainWindow::updateActionStates()
                             actBrushScript_, actBrushScriptEdit_,
                             actBrushSmooth_, actBrushFlatten_,
                             actBrushTricubic_, actBrushInflate_,
-                            actBrushDeflate_,
+                            actBrushDeflate_, actBrushGaussianBlur_,
                             actLoadBrushImage_,
                             actShapeCircle_, actShapeSquare_,
                             actShapeCircleOutline_, actShapeSquareOutline_,
@@ -4097,7 +4175,8 @@ void MainWindow::updateActionStates()
          brushTool_->params().effect == MapEditor::BrushEffect::Flatten ||
          brushTool_->params().effect == MapEditor::BrushEffect::Tricubic ||
          brushTool_->params().effect == MapEditor::BrushEffect::Inflate ||
-         brushTool_->params().effect == MapEditor::BrushEffect::Deflate);
+         brushTool_->params().effect == MapEditor::BrushEffect::Deflate ||
+         brushTool_->params().effect == MapEditor::BrushEffect::GaussianBlur);
     if (actBrushGeo_) {
         actBrushGeo_->setEnabled(worldLoaded && !decalEffect && !scriptEffect &&
                                  !sculptEffect);
@@ -4110,6 +4189,12 @@ void MainWindow::updateActionStates()
                                       !decalEffect &&
                                       brushTool_->params().effect !=
                                           MapEditor::BrushEffect::PickColor);
+    }
+    // The blur radius applies only with the Gaussian-blur brush selected.
+    if (blurRadiusSpin_) {
+        blurRadiusSpin_->setEnabled(worldLoaded && brushTool_ &&
+                                    brushTool_->params().effect ==
+                                        MapEditor::BrushEffect::GaussianBlur);
     }
     // T3.1 — the stamp radius applies to every form except the image stamps
     // (the brush image and the decal carry their own size) and the

@@ -374,6 +374,8 @@ BrushParams clampedParams(const BrushParams& params)
     clamped.polygonSides = BrushTool::clampPolygonSides(clamped.polygonSides);
     clamped.polygonAngleDeg = BrushTool::clampPolygonAngleDeg(clamped.polygonAngleDeg);
     clamped.sculptEffect = BrushTool::clampSculptEffect(clamped.sculptEffect);
+    clamped.blurRadius = BrushTool::clampBlurRadius(clamped.blurRadius,
+                                                    clamped.radius);
     if (clamped.direction != 0) {
         clamped.direction = clamped.direction > 0 ? 1 : -1;
     }
@@ -437,6 +439,11 @@ double BrushTool::clampSculptEffect(double effect)
     return std::clamp(effect, 0.0, 1.0);
 }
 
+int BrushTool::clampBlurRadius(int blurRadius, int stampRadius)
+{
+    return std::clamp(blurRadius, 1, std::max(1, stampRadius - 1));
+}
+
 bool BrushTool::effectSupported(BrushEffect effect)
 {
     switch (effect) {
@@ -455,6 +462,7 @@ bool BrushTool::effectSupported(BrushEffect effect)
     case BrushEffect::Tricubic:        // sculpting (two-pass, in applyMask)
     case BrushEffect::Inflate:         // sculpting (two-pass, in applyMask)
     case BrushEffect::Deflate:         // sculpting (two-pass, in applyMask)
+    case BrushEffect::GaussianBlur:    // sculpting (two-pass, in applyMask)
         return true;
     default:
         return false;
@@ -635,7 +643,8 @@ bool BrushTool::applyMask(const BrushMask& absoluteMask, const BrushParams& para
          params.effect == BrushEffect::Flatten ||
          params.effect == BrushEffect::Tricubic ||
          params.effect == BrushEffect::Inflate ||
-         params.effect == BrushEffect::Deflate) &&
+         params.effect == BrushEffect::Deflate ||
+         params.effect == BrushEffect::GaussianBlur) &&
         params.mode != BrushMode::Dam) {
         return false; // sculpting operates on the dam layer only
     }
@@ -648,7 +657,8 @@ bool BrushTool::applyMask(const BrushMask& absoluteMask, const BrushParams& para
         params.effect == BrushEffect::Flatten ||
         params.effect == BrushEffect::Tricubic ||
         params.effect == BrushEffect::Inflate ||
-        params.effect == BrushEffect::Deflate) {
+        params.effect == BrushEffect::Deflate ||
+        params.effect == BrushEffect::GaussianBlur) {
         return applySculpt(absoluteMask, params, bx, by, bxEnd, byEnd);
     }
 
@@ -1023,6 +1033,67 @@ bool BrushTool::applySculpt(const BrushMask& absoluteMask,
             references[k] = it != target.end()
                                 ? static_cast<double>(it->second)
                                 : static_cast<double>(alts[k]);
+        }
+    } else if (params.effect == BrushEffect::GaussianBlur) {
+        // Normalized isotropic Gaussian convolution of the pre-edit
+        // heights (kernel radius params.blurRadius, sigma = radius/2) —
+        // the reference is the blurred height at the cell. The sample
+        // grid extends blurRadius past the bbox so the kernel always
+        // reads REAL neighbour heights (edge replication would bend
+        // slopes at the rim). Weights sum to 1, so planes reproduce
+        // exactly and only features smaller than the radius die.
+        const int mapW = static_cast<int>(vMap.H_SIZE);
+        const int mapH = static_cast<int>(vMap.V_SIZE);
+        const int br = clampBlurRadius(params.blurRadius, kMaxBrushRadius);
+        const int gx0 = std::max(0, bx - br);
+        const int gy0 = std::max(0, by - br);
+        const int gx1 = std::min(mapW, bxEnd + br);
+        const int gy1 = std::min(mapH, byEnd + br);
+        const int gw = gx1 - gx0;
+        const int gh = gy1 - gy0;
+        std::vector<int> gridAlts(static_cast<std::size_t>(gw) * gh);
+        for (int j = 0; j < gh; ++j) {
+            for (int i = 0; i < gw; ++i) {
+                gridAlts[static_cast<std::size_t>(j) * gw + i] =
+                    vMap.SGetAlt((gy0 + j) * mapW + (gx0 + i));
+            }
+        }
+        const auto heightAt = [&](int absX, int absY) {
+            return gridAlts[static_cast<std::size_t>(
+                                std::clamp(absY - gy0, 0, gh - 1)) *
+                                gw +
+                            std::clamp(absX - gx0, 0, gw - 1)];
+        };
+        if (br < 1) {
+            const SculptPlane plane = fitSculptPlane(dxs, dys, alts);
+            std::fill(references.begin(), references.end(), plane.offset);
+        } else {
+            const double sigma = br * 0.5;
+            const int side = 2 * br + 1;
+            std::vector<double> kernel(static_cast<std::size_t>(side) * side);
+            double weightSum = 0.0;
+            for (int dy = -br; dy <= br; ++dy) {
+                for (int dx = -br; dx <= br; ++dx) {
+                    const double w =
+                        std::exp(-(dx * dx + dy * dy) / (2.0 * sigma * sigma));
+                    kernel[static_cast<std::size_t>(dy + br) * side + (dx + br)] =
+                        w;
+                    weightSum += w;
+                }
+            }
+            for (std::size_t k = 0; k < offs.size(); ++k) {
+                const int absX = cx + dxs[k];
+                const int absY = cy + dys[k];
+                double sum = 0.0;
+                for (int dy = -br; dy <= br; ++dy) {
+                    for (int dx = -br; dx <= br; ++dx) {
+                        sum += kernel[static_cast<std::size_t>(dy + br) * side +
+                                      (dx + br)] *
+                               heightAt(absX + dx, absY + dy);
+                    }
+                }
+                references[k] = sum / weightSum;
+            }
         }
     } else {
         const SculptPlane plane = fitSculptPlane(dxs, dys, alts);

@@ -361,6 +361,10 @@ private:
     QAction *actBrushTricubic_ = nullptr;
     QAction *actBrushInflate_ = nullptr;
     QAction *actBrushDeflate_ = nullptr;
+    QAction *actBrushGaussianBlur_ = nullptr;
+    // Gaussian-blur convolution radius (cells) — always less than the
+    // stamp radius (the maximum follows the brush-radius spinbox).
+    QSpinBox *blurRadiusSpin_ = nullptr;
     // The script source kept by the window (loaded into BrushParams::script
     // when the scripted brush runs) and the stamp preview shape picked in
     // the script editor.

@@ -203,8 +203,8 @@ bool runSculptBrushTests()
         prep.mode = BrushMode::Dam;
         prep.radius = 4;
         prep.script = "var p = getCurrentPos();\n"
-                      "for (var dy = -7; dy <= 7; dy++)\n"
-                      "  for (var dx = -7; dx <= 7; dx++)\n"
+                      "for (var dy = -12; dy <= 12; dy++)\n"
+                      "  for (var dx = -12; dx <= 12; dx++)\n"
                       "    setHeight({x: p.x + dx, y: p.y + dy}, " +
                       std::to_string(base) + " + " +
                       std::to_string(slope) + " * dx, 1, false);\n";
@@ -603,15 +603,117 @@ bool runSculptBrushTests()
                 "resolve intersections by max/min.\n");
 
     // ------------------------------------------------------------------
-    // 5: Geo mode is refused without touching the world.
+    // 5: Gaussian blur — planes reproduce exactly (weights sum to 1);
+    //    block noise dies; the radius clamps below the stamp radius.
+    // ------------------------------------------------------------------
+    cx += 64;
+    preparePlane(kBase, kSlope);
+    ++expectedUndos;
+    {
+        const auto pre = measuredHeights();
+        const int preSpread =
+            pre.at({kRadius, 0}) - pre.at({-kRadius, 0});
+
+        BrushParams blur;
+        blur.effect = BrushEffect::GaussianBlur;
+        blur.mode = BrushMode::Dam;
+        blur.shape = BrushShape::FilledCircle;
+        blur.radius = kRadius;
+        blur.blurRadius = 2;
+        blur.sculptEffect = 1.0;
+        TEST_REQUIRE(brush.applyStamp(cx, cy, blur),
+                     "the Gaussian-blur stamp was refused.");
+        ++expectedUndos;
+
+        const auto post = measuredHeights();
+        TEST_REQUIRE(post.at({kRadius, 0}) - post.at({-kRadius, 0}) >=
+                         preSpread - 2,
+                     "Gaussian blur must preserve the large-scale slope.");
+        for (const auto& [c, h] : post) {
+            TEST_REQUIRE(std::abs(h - pre.at(c)) <= 1,
+                         "Gaussian blur over a plane must not move (%d,%d): "
+                         "%d -> %d.",
+                         c.first, c.second, pre.at(c), h);
+        }
+    }
+
+    // Fresh pad with the +/-2 checkerboard noise.
+    cx += 64;
+    {
+        BrushParams prep;
+        prep.effect = BrushEffect::Script;
+        prep.mode = BrushMode::Dam;
+        prep.radius = 4;
+        prep.script =
+            "var p = getCurrentPos();\n"
+            "setHeight({x: p.x, y: p.y}, " +
+            std::to_string(kBase) + ", 11, false);\n"
+            "for (var by = -6; by <= 6; by += 3)\n"
+            "  for (var bx = -6; bx <= 6; bx += 3) {\n"
+            "    var d = (((bx + by) / 3) % 2 === 0) ? 2 : -2;\n"
+            "    setHeight({x: p.x + bx, y: p.y + by}, " +
+            std::to_string(kBase) + " + d, 1, false);\n"
+            "  }\n";
+        std::string error;
+        TEST_REQUIRE(MapEditor::runScriptedBrush(session, scriptBrush, prep,
+                                                 cx, cy, error),
+                     "noise preparation failed: %s", error.c_str());
+        ++expectedUndos;
+
+        // The total deviation from the pad must shrink.
+        long long preDev = 0;
+        {
+            const auto pre = measuredHeights();
+            for (const auto& [c, h] : pre) {
+                preDev += std::abs(h - kBase);
+            }
+        }
+
+        BrushParams blur;
+        blur.effect = BrushEffect::GaussianBlur;
+        blur.mode = BrushMode::Dam;
+        blur.shape = BrushShape::FilledCircle;
+        blur.radius = kRadius;
+        blur.blurRadius = 3;
+        blur.sculptEffect = 1.0;
+        TEST_REQUIRE(brush.applyStamp(cx, cy, blur),
+                     "the Gaussian-blur stamp was refused.");
+        ++expectedUndos;
+
+        long long postDev = 0;
+        int postMaxDev = 0;
+        for (const auto& [c, h] : measuredHeights()) {
+            postDev += std::abs(h - kBase);
+            postMaxDev = std::max(postMaxDev, std::abs(h - kBase));
+        }
+        TEST_REQUIRE(postDev < preDev,
+                     "Gaussian blur must reduce the total deviation "
+                     "(%lld -> %lld).",
+                     preDev, postDev);
+        TEST_REQUIRE(postMaxDev <= 2,
+                     "Gaussian blur must bound the deviation, got %d.",
+                     postMaxDev);
+    }
+
+    // The blur radius clamps strictly below the stamp radius.
+    TEST_REQUIRE(BrushTool::clampBlurRadius(99, kRadius) == kRadius - 1 &&
+                     BrushTool::clampBlurRadius(0, kRadius) == 1 &&
+                     BrushTool::clampBlurRadius(3, kRadius) == 3,
+                 "clampBlurRadius must bound the radius into [1, stamp-1].");
+    std::printf("[PASS] Gaussian blur preserves planes, kills block noise, "
+                "and clamps its radius below the stamp.\n");
+
+    // ------------------------------------------------------------------
+    // 6: Geo mode is refused without touching the world.
     // ------------------------------------------------------------------
     {
         const RegionBytes before =
             RegionBytes::read(regionX, regionY, regionSide, regionSide);
         const bool undoableBefore = session.canUndo();
-        for (BrushEffect effect : {BrushEffect::Smooth, BrushEffect::Flatten,
-                                   BrushEffect::Tricubic, BrushEffect::Inflate,
-                                   BrushEffect::Deflate}) {
+        for (BrushEffect effect :
+             {BrushEffect::Smooth, BrushEffect::Flatten, BrushEffect::Tricubic,
+              BrushEffect::Inflate, BrushEffect::Deflate,
+              BrushEffect::GaussianBlur}) {
             BrushParams geo;
             geo.effect = effect;
             geo.mode = BrushMode::Geo;
@@ -630,7 +732,7 @@ bool runSculptBrushTests()
     std::printf("[PASS] the sculpt brushes refuse the Geo mode untouched.\n");
 
     // ------------------------------------------------------------------
-    // 6: clamps + the whole sequence undoes back to the pristine region.
+    // 7: clamps + the whole sequence undoes back to the pristine region.
     // ------------------------------------------------------------------
     TEST_REQUIRE(BrushTool::clampSculptEffect(1.5) == 1.0 &&
                      BrushTool::clampSculptEffect(-0.5) == 0.0 &&
@@ -655,5 +757,5 @@ bool runSculptBrushTests()
 
 } // namespace
 
-MAP_EDITOR_REGISTER_TEST("Sculpt brushes (Smooth / Flatten)", 91,
+MAP_EDITOR_REGISTER_TEST("Sculpt brushes (Smooth / Flatten / Tricubic / Inflate / Deflate / Gaussian Blur)", 91,
                          runSculptBrushTests);
