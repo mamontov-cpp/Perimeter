@@ -364,6 +364,30 @@ BrushMask BrushMasks::lineStamp(int x0, int y0, int x1, int y1, int stampRadius)
 // Keep the params setter/restorer clamping logic in one place.
 namespace {
 
+/// The height-gate condition (Dam mode only): does the voxel with the
+/// PRE-edit surface height `alt32` (1/32 m units) pass the gate? The gate
+/// compares the INDIVIDUAL voxel's height against gateHeight — one stamp may
+/// edit some covered cells and skip their neighbours. A voxel exactly at
+/// gateHeight fails both conditions (the comparison is strict). None passes
+/// every voxel.
+bool heightGateAllows(const BrushParams& params, int alt32)
+{
+    if (params.heightGate == BrushHeightGate::None) {
+        return true;
+    }
+    const int gate32 = BrushTool::clampGateHeight(params.gateHeight)
+                       << VX_FRACTION;
+    return params.heightGate == BrushHeightGate::Above ? alt32 > gate32
+                                                       : alt32 < gate32;
+}
+
+/// The gate read at a live cell offset (the generic single-pass path: the
+/// cell's own height at the moment it is processed).
+bool heightGateAllowsCell(const BrushParams& params, int off)
+{
+    return heightGateAllows(params, static_cast<int>(vMap.SGetAlt(off)));
+}
+
 BrushParams clampedParams(const BrushParams& params)
 {
     BrushParams clamped = params;
@@ -376,6 +400,7 @@ BrushParams clampedParams(const BrushParams& params)
     clamped.sculptEffect = BrushTool::clampSculptEffect(clamped.sculptEffect);
     clamped.blurRadius = BrushTool::clampBlurRadius(clamped.blurRadius,
                                                     clamped.radius);
+    clamped.gateHeight = BrushTool::clampGateHeight(clamped.gateHeight);
     if (clamped.direction != 0) {
         clamped.direction = clamped.direction > 0 ? 1 : -1;
     }
@@ -437,6 +462,11 @@ double BrushTool::clampPolygonAngleDeg(double deg)
 double BrushTool::clampSculptEffect(double effect)
 {
     return std::clamp(effect, 0.0, 1.0);
+}
+
+int BrushTool::clampGateHeight(int level)
+{
+    return clampHeightLevel(level);
 }
 
 int BrushTool::clampBlurRadius(int blurRadius, int stampRadius)
@@ -647,6 +677,29 @@ bool BrushTool::applyMask(const BrushMask& absoluteMask, const BrushParams& para
          params.effect == BrushEffect::GaussianBlur) &&
         params.mode != BrushMode::Dam) {
         return false; // sculpting operates on the dam layer only
+    }
+    // The height gate (Dam mode only): when every covered voxel fails the
+    // condition the stamp would change nothing — refuse it BEFORE the undo
+    // snapshot so no empty history entry appears.
+    if (params.mode == BrushMode::Dam &&
+        params.heightGate != BrushHeightGate::None) {
+        bool anyPasses = false;
+        for (int y = by; y < byEnd && !anyPasses; ++y) {
+            for (int x = bx; x < bxEnd && !anyPasses; ++x) {
+                const int dx = x - absoluteMask.x;
+                const int dy = y - absoluteMask.y;
+                if (dx < 0 || dy < 0 || dx >= absoluteMask.sx ||
+                    dy >= absoluteMask.sy || !absoluteMask.at(dx, dy)) {
+                    continue;
+                }
+                if (heightGateAllowsCell(params, y * mapW + x)) {
+                    anyPasses = true;
+                }
+            }
+        }
+        if (!anyPasses) {
+            return false;
+        }
     }
     session_.recordUndoArea(bx, by, bxEnd - bx, byEnd - by);
 
@@ -1116,6 +1169,12 @@ bool BrushTool::applySculpt(const BrushMask& absoluteMask,
     // Dam-mode brushes, so the sculpt works on raw geo too.
     static individualToolzer<T2TE_ALIGNMENT_TERRAIN_VARIABLE_H> sculptToolzer;
     for (std::size_t i = 0; i < offs.size(); ++i) {
+        // The height gate (Dam mode only): the decision comes from the
+        // PRE-edit height of the individual voxel — pass 2 must not let one
+        // cell's movement change whether its neighbour is edited.
+        if (!heightGateAllows(params, alts[i])) {
+            continue;
+        }
         const int target32 = std::clamp(
             static_cast<int>(std::llround(references[i])), MIN_VX_HEIGHT,
             MAX_VX_HEIGHT);
@@ -1335,6 +1394,13 @@ void geoAlignUnderDam(int off, int target, int dV)
 void BrushTool::applyEffectToCell(const BrushParams& params, int x, int y, unsigned char influence)
 {
     const int off = y * static_cast<int>(vMap.H_SIZE) + x;
+    // The height gate (Dam mode only, combinable with every effect): skip the
+    // voxel when its own dam height fails the condition. Checked per voxel —
+    // the stamp still edits the neighbours that pass.
+    if (params.mode == BrushMode::Dam &&
+        !heightGateAllowsCell(params, off)) {
+        return;
+    }
     switch (params.effect) {
     case BrushEffect::ChangeHeight: {
         // Terra's own change-height toolzer: hardness scaling, At_*

@@ -227,6 +227,7 @@ private:
     /// 0..1 fraction spinbox. Lives on its OWN row — addToolBarBreak() runs
     /// inside, before the toolbar is inserted into the main window.
     void buildSculptToolbar();
+    void buildModifierToolbar();
     // T3.2 — re-read the tool parameters into the buttons/spinbox state.
     void syncBrushControls();
     // T3.3 — update the color swatch label and spinbox to reflect the
@@ -373,6 +374,16 @@ private:
         MapEditor::ScriptStampShape::Circle;
     // Sculpting fraction (0..1) shared by Smooth / Flatten.
     QDoubleSpinBox *sculptEffectSpin_ = nullptr;
+    // Brush height-gate modifiers (Dam mode only): two mutually exclusive
+    // checkable conditions — apply the effect only where the voxel's dam
+    // height is above / below the gate height — plus the comparison height
+    // spinbox. The actions live in the Brush Modifiers toolbar AND in the
+    // Edit → Brush Modifiers menu (the menu wraps the same actions; its
+    // height spinbox is a synced mirror of the toolbar one).
+    QAction *actGateAbove_ = nullptr;
+    QAction *actGateBelow_ = nullptr;
+    QSpinBox *gateHeightSpin_ = nullptr;
+    QSpinBox *gateHeightMenuSpin_ = nullptr;
     // T3.5 — load-image action: the loaded image becomes the stamp mask of
     // every terrain effect (BrushParams::useImageMask) until a stamp shape
     // is picked explicitly.

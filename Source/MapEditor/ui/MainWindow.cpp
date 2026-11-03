@@ -51,6 +51,7 @@ namespace fs = std::filesystem;
 #include <QMainWindow>
 #include <QMenu>
 #include <QMenuBar>
+#include <QWidgetAction>
 #include <QMessageBox>
 #include <QPainter>
 #include <QPainterPath>
@@ -775,6 +776,37 @@ QIcon makeGaussianBlurBrushIcon()
     return QIcon(pm);
 }
 
+/// Height-gate modifier glyphs: the ground profile, a dashed gate level and
+/// an arrow showing which side of the gate the brush works on (up = apply
+/// where the dam is higher than the gate, down = where it is lower).
+QIcon makeGateIcon(bool above)
+{
+    QPixmap pm(22, 22);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    // The gate level — a dashed horizontal line.
+    QPen gatePen(kAccent);
+    gatePen.setStyle(Qt::DashLine);
+    gatePen.setWidthF(1.5);
+    p.setPen(gatePen);
+    p.drawLine(QPointF(2.0, 8.5), QPointF(20.0, 8.5));
+    // The ground.
+    p.setPen(QPen(kInk, 2.0));
+    drawGroundLine(p, 17.0);
+    // The direction arrow under / above the gate.
+    p.setPen(QPen(kInk, 2.0));
+    const double ax = 11.0;
+    if (above) {
+        p.drawLine(QPointF(ax, 15.0), QPointF(ax, 10.5));
+        drawArrowHead(p, QPointF(ax, 10.5), -90.0);
+    } else {
+        p.drawLine(QPointF(ax, 5.0), QPointF(ax, 14.5));
+        drawArrowHead(p, QPointF(ax, 14.5), 90.0);
+    }
+    return QIcon(pm);
+}
+
 /// T3.5: Convert a QImage to a BrushMask (pixel alpha → influence).
 /// Transparent pixels (alpha = 0) carry no effect; non-transparent ones
 /// influence the brush proportionally to their alpha (anti-aliased edges
@@ -875,6 +907,7 @@ MainWindow::MainWindow(QWidget *parent)
     addToolBarBreak();
     buildBrushToolbar();
     buildSculptToolbar();
+    buildModifierToolbar();
     buildStatusBar();
     buildViewport();
 
@@ -1736,6 +1769,38 @@ void MainWindow::buildEditMenu(QMenuBar *menuBar)
     brushMenu->addAction(actShapeCircleOutline_);
     brushMenu->addAction(actShapeSquareOutline_);
     brushMenu->addAction(actShapeLine_);
+
+    // The height-gate modifiers: the same checkable actions as the Brush
+    // Modifiers toolbar, plus the gate height as a menu-hosted spinbox (a
+    // mirror of the toolbar one — both write BrushParams::gateHeight and
+    // syncBrushControls keeps them equal).
+    QMenu *modifiersMenu = editMenu->addMenu(tr("Brush Mod&ifiers"));
+    modifiersMenu->addAction(actGateAbove_);
+    modifiersMenu->addAction(actGateBelow_);
+    modifiersMenu->addSeparator();
+    gateHeightMenuSpin_ = new QSpinBox(this);
+    gateHeightMenuSpin_->setRange(0, 255);
+    gateHeightMenuSpin_->setSuffix(tr(" vox"));
+    gateHeightMenuSpin_->setToolTip(
+        tr("Gate height (whole voxels; 1 voxel = 1/32 m): the active "
+           "above/below modifier applies the brush effect only to the voxels "
+           "whose dam height is on its side of this height."));
+    connect(gateHeightMenuSpin_, &QSpinBox::valueChanged, this,
+            [this](int value) {
+                MapEditor::BrushParams params = brushTool_->params();
+                params.gateHeight = MapEditor::BrushTool::clampGateHeight(value);
+                brushTool_->setParams(params);
+                if (gateHeightSpin_ &&
+                    gateHeightSpin_->value() != params.gateHeight) {
+                    gateHeightSpin_->blockSignals(true);
+                    gateHeightSpin_->setValue(params.gateHeight);
+                    gateHeightSpin_->blockSignals(false);
+                }
+            });
+    QWidgetAction *gateHeightAction = new QWidgetAction(this);
+    gateHeightAction->setDefaultWidget(gateHeightMenuSpin_);
+    gateHeightAction->setText(tr("Gate Height"));
+    modifiersMenu->addAction(gateHeightAction);
 }
 
 void MainWindow::buildViewMenu(QMenuBar *menuBar)
@@ -2128,6 +2193,55 @@ void MainWindow::buildSculptToolbar()
     updateActionStates();
 }
 
+void MainWindow::buildModifierToolbar()
+{
+    // The toolbar break must come BEFORE the toolbar is inserted: it forces
+    // this toolbar onto its own row below the Sculpting toolbar (same rule
+    // the Sculpting toolbar uses against the View/Brush toolbars).
+    addToolBarBreak();
+
+    QToolBar *bar = addToolBar(tr("Brush Modifiers"));
+    bar->setObjectName(QStringLiteral("ModifierToolbar"));
+    bar->setMovable(false);
+    bar->setFloatable(false);
+    bar->setIconSize(QSize(22, 22));
+    bar->setStyleSheet(
+        QStringLiteral("QToolButton:enabled:hover, QToolButton:enabled:checked "
+                       "{ background: rgba(0, 96, 170, 35); border-radius: 4px; }"));
+
+    // The two mutually exclusive height-gate conditions (created in
+    // createBrushActions() — the same actions the Edit menu carries).
+    bar->addAction(actGateAbove_);
+    bar->addAction(actGateBelow_);
+
+    // The gate comparison height (whole voxels). Enabled only while a gate
+    // is active; its mirror in the Edit → Brush Modifiers menu stays in
+    // sync (see buildEditMenu / syncBrushControls).
+    gateHeightSpin_ = new QSpinBox(bar);
+    gateHeightSpin_->setObjectName(QStringLiteral("gateHeightSpin"));
+    gateHeightSpin_->setRange(0, 255);
+    gateHeightSpin_->setSuffix(tr(" vox"));
+    gateHeightSpin_->setToolTip(
+        tr("Gate height (whole voxels; 1 voxel = 1/32 m): the active "
+           "above/below modifier applies the brush effect only to the voxels "
+           "whose dam height is on its side of this height. Voxels exactly at "
+           "the gate height are never edited. Dam mode only."));
+    connect(gateHeightSpin_, &QSpinBox::valueChanged, this, [this](int value) {
+        MapEditor::BrushParams params = brushTool_->params();
+        params.gateHeight = MapEditor::BrushTool::clampGateHeight(value);
+        brushTool_->setParams(params);
+        if (gateHeightMenuSpin_ &&
+            gateHeightMenuSpin_->value() != params.gateHeight) {
+            gateHeightMenuSpin_->blockSignals(true);
+            gateHeightMenuSpin_->setValue(params.gateHeight);
+            gateHeightMenuSpin_->blockSignals(false);
+        }
+    });
+    bar->addWidget(gateHeightSpin_);
+
+    updateActionStates();
+}
+
 void MainWindow::createBrushActions()
 {
     using Viewport = MapEditor::ViewportWidget;
@@ -2460,6 +2574,61 @@ void MainWindow::createBrushActions()
            "digging it down to the geo height removes it. The dam is always "
            "at or above the geo."),
         MapEditor::BrushMode::Dam);
+
+    // --- Height-gate modifiers (Dam mode only) -------------------------
+    // Two mutually exclusive PER-VOXEL conditions on top of any brush type:
+    // the effect touches a covered voxel only when its own dam height is
+    // above / below the gate height. Both unchecked = no gate. Enabling a
+    // gate forces the Dam layer (the gate reads the dam height). The same
+    // actions live on the Brush Modifiers toolbar and in the Edit menu.
+    const auto addGate = [this](bool above) {
+        QAction *action =
+            new QAction(makeGateIcon(above),
+                        above ? tr("Apply Above Height")
+                              : tr("Apply Below Height"),
+                        this);
+        action->setToolTip(
+            above
+                ? tr("Height-gate modifier (Dam mode only): apply the brush "
+                     "effect only to the voxels whose dam height is ABOVE the "
+                     "gate height set next to it. Combines with every brush "
+                     "type; each voxel is checked individually, so one stamp "
+                     "can edit some cells and skip their neighbours. Enabling "
+                     "it switches to the Dam layer.")
+                : tr("Height-gate modifier (Dam mode only): apply the brush "
+                     "effect only to the voxels whose dam height is BELOW the "
+                     "gate height set next to it. Combines with every brush "
+                     "type; each voxel is checked individually, so one stamp "
+                     "can edit some cells and skip their neighbours. Enabling "
+                     "it switches to the Dam layer."));
+        action->setCheckable(true);
+        connect(action, &QAction::triggered, this,
+                [this, above](bool checked) {
+                    MapEditor::BrushParams params = brushTool_->params();
+                    if (checked) {
+                        params.heightGate =
+                            above ? MapEditor::BrushHeightGate::Above
+                                  : MapEditor::BrushHeightGate::Below;
+                        // The gate reads the dam height — it only makes
+                        // sense on the Dam layer.
+                        params.mode = MapEditor::BrushMode::Dam;
+                    } else {
+                        params.heightGate = MapEditor::BrushHeightGate::None;
+                    }
+                    brushTool_->setParams(params);
+                    // Mutual exclusivity: the two conditions are alternatives
+                    // (a voxel exactly at the gate height fails both, so both
+                    // checked would not mean "apply everywhere").
+                    QAction *other = above ? actGateBelow_ : actGateAbove_;
+                    if (other && other->isChecked()) {
+                        other->setChecked(false);
+                    }
+                    syncBrushControls();
+                });
+        return action;
+    };
+    actGateAbove_ = addGate(true);
+    actGateBelow_ = addGate(false);
 
     // --- Form: the stamp silhouette (T3.1 BrushShape) -----------------
     // T3.5 — picking a shape switches the stamp geometry back from a loaded
@@ -2852,6 +3021,25 @@ void MainWindow::syncBrushControls()
             sculptEffectSpin_->blockSignals(true);
             sculptEffectSpin_->setValue(shown);
             sculptEffectSpin_->blockSignals(false);
+        }
+    }
+
+    // Height-gate modifiers: mirror the condition into the checkable actions
+    // (the exclusive group only auto-checks user-triggered actions) and the
+    // comparison height into the toolbar + menu spinboxes.
+    if (actGateAbove_) {
+        actGateAbove_->setChecked(params.heightGate ==
+                                  MapEditor::BrushHeightGate::Above);
+    }
+    if (actGateBelow_) {
+        actGateBelow_->setChecked(params.heightGate ==
+                                  MapEditor::BrushHeightGate::Below);
+    }
+    for (QSpinBox *spin : {gateHeightSpin_, gateHeightMenuSpin_}) {
+        if (spin && spin->value() != params.gateHeight) {
+            spin->blockSignals(true);
+            spin->setValue(params.gateHeight);
+            spin->blockSignals(false);
         }
     }
 
@@ -4195,6 +4383,22 @@ void MainWindow::updateActionStates()
         blurRadiusSpin_->setEnabled(worldLoaded && brushTool_ &&
                                     brushTool_->params().effect ==
                                         MapEditor::BrushEffect::GaussianBlur);
+    }
+    // The height-gate modifiers are clickable in any mode — enabling one
+    // switches to the Dam layer itself (the gate reads dam heights) — but
+    // the gate height spinboxes apply only while a gate is active.
+    if (actGateAbove_) {
+        actGateAbove_->setEnabled(worldLoaded);
+    }
+    if (actGateBelow_) {
+        actGateBelow_->setEnabled(worldLoaded);
+    }
+    const bool gateActive = brushTool_ &&
+        brushTool_->params().heightGate != MapEditor::BrushHeightGate::None;
+    for (QSpinBox *spin : {gateHeightSpin_, gateHeightMenuSpin_}) {
+        if (spin) {
+            spin->setEnabled(worldLoaded && gateActive);
+        }
     }
     // T3.1 — the stamp radius applies to every form except the image stamps
     // (the brush image and the decal carry their own size) and the

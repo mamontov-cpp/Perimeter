@@ -64,6 +64,18 @@ enum class BrushMode
     Dam,
 };
 
+/// Per-voxel height condition (Dam mode only) that gates the application of
+/// ANY brush effect: the effect touches a covered voxel only when the current
+/// dam surface height of THAT voxel compares to gateHeight as the condition
+/// says. The check is per-voxel, not per-stamp: one stamp can edit some cells
+/// and skip their neighbours. None = the modifier is off (the default).
+enum class BrushHeightGate
+{
+    None,   ///< no condition — every covered voxel is edited (default);
+    Above,  ///< apply only where the voxel height is STRICTLY ABOVE gateHeight;
+    Below,  ///< apply only where the voxel height is STRICTLY BELOW gateHeight.
+};
+
 /// What the brush does to the world. T3.1 ships the framework, T3.2 routes
 /// the height tools (raise/lower + the two alignment levellers); the
 /// remaining values are the T3.3–T3.5 tools — apply() refuses them until
@@ -214,6 +226,14 @@ struct BrushParams
     /// kernel sigma is blurRadius/2.
     int blurRadius = 4;
 
+    /// Height gate (Dam mode only, combinable with every effect): the
+    /// per-voxel condition restricting which covered voxels the effect
+    /// touches. Ignored in Geo mode.
+    BrushHeightGate heightGate = BrushHeightGate::None;
+    /// The gate comparison height in whole voxels
+    /// (0..MAX_VX_HEIGHT_WHOLE, BrushTool::clampGateHeight).
+    int gateHeight = 0;
+
     /// T3.5 (reworked): when true, the loaded image mask (BrushTool::
     /// setImageMask) replaces the shape/radius stamp as the brush geometry
     /// for every terrain effect — the image pixel value is the per-cell
@@ -237,6 +257,8 @@ struct BrushParams
                // Same for the sculpt fraction (comes out of spinbox math).
                std::abs(sculptEffect - other.sculptEffect) < 1e-9 &&
                blurRadius == other.blurRadius &&
+               heightGate == other.heightGate &&
+               gateHeight == other.gateHeight &&
                script == other.script &&
                useImageMask == other.useImageMask;
     }
@@ -365,6 +387,9 @@ public:
     static double clampPolygonAngleDeg(double deg);
     /// Sculpting fraction clamped into [0,1] (Smooth / Flatten).
     static double clampSculptEffect(double effect);
+    /// Height-gate comparison height clamped into [0, MAX_VX_HEIGHT_WHOLE]
+    /// whole voxels — the same domain as the AlignVariableH target.
+    static int clampGateHeight(int level);
     /// Gaussian-blur convolution radius clamped into
     /// [1, stampRadius - 1] — the blur must stay smaller than the stamp.
     static int clampBlurRadius(int blurRadius, int stampRadius);
