@@ -25,7 +25,8 @@ class EditorSession;
 //     frame slots + camera) with the terrain z-correction of the loaded
 //     world (SpgFile::setPlayerAnchor + EditorSession::terrainHeightAt);
 //   * "Edit Properties..." changes playersData (name / type / belligerent /
-//     color / clan / difficulty / handicap).
+//     color / clan / difficulty / handicap) and the spawn location (X/Y,
+//     moved with the same terrain z-correction as "Move to View Centre").
 //
 // The SpgFile itself lives in the MainWindow; the panel edits it through the
 // reference and announces every mutation via battleMapChanged() (autosave

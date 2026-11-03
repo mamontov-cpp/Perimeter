@@ -9,6 +9,7 @@
 #include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -208,6 +209,10 @@ void BattleMapPanel::onEditProperties()
     }
     const int playerIndex = item->data(Qt::UserRole).toInt();
     SpgFile::PlayerData data = battleMap_.playerData(playerIndex);
+    // The spawn anchor (frame position) — the dialog edits it directly.
+    double anchorX = 0;
+    double anchorY = 0;
+    battleMap_.playerAnchor(playerIndex, anchorX, anchorY);
 
     QDialog dialog(this);
     dialog.setWindowTitle(tr("Player %1 Properties").arg(playerIndex));
@@ -215,6 +220,18 @@ void BattleMapPanel::onEditProperties()
 
     auto *nameEdit = new QLineEdit(QString::fromStdString(data.name), &dialog);
     form->addRow(tr("Name:"), nameEdit);
+
+    auto *xSpin = new QDoubleSpinBox(&dialog);
+    xSpin->setRange(0.0, 1000000.0);
+    xSpin->setDecimals(3);
+    xSpin->setValue(anchorX);
+    form->addRow(tr("Location X:"), xSpin);
+
+    auto *ySpin = new QDoubleSpinBox(&dialog);
+    ySpin->setRange(0.0, 1000000.0);
+    ySpin->setDecimals(3);
+    ySpin->setValue(anchorY);
+    form->addRow(tr("Location Y:"), ySpin);
 
     auto *typeEdit = new QLineEdit(
         QString::fromStdString(data.realPlayerType), &dialog);
@@ -260,6 +277,35 @@ void BattleMapPanel::onEditProperties()
     data.clan = clanSpin->value();
     data.handicap = handicapSpin->value();
     battleMap_.setPlayerData(playerIndex, data);
+
+    // Relocate the spawn group when the anchor changed. The z-correction is
+    // the same rule "Move to View Centre" uses: z_new = z_old +
+    // (terrain_new - terrain_old), so the models keep their vertical offset
+    // over the ground. Without the world loaded the heights are unknown and
+    // the offsets are kept as-is (dz = 0).
+    const double newX = xSpin->value();
+    const double newY = ySpin->value();
+    if (newX != anchorX || newY != anchorY) {
+        double dz = 0;
+        bool canMove = true;
+        if (session_.isWorldLoaded()) {
+            const int oldTerrain =
+                session_.terrainHeightAt(qRound(anchorX), qRound(anchorY));
+            const int newTerrain =
+                session_.terrainHeightAt(qRound(newX), qRound(newY));
+            if (oldTerrain < 0 || newTerrain < 0) {
+                canMove = false;
+            } else {
+                dz = static_cast<double>(newTerrain - oldTerrain);
+            }
+        }
+        if (!canMove ||
+            !battleMap_.setPlayerAnchor(playerIndex, newX, newY, dz)) {
+            QMessageBox::warning(this, tr("Edit Properties"),
+                                 tr("Failed to move the spawn group — the "
+                                    "location was not changed."));
+        }
+    }
     refresh();
     emit battleMapChanged();
 }
