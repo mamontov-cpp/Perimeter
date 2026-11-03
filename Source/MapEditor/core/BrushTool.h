@@ -118,6 +118,14 @@ enum class BrushEffect
     /// while removing bumps. Falls back to the Smooth average when the
     /// fit is degenerate.
     Flatten,
+    /// Sculpting — Dam mode only. The reference is a TRICUBIC (bicubic
+    /// Catmull-Rom) interpolation of a coarse lattice built from the
+    /// pre-edit heights under the stamp: block-averaged control points at
+    /// a fixed stride, interpolated smoothly back at cell resolution.
+    /// Removes features smaller than the stride while preserving (curved)
+    /// large-scale forms better than a global plane. Same sculptEffect
+    /// fraction and toolzer write path as Smooth / Flatten.
+    Tricubic,
 };
 
 /// The largest stamp radius the editor allows (map cells). The game's own

@@ -353,9 +353,11 @@ private:
     QAction *actBrushScriptEdit_ = nullptr;
     // Sculpting brushes (Dam mode only): Smooth pulls the covered cells
     // towards the average height under the mask, Flatten towards a
-    // least-squares plane. The fraction spinbox below is shared by both.
+    // least-squares plane, Tricubic towards the bicubic interpolation of a
+    // coarse lattice. The fraction spinbox below is shared by all three.
     QAction *actBrushSmooth_ = nullptr;
     QAction *actBrushFlatten_ = nullptr;
+    QAction *actBrushTricubic_ = nullptr;
     // The script source kept by the window (loaded into BrushParams::script
     // when the scripted brush runs) and the stamp preview shape picked in
     // the script editor.

@@ -451,6 +451,7 @@ bool BrushTool::effectSupported(BrushEffect effect)
     case BrushEffect::Script:          // scripted brush (routed in applyStamp)
     case BrushEffect::Smooth:          // sculpting (two-pass, in applyMask)
     case BrushEffect::Flatten:         // sculpting (two-pass, in applyMask)
+    case BrushEffect::Tricubic:        // sculpting (two-pass, in applyMask)
         return true;
     default:
         return false;
@@ -628,17 +629,19 @@ bool BrushTool::applyMask(const BrushMask& absoluteMask, const BrushParams& para
     // Sculpting validates its Dam-only mode here too — a refused stamp must
     // not record an undo entry.
     if ((params.effect == BrushEffect::Smooth ||
-         params.effect == BrushEffect::Flatten) &&
+         params.effect == BrushEffect::Flatten ||
+         params.effect == BrushEffect::Tricubic) &&
         params.mode != BrushMode::Dam) {
         return false; // sculpting operates on the dam layer only
     }
     session_.recordUndoArea(bx, by, bxEnd - bx, byEnd - by);
 
-    // --- Sculpting (Smooth / Flatten): a two-pass effect — the reference    ---
-    // --- (average height / least-squares plane) must be computed over the   ---
-    // --- PRE-edit state, so the per-cell routing below cannot serve it.     ---
+    // --- Sculpting (Smooth / Flatten / Tricubic): a two-pass effect — the ---
+    // --- reference must be computed over the PRE-edit state, so the       ---
+    // --- per-cell routing below cannot serve it.                          ---
     if (params.effect == BrushEffect::Smooth ||
-        params.effect == BrushEffect::Flatten) {
+        params.effect == BrushEffect::Flatten ||
+        params.effect == BrushEffect::Tricubic) {
         return applySculpt(absoluteMask, params, bx, by, bxEnd, byEnd);
     }
 
@@ -746,6 +749,95 @@ SculptPlane fitSculptPlane(const std::vector<int>& dxs,
     return plane;
 }
 
+/// Control-lattice stride (cells) for the Tricubic sculpting brush:
+/// features smaller than roughly this size are smoothed away.
+constexpr int kTricubicStride = 4;
+
+/// 1-D Catmull-Rom cubic through four samples at fractional position t.
+/// Reproduces arithmetic (linear) sample sequences EXACTLY at any t.
+double catmullRom(const double p[4], double t)
+{
+    const double t2 = t * t;
+    const double t3 = t2 * t;
+    return 0.5 * (2.0 * p[1] +
+                  (-p[0] + p[2]) * t +
+                  (2.0 * p[0] - 5.0 * p[1] + 4.0 * p[2] - p[3]) * t2 +
+                  (-p[0] + 3.0 * p[1] - 3.0 * p[2] + p[3]) * t3);
+}
+
+/// Node accessor with linear extrapolation past the lattice edges.
+double latticeNode(const std::vector<double>& lattice, int nx, int ny, int i,
+                   int j)
+{
+    if (i < 0) {
+        return 2.0 * latticeNode(lattice, nx, ny, 0, j) -
+               latticeNode(lattice, nx, ny, 1, j);
+    }
+    if (i >= nx) {
+        return 2.0 * latticeNode(lattice, nx, ny, nx - 1, j) -
+               latticeNode(lattice, nx, ny, nx - 2, j);
+    }
+    if (j < 0) {
+        return 2.0 * latticeNode(lattice, nx, ny, i, 0) -
+               latticeNode(lattice, nx, ny, i, 1);
+    }
+    if (j >= ny) {
+        return 2.0 * latticeNode(lattice, nx, ny, i, ny - 1) -
+               latticeNode(lattice, nx, ny, i, ny - 2);
+    }
+    return lattice[static_cast<std::size_t>(j) * nx + i];
+}
+
+/// Separable bicubic (Catmull-Rom) evaluation of a control lattice at
+/// bbox-relative coordinates (xr, yr). `posX`/`posY` hold the ACTUAL sample
+/// position of every node (block centres — the last, partial window is
+/// centred at its midpoint, so the final segment is non-uniform and its t
+/// is scaled by the real gap). Segments outside the node range extrapolate
+/// along the cubic — exact for the linear fields the reproduction proof
+/// relies on.
+double bicubicAt(const std::vector<double>& lattice,
+                 const std::vector<double>& posX,
+                 const std::vector<double>& posY, double xr, double yr)
+{
+    const int nx = static_cast<int>(posX.size());
+    const int ny = static_cast<int>(posY.size());
+    const auto segment = [](const std::vector<double>& pos, double v, int n,
+                            int& index, double& t) {
+        if (n < 2) {
+            index = 0;
+            t = 0.0;
+            return;
+        }
+        if (v <= pos[0]) {
+            index = 0;
+            t = (v - pos[0]) / (pos[1] - pos[0]);
+            return;
+        }
+        for (int i = 0; i + 1 < n; ++i) {
+            if (v <= pos[i + 1]) {
+                index = i;
+                t = (v - pos[i]) / (pos[i + 1] - pos[i]);
+                return;
+            }
+        }
+        index = n - 2;
+        t = (v - pos[n - 2]) / (pos[n - 1] - pos[n - 2]);
+    };
+    int iu = 0, iv = 0;
+    double tu = 0.0, tv = 0.0;
+    segment(posX, xr, nx, iu, tu);
+    segment(posY, yr, ny, iv, tv);
+    double rows[4];
+    for (int j = 0; j < 4; ++j) {
+        double cols[4];
+        for (int i = 0; i < 4; ++i) {
+            cols[i] = latticeNode(lattice, nx, ny, iu - 1 + i, iv - 1 + j);
+        }
+        rows[j] = catmullRom(cols, tu);
+    }
+    return catmullRom(rows, tv);
+}
+
 } // namespace
 
 bool BrushTool::applySculpt(const BrushMask& absoluteMask,
@@ -784,7 +876,77 @@ bool BrushTool::applySculpt(const BrushMask& absoluteMask,
     if (offs.empty()) {
         return false;
     }
-    const SculptPlane plane = fitSculptPlane(dxs, dys, alts);
+
+    // Reference height per covered cell, computed from the PRE-edit state.
+    std::vector<double> references(offs.size());
+    if (params.effect == BrushEffect::Tricubic) {
+        // Block-average the pre-edit heights of the clip bbox into a coarse
+        // control lattice (block values sit at block CENTRES), pad the
+        // lattice by one node ring of LINEAR extrapolation, and evaluate
+        // the bicubic Catmull-Rom interpolation at every covered cell.
+        // Features smaller than the stride die; lines and parabolas pass
+        // through exactly (Catmull-Rom reproduction + linear extrapolation
+        // keeps planes exact at the ring; plain clamped padding would bend
+        // them there).
+        const int bw = bxEnd - bx;
+        const int bh = byEnd - by;
+        std::vector<int> bboxAlts(static_cast<std::size_t>(bw) * bh);
+        for (int j = 0; j < bh; ++j) {
+            for (int i = 0; i < bw; ++i) {
+                bboxAlts[static_cast<std::size_t>(j) * bw + i] =
+                    vMap.SGetAlt((by + j) * static_cast<int>(vMap.H_SIZE) +
+                                 (bx + i));
+            }
+        }
+        const int nx = (bw + kTricubicStride - 1) / kTricubicStride;
+        const int ny = (bh + kTricubicStride - 1) / kTricubicStride;
+        if (nx < 2 || ny < 2) {
+            // Stamp smaller than the stride — the lattice cannot carry a
+            // slope; the plain average is the only stable reference.
+            const SculptPlane plane = fitSculptPlane(dxs, dys, alts);
+            std::fill(references.begin(), references.end(), plane.offset);
+        } else {
+            std::vector<double> lattice(static_cast<std::size_t>(nx) * ny);
+            std::vector<double> posX(nx);
+            std::vector<double> posY(ny);
+            for (int j = 0; j < ny; ++j) {
+                const int y0 = j * kTricubicStride;
+                const int y1 = std::min(bh, y0 + kTricubicStride);
+                posY[j] = (y0 + y1 - 1) * 0.5;
+                for (int i = 0; i < nx; ++i) {
+                    const int x0 = i * kTricubicStride;
+                    const int x1 = std::min(bw, x0 + kTricubicStride);
+                    if (j == 0) {
+                        posX[i] = (x0 + x1 - 1) * 0.5;
+                    }
+                    long long sum = 0;
+                    for (int y = y0; y < y1; ++y) {
+                        for (int x = x0; x < x1; ++x) {
+                            sum += bboxAlts[static_cast<std::size_t>(y) * bw + x];
+                        }
+                    }
+                    lattice[static_cast<std::size_t>(j) * nx + i] =
+                        static_cast<double>(sum) /
+                        static_cast<double>((x1 - x0) * (y1 - y0));
+                }
+            }
+            // dxs/dys are mask-centre-relative (see pass 1) — turn them
+            // back into bbox-relative cells and evaluate the interpolation.
+            for (std::size_t k = 0; k < offs.size(); ++k) {
+                references[k] = bicubicAt(lattice, posX, posY,
+                                          static_cast<double>(cx + dxs[k] - bx),
+                                          static_cast<double>(cy + dys[k] - by));
+            }
+        }
+    } else {
+        const SculptPlane plane = fitSculptPlane(dxs, dys, alts);
+        for (std::size_t k = 0; k < offs.size(); ++k) {
+            references[k] =
+                params.effect == BrushEffect::Flatten
+                    ? plane.offset + plane.a * dxs[k] + plane.b * dys[k]
+                    : plane.offset;
+        }
+    }
     const double effect = clampSculptEffect(params.sculptEffect);
 
     // Pass 2: move every covered cell an `effect` fraction towards its
@@ -796,17 +958,12 @@ bool BrushTool::applySculpt(const BrushMask& absoluteMask,
     // same rule as Set Height). Dam-free cells are seeded like the other
     // Dam-mode brushes, so the sculpt works on raw geo too.
     static individualToolzer<T2TE_ALIGNMENT_TERRAIN_VARIABLE_H> sculptToolzer;
-    const int wholeZP = static_cast<int>(vMap.hZeroPlast);
     for (std::size_t i = 0; i < offs.size(); ++i) {
-        const double reference =
-            params.effect == BrushEffect::Flatten
-                ? plane.offset + plane.a * dxs[i] + plane.b * dys[i]
-                : plane.offset;
         const int target32 = std::clamp(
-            static_cast<int>(std::llround(reference)), MIN_VX_HEIGHT,
+            static_cast<int>(std::llround(references[i])), MIN_VX_HEIGHT,
             MAX_VX_HEIGHT);
         int dV = static_cast<int>(
-            std::llround((reference - alts[i]) * effect));
+            std::llround((references[i] - alts[i]) * effect));
         dV = scaleDeltaByInfluence(dV, influences[i]);
         if (dV == 0) {
             continue;

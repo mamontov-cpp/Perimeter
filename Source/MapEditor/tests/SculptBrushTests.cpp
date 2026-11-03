@@ -387,19 +387,96 @@ bool runSculptBrushTests()
                 "bumps by the fraction.\n");
 
     // ------------------------------------------------------------------
-    // 3: Geo mode is refused without touching the world.
+    // 3: Tricubic — cubic interpolation of a coarse lattice: the inclined
+    //    plane is reproduced exactly (cubics preserve lines), fine noise
+    //    dies.
+    // ------------------------------------------------------------------
+    cx += 64;
+    preparePlane(kBase, kSlope);
+    ++expectedUndos;
+    {
+        const auto pre = measuredHeights();
+        const int preSpread =
+            pre.at({kRadius, 0}) - pre.at({-kRadius, 0});
+
+        sculpt(BrushEffect::Tricubic, 1.0);
+        ++expectedUndos;
+        const auto post = measuredHeights();
+        // Block-averaged lattice nodes of a linear field sit exactly on the
+        // plane and Catmull-Rom reproduces lines — nothing may move.
+        TEST_REQUIRE(post.at({kRadius, 0}) - post.at({-kRadius, 0}) >=
+                         preSpread - 3,
+                     "Tricubic must preserve the large-scale slope.");
+        for (const auto& [c, h] : post) {
+            TEST_REQUIRE(std::abs(h - pre.at(c)) <= 2,
+                         "Tricubic(1.0) over a plane must not move (%d,%d): "
+                         "%d -> %d.",
+                         c.first, c.second, pre.at(c), h);
+        }
+    }
+
+    // Fresh area: a flat pad with a 3x3-block +/-2 checkerboard noise.
+    cx += 64;
+    {
+        BrushParams prep;
+        prep.effect = BrushEffect::Script;
+        prep.mode = BrushMode::Dam;
+        prep.radius = 4;
+        prep.script =
+            "var p = getCurrentPos();\n"
+            "setHeight({x: p.x, y: p.y}, " +
+            std::to_string(kBase) + ", 6, false);\n"
+            "for (var by = -6; by <= 6; by += 3)\n"
+            "  for (var bx = -6; bx <= 6; bx += 3) {\n"
+            "    var d = (((bx + by) / 3) % 2 === 0) ? 2 : -2;\n"
+            "    setHeight({x: p.x + bx, y: p.y + by}, " +
+            std::to_string(kBase) + " + d, 1, false);\n"
+            "  }\n";
+        std::string error;
+        TEST_REQUIRE(MapEditor::runScriptedBrush(session, scriptBrush, prep,
+                                                 cx, cy, error),
+                     "noise preparation failed: %s", error.c_str());
+        ++expectedUndos;
+        // The fixture really carries the noise.
+        {
+            int noisy = 0;
+            for (const auto& [c, h] : measuredHeights()) {
+                noisy += std::abs(h - kBase) >= 1;
+            }
+            TEST_REQUIRE(noisy > 0, "the noise fixture is missing.");
+        }
+
+        sculpt(BrushEffect::Tricubic, 1.0);
+        ++expectedUndos;
+        // The lattice averages the +/-2 blocks away and the interpolation
+        // stays within a couple of voxels of the flat pad.
+        for (const auto& [c, h] : measuredHeights()) {
+            TEST_REQUIRE(std::abs(h - kBase) <= 4,
+                         "Tricubic must remove the block noise at (%d,%d): "
+                         "expected %d +/- 4, got %d.",
+                         c.first, c.second, kBase, h);
+        }
+    }
+    std::printf("[PASS] Tricubic preserves the plane and removes block "
+                "noise.\n");
+
+    // ------------------------------------------------------------------
+    // 4: Geo mode is refused without touching the world.
     // ------------------------------------------------------------------
     {
         const RegionBytes before =
             RegionBytes::read(regionX, regionY, regionSide, regionSide);
         const bool undoableBefore = session.canUndo();
-        BrushParams geo;
-        geo.effect = BrushEffect::Smooth;
-        geo.mode = BrushMode::Geo;
-        geo.radius = kRadius;
-        geo.sculptEffect = 1.0;
-        TEST_REQUIRE(!brush.applyStamp(cx, cy, geo),
-                     "the sculpt brushes must refuse the Geo mode.");
+        for (BrushEffect effect : {BrushEffect::Smooth, BrushEffect::Flatten,
+                                   BrushEffect::Tricubic}) {
+            BrushParams geo;
+            geo.effect = effect;
+            geo.mode = BrushMode::Geo;
+            geo.radius = kRadius;
+            geo.sculptEffect = 1.0;
+            TEST_REQUIRE(!brush.applyStamp(cx, cy, geo),
+                         "the sculpt brushes must refuse the Geo mode.");
+        }
         TEST_REQUIRE(session.canUndo() == undoableBefore,
                      "a refused sculpt stamp must not record undo.");
         const RegionBytes after =
@@ -410,7 +487,7 @@ bool runSculptBrushTests()
     std::printf("[PASS] the sculpt brushes refuse the Geo mode untouched.\n");
 
     // ------------------------------------------------------------------
-    // 4: clamps + the whole sequence undoes back to the pristine region.
+    // 5: clamps + the whole sequence undoes back to the pristine region.
     // ------------------------------------------------------------------
     TEST_REQUIRE(BrushTool::clampSculptEffect(1.5) == 1.0 &&
                      BrushTool::clampSculptEffect(-0.5) == 0.0 &&

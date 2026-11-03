@@ -53,6 +53,7 @@ namespace fs = std::filesystem;
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPixmap>
 #include <QPushButton>
 #include <QPolygonF>
@@ -636,6 +637,35 @@ QIcon makeFlattenBrushIcon()
     p.setPen(QPen(kInk, 1.2));
     p.setBrush(QColor(235, 235, 235));
     p.drawRect(QRectF(3.0, 16.5, 16.0, 2.5));
+    return QIcon(pm);
+}
+
+/// Tricubic-brush glyph: coarse control points with a smooth cubic curve
+/// threading through them (fine wobble removed, the curve survives).
+QIcon makeTricubicBrushIcon()
+{
+    QPixmap pm(22, 22);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    // Control lattice nodes (coarse, blocky).
+    p.setPen(QPen(kInk, 1.1));
+    p.setBrush(QColor(200, 210, 220));
+    for (const QPointF& node : {QPointF(4.0, 12.0), QPointF(11.0, 8.0),
+                                QPointF(18.0, 11.0)}) {
+        p.drawRect(QRectF(node.x() - 1.6, node.y() - 1.6, 3.2, 3.2));
+    }
+    // Fine noise above the curve (dies).
+    p.setPen(QPen(QColor(100, 140, 180), 1.4, Qt::SolidLine, Qt::RoundCap));
+    p.drawLine(QPointF(7.0, 12.5), QPointF(7.0, 9.5));
+    p.drawLine(QPointF(14.5, 12.0), QPointF(14.5, 14.5));
+    // The smooth interpolated curve through the nodes (survives).
+    QPainterPath curve(QPointF(2.5, 14.5));
+    curve.cubicTo(QPointF(6.0, 6.0), QPointF(9.0, 5.0), QPointF(11.0, 8.0));
+    curve.cubicTo(QPointF(13.0, 11.0), QPointF(16.0, 10.0),
+                  QPointF(19.5, 12.5));
+    p.setPen(QPen(kAccent, 1.9, Qt::SolidLine, Qt::RoundCap));
+    p.drawPath(curve);
     return QIcon(pm);
 }
 
@@ -1940,6 +1970,7 @@ void MainWindow::buildSculptToolbar()
 
     bar->addAction(actBrushSmooth_);
     bar->addAction(actBrushFlatten_);
+    bar->addAction(actBrushTricubic_);
 
     // The fraction spinbox (0..1) shared by both sculpting brushes: the part
     // of the distance towards the reference (average / fitted plane) that
@@ -2172,6 +2203,15 @@ void MainWindow::createBrushActions()
            "fraction towards that plane — large-scale slopes survive, local "
            "bumps die. Uses the same fraction spinbox as Smooth."),
         MapEditor::BrushEffect::Flatten);
+    actBrushTricubic_ = addSculptType(
+        makeTricubicBrushIcon(), tr("Tricubic"),
+        tr("Sculpting (Dam layer only): block-averages the surface under "
+           "the stamp into a coarse lattice and moves every covered cell a "
+           "fraction towards the tricubic (bicubic Catmull-Rom) "
+           "interpolation of that lattice — detail smaller than the lattice "
+           "stride is smoothed away while curved large-scale forms survive "
+           "smoothly. Uses the same fraction spinbox as Smooth/Flatten."),
+        MapEditor::BrushEffect::Tricubic);
 
     // T3.5 — load brush image from file. The loaded image becomes the stamp
     // mask of the CURRENT brush type (raise/lower/level/... — the image
@@ -2241,7 +2281,8 @@ void MainWindow::createBrushActions()
                  params.effect == MapEditor::BrushEffect::ImageDecal ||
                  params.effect == MapEditor::BrushEffect::Script ||
                  params.effect == MapEditor::BrushEffect::Smooth ||
-                 params.effect == MapEditor::BrushEffect::Flatten)) {
+                 params.effect == MapEditor::BrushEffect::Flatten ||
+                 params.effect == MapEditor::BrushEffect::Tricubic)) {
                 params.effect = MapEditor::BrushEffect::ChangeHeight;
                 params.direction = 1;
             }
@@ -2625,6 +2666,8 @@ void MainWindow::syncBrushControls()
     syncType(actBrushScript_, params.effect == MapEditor::BrushEffect::Script);
     syncType(actBrushSmooth_, params.effect == MapEditor::BrushEffect::Smooth);
     syncType(actBrushFlatten_, params.effect == MapEditor::BrushEffect::Flatten);
+    syncType(actBrushTricubic_,
+             params.effect == MapEditor::BrushEffect::Tricubic);
 
     // Sculpting fraction spinbox mirrors the tool (shared by both types).
     if (sculptEffectSpin_) {
@@ -3928,6 +3971,7 @@ void MainWindow::updateActionStates()
                             actBrushSoot_, actBrushVeryLightDam_,
                             actBrushScript_, actBrushScriptEdit_,
                             actBrushSmooth_, actBrushFlatten_,
+                            actBrushTricubic_,
                             actLoadBrushImage_,
                             actShapeCircle_, actShapeSquare_,
                             actShapeCircleOutline_, actShapeSquareOutline_,
@@ -3952,7 +3996,8 @@ void MainWindow::updateActionStates()
         brushTool_->params().effect == MapEditor::BrushEffect::Script;
     const bool sculptEffect = brushTool_ &&
         (brushTool_->params().effect == MapEditor::BrushEffect::Smooth ||
-         brushTool_->params().effect == MapEditor::BrushEffect::Flatten);
+         brushTool_->params().effect == MapEditor::BrushEffect::Flatten ||
+         brushTool_->params().effect == MapEditor::BrushEffect::Tricubic);
     if (actBrushGeo_) {
         actBrushGeo_->setEnabled(worldLoaded && !decalEffect && !scriptEffect &&
                                  !sculptEffect);
