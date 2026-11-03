@@ -372,6 +372,7 @@ BrushParams clampedParams(const BrushParams& params)
     clamped.thickness = BrushTool::clampThickness(clamped.thickness, clamped.radius);
     clamped.polygonSides = BrushTool::clampPolygonSides(clamped.polygonSides);
     clamped.polygonAngleDeg = BrushTool::clampPolygonAngleDeg(clamped.polygonAngleDeg);
+    clamped.sculptEffect = BrushTool::clampSculptEffect(clamped.sculptEffect);
     if (clamped.direction != 0) {
         clamped.direction = clamped.direction > 0 ? 1 : -1;
     }
@@ -430,6 +431,11 @@ double BrushTool::clampPolygonAngleDeg(double deg)
     return wrapped;
 }
 
+double BrushTool::clampSculptEffect(double effect)
+{
+    return std::clamp(effect, 0.0, 1.0);
+}
+
 bool BrushTool::effectSupported(BrushEffect effect)
 {
     switch (effect) {
@@ -443,6 +449,8 @@ bool BrushTool::effectSupported(BrushEffect effect)
     case BrushEffect::PlotSoot:        // T3.4 mark soot
     case BrushEffect::VeryLightDam:    // T3.4 very light dam
     case BrushEffect::Script:          // scripted brush (routed in applyStamp)
+    case BrushEffect::Smooth:          // sculpting (two-pass, in applyMask)
+    case BrushEffect::Flatten:         // sculpting (two-pass, in applyMask)
         return true;
     default:
         return false;
@@ -617,7 +625,22 @@ bool BrushTool::applyMask(const BrushMask& absoluteMask, const BrushParams& para
 
     // --- 2. Undo snapshot BEFORE any cell is touched (one entry per apply, ---
     // ---    swap semantics allow overlapping snapshots between strokes). ---
+    // Sculpting validates its Dam-only mode here too — a refused stamp must
+    // not record an undo entry.
+    if ((params.effect == BrushEffect::Smooth ||
+         params.effect == BrushEffect::Flatten) &&
+        params.mode != BrushMode::Dam) {
+        return false; // sculpting operates on the dam layer only
+    }
     session_.recordUndoArea(bx, by, bxEnd - bx, byEnd - by);
+
+    // --- Sculpting (Smooth / Flatten): a two-pass effect — the reference    ---
+    // --- (average height / least-squares plane) must be computed over the   ---
+    // --- PRE-edit state, so the per-cell routing below cannot serve it.     ---
+    if (params.effect == BrushEffect::Smooth ||
+        params.effect == BrushEffect::Flatten) {
+        return applySculpt(absoluteMask, params, bx, by, bxEnd, byEnd);
+    }
 
     // --- 3. Route the effect over the visible mask cells. ---
     for (int y = by; y < byEnd; ++y) {
@@ -651,11 +674,165 @@ bool BrushTool::applyMask(const BrushMask& absoluteMask, const BrushParams& para
 }
 
 // ---------------------------------------------------------------------------
-// T3.2 — BrushMode layer helpers for the height tools.
+// Sculpting (Smooth / Flatten)
 //
-// Terra's change-height toolzer always edits the active (top) layer: the dam
-// when VxDBuf != 0, the geo otherwise. The editor's Geo/Dam modes cut across
-// that, so the layer selection happens around the Terra toolzer:
+// Two-pass Dam-layer effect. Pass 1 samples the PRE-edit surface height of
+// every covered cell and derives the reference: the plain average (Smooth)
+// or a least-squares plane z = a*dx + b*dy + c through the samples
+// (Flatten — large-scale slopes survive, local bumps die). Pass 2 moves
+// each cell a sculptEffect fraction of the way towards its reference
+// height. Height edits go through Terra's own variable-H toolzer
+// (setHAppoximation + tVoxSetAll) — the exact mechanism the Set Height
+// brush uses — with the same zeroplast-gate clearing and dam seeding.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Defined with the T3.2 layer helpers below; the sculpt pass seeds dams
+// exactly like the other Dam-mode brushes.
+int seedDamLayer(int off);
+
+/// Least-squares plane through the samples (dx/dy relative to the mask
+/// centre, so the linear terms decouple from the offset). Returns the
+/// offset in `offset` (== the plain average) and the slopes in a/b.
+/// Degenerate configurations (all samples on a line, too few samples)
+/// leave a/b at 0 — the caller then falls back to pure averaging.
+struct SculptPlane
+{
+    double a = 0.0;
+    double b = 0.0;
+    double offset = 0.0;
+};
+
+SculptPlane fitSculptPlane(const std::vector<int>& dxs,
+                           const std::vector<int>& dys,
+                           const std::vector<int>& alts)
+{
+    SculptPlane plane;
+    const std::size_t n = alts.size();
+    if (n == 0) {
+        return plane;
+    }
+    double sz = 0.0;
+    for (int alt : alts) {
+        sz += alt;
+    }
+    plane.offset = sz / static_cast<double>(n);
+
+    if (n < 3) {
+        return plane; // a/b stay 0 — the average is the only stable answer
+    }
+    double sxx = 0.0, sxy = 0.0, syy = 0.0, sxz = 0.0, syz = 0.0;
+    for (std::size_t i = 0; i < n; ++i) {
+        const double dx = static_cast<double>(dxs[i]);
+        const double dy = static_cast<double>(dys[i]);
+        const double dz = alts[i] - plane.offset;
+        sxx += dx * dx;
+        sxy += dx * dy;
+        syy += dy * dy;
+        sxz += dx * dz;
+        syz += dy * dz;
+    }
+    const double det = sxx * syy - sxy * sxy;
+    // Near-singular fits (collinear sample positions) fall back to the
+    // average: dividing by ~0 would amplify float noise into huge slopes.
+    const double scale =
+        (sxx + syy) * (sxx + syy) + 1.0; // ~ fourth power of the spread
+    if (det <= 1e-9 * scale) {
+        return plane;
+    }
+    plane.a = (sxz * syy - syz * sxy) / det;
+    plane.b = (syz * sxx - sxz * sxy) / det;
+    return plane;
+}
+
+} // namespace
+
+bool BrushTool::applySculpt(const BrushMask& absoluteMask,
+                            const BrushParams& params, int bx, int by,
+                            int bxEnd, int byEnd)
+{
+    // Pass 1: sample the PRE-edit surface heights of the covered cells.
+    std::vector<int> offs;
+    std::vector<int> dxs;
+    std::vector<int> dys;
+    std::vector<int> alts;
+    std::vector<unsigned char> influences;
+    offs.reserve(static_cast<std::size_t>(bxEnd - bx) * (byEnd - by));
+    const int cx = (bx + bxEnd - 1) / 2;
+    const int cy = (by + byEnd - 1) / 2;
+    for (int y = by; y < byEnd; ++y) {
+        for (int x = bx; x < bxEnd; ++x) {
+            const int dx = x - absoluteMask.x;
+            const int dy = y - absoluteMask.y;
+            if (dx < 0 || dy < 0 || dx >= absoluteMask.sx ||
+                dy >= absoluteMask.sy) {
+                continue; // clipped-away mask border
+            }
+            const unsigned char influence = absoluteMask.at(dx, dy);
+            if (!influence) {
+                continue;
+            }
+            const int off = y * static_cast<int>(vMap.H_SIZE) + x;
+            offs.push_back(off);
+            dxs.push_back(x - cx);
+            dys.push_back(y - cy);
+            alts.push_back(vMap.SGetAlt(off));
+            influences.push_back(influence);
+        }
+    }
+    if (offs.empty()) {
+        return false;
+    }
+    const SculptPlane plane = fitSculptPlane(dxs, dys, alts);
+    const double effect = clampSculptEffect(params.sculptEffect);
+
+    // Pass 2: move every covered cell an `effect` fraction towards its
+    // reference height. Through Terra's variable-H toolzer — the same
+    // mechanism the Set Height brush uses (see applyEffectToCell): the
+    // toolzer drives the dam layer, caps the step at the target and removes
+    // the dam when the surface drops to the geo height. The zeroplast gate
+    // is cleared first — a moved cell no longer represents zeroplast (the
+    // same rule as Set Height). Dam-free cells are seeded like the other
+    // Dam-mode brushes, so the sculpt works on raw geo too.
+    static individualToolzer<T2TE_ALIGNMENT_TERRAIN_VARIABLE_H> sculptToolzer;
+    const int wholeZP = static_cast<int>(vMap.hZeroPlast);
+    for (std::size_t i = 0; i < offs.size(); ++i) {
+        const double reference =
+            params.effect == BrushEffect::Flatten
+                ? plane.offset + plane.a * dxs[i] + plane.b * dys[i]
+                : plane.offset;
+        const int target32 = std::clamp(
+            static_cast<int>(std::llround(reference)), MIN_VX_HEIGHT,
+            MAX_VX_HEIGHT);
+        int dV = static_cast<int>(
+            std::llround((reference - alts[i]) * effect));
+        dV = scaleDeltaByInfluence(dV, influences[i]);
+        if (dV == 0) {
+            continue;
+        }
+        const int off = offs[i];
+        if ((vMap.AtrBuf[off] & At_ZPMASK) == At_ZEROPLAST) {
+            vMap.AtrBuf[off] = static_cast<unsigned char>(
+                vMap.AtrBuf[off] & ~At_ZPMASK);
+        }
+        seedDamLayer(off);
+        sculptToolzer.setHAppoximation(target32 >> VX_FRACTION);
+        sculptToolzer.tVoxSetAll(off, dV);
+    }
+
+    // Grid + viewport dirty rectangles, margin 1 like the generic path.
+    const int mapW = static_cast<int>(vMap.H_SIZE);
+    const int mapH = static_cast<int>(vMap.V_SIZE);
+    const int x0 = std::max(0, bx - 1);
+    const int y0 = std::max(0, by - 1);
+    const int x1 = std::min(mapW - 1, bxEnd + 1);
+    const int y1 = std::min(mapH - 1, byEnd + 1);
+    vMap.recalcArea2Grid(x0, y0, x1, y1);
+    session_.regRenderWithShadowTrail(x0, y0, x1, y1);
+    return true;
+}
+
 //   * Geo — only VxGBuf is driven (dam height caps the raise, the dam buffer
 //     itself is never written), keeping the game invariant "dam ≥ geo";
 //   * Dam — the dam layer is seeded (exactly like Terra's
@@ -681,6 +858,13 @@ int applyHardness(int off, int dV)
                          GRIDAT_MASK_HARDNESS;
     return (dV * (hardness << hardness)) / 24;
 }
+
+// ---------------------------------------------------------------------------
+// T3.2 — BrushMode layer helpers for the height tools.
+//
+// Terra's change-height toolzer always edits the active (top) layer: the dam
+// when VxDBuf != 0, the geo otherwise. The editor's Geo/Dam modes cut across
+// that, so the layer selection happens around the Terra toolzer:
 
 /// ChangeHeight in Geo mode.
 ///

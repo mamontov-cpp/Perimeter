@@ -178,8 +178,7 @@ private:
     void buildMenuBar();
     void buildEditMenu(QMenuBar *menuBar);
     void buildViewMenu(QMenuBar *menuBar);
-    void buildViewToolbar();
-    void buildStatusBar();
+    void buildViewToolbar();    void buildStatusBar();
     void buildViewport();
     void buildMinimapDock();
     // T4.1 — the palette panel dock (built right after the minimap dock).
@@ -224,6 +223,10 @@ private:
     // type buttons, the target-height spinbox of the level tool and the
     // Geo/Dam mode buttons.
     void buildBrushToolbar();
+    /// The Sculpting toolbar: Smooth / Flatten (Dam mode only) + the shared
+    /// 0..1 fraction spinbox. Lives on its OWN row — addToolBarBreak() runs
+    /// inside, before the toolbar is inserted into the main window.
+    void buildSculptToolbar();
     // T3.2 — re-read the tool parameters into the buttons/spinbox state.
     void syncBrushControls();
     // T3.3 — update the color swatch label and spinbox to reflect the
@@ -348,12 +351,19 @@ private:
     // action and the script-editor action (opens the editing window).
     QAction *actBrushScript_ = nullptr;
     QAction *actBrushScriptEdit_ = nullptr;
+    // Sculpting brushes (Dam mode only): Smooth pulls the covered cells
+    // towards the average height under the mask, Flatten towards a
+    // least-squares plane. The fraction spinbox below is shared by both.
+    QAction *actBrushSmooth_ = nullptr;
+    QAction *actBrushFlatten_ = nullptr;
     // The script source kept by the window (loaded into BrushParams::script
     // when the scripted brush runs) and the stamp preview shape picked in
     // the script editor.
     QString brushScript_;
     MapEditor::ScriptStampShape scriptStampShape_ =
         MapEditor::ScriptStampShape::Circle;
+    // Sculpting fraction (0..1) shared by Smooth / Flatten.
+    QDoubleSpinBox *sculptEffectSpin_ = nullptr;
     // T3.5 — load-image action: the loaded image becomes the stamp mask of
     // every terrain effect (BrushParams::useImageMask) until a stamp shape
     // is picked explicitly.

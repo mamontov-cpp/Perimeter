@@ -585,6 +585,60 @@ QIcon makeScriptEditIcon()
     return QIcon(pm);
 }
 
+/// Smooth-brush glyph: bumpy ground profile settling into a flat line.
+QIcon makeSmoothBrushIcon()
+{
+    QPixmap pm(22, 22);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    // Ground base.
+    p.setPen(QPen(kInk, 1.3));
+    p.setBrush(QColor(235, 235, 235));
+    p.drawRect(QRectF(3.0, 12.0, 16.0, 6.5));
+    // Bumpy surface (before).
+    p.setPen(QPen(QColor(100, 140, 180), 1.8, Qt::SolidLine, Qt::RoundCap));
+    QPolygonF bump;
+    bump << QPointF(3.0, 12.0) << QPointF(5.5, 8.5) << QPointF(8.0, 12.5)
+         << QPointF(10.5, 7.5) << QPointF(13.0, 12.5) << QPointF(15.5, 9.0)
+         << QPointF(19.0, 12.0);
+    p.drawPolyline(bump);
+    // Flattening arrow onto the average line.
+    p.setPen(QPen(kAccent, 1.6, Qt::SolidLine, Qt::RoundCap));
+    p.drawLine(QPointF(10.5, 8.2), QPointF(10.5, 3.2));
+    p.setBrush(kAccent);
+    p.setPen(Qt::NoPen);
+    p.drawPolygon(QPolygonF({QPointF(10.5, 1.6), QPointF(8.9, 4.6),
+                             QPointF(12.1, 4.6)}));
+    return QIcon(pm);
+}
+
+/// Flatten-brush glyph: scattered bumps being pulled onto an inclined
+/// plane (the slope survives, the noise dies).
+QIcon makeFlattenBrushIcon()
+{
+    QPixmap pm(22, 22);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    // The target plane.
+    p.setPen(QPen(kAccent, 2.0, Qt::SolidLine, Qt::RoundCap));
+    p.drawLine(QPointF(3.0, 15.0), QPointF(19.0, 8.0));
+    // Bumps above/below the plane.
+    p.setPen(QPen(QColor(100, 140, 180), 1.6, Qt::SolidLine, Qt::RoundCap));
+    p.drawLine(QPointF(7.0, 11.5), QPointF(7.0, 8.0));    // above
+    p.drawLine(QPointF(13.0, 13.8), QPointF(13.0, 17.0));  // below
+    p.setBrush(QColor(100, 140, 180));
+    p.setPen(Qt::NoPen);
+    p.drawEllipse(QPointF(7.0, 7.2), 1.5, 1.5);
+    p.drawEllipse(QPointF(13.0, 17.8), 1.5, 1.5);
+    // Ground corner.
+    p.setPen(QPen(kInk, 1.2));
+    p.setBrush(QColor(235, 235, 235));
+    p.drawRect(QRectF(3.0, 16.5, 16.0, 2.5));
+    return QIcon(pm);
+}
+
 /// T3.5: Convert a QImage to a BrushMask (pixel alpha → influence).
 /// Transparent pixels (alpha = 0) carry no effect; non-transparent ones
 /// influence the brush proportionally to their alpha (anti-aliased edges
@@ -684,6 +738,7 @@ MainWindow::MainWindow(QWidget *parent)
     buildViewToolbar();
     addToolBarBreak();
     buildBrushToolbar();
+    buildSculptToolbar();
     buildStatusBar();
     buildViewport();
 
@@ -1868,6 +1923,51 @@ void MainWindow::buildViewToolbar()
     bar->addWidget(viewReadout_);
 }
 
+void MainWindow::buildSculptToolbar()
+{
+    // The toolbar break must come BEFORE the toolbar is inserted: it forces
+    // this toolbar onto its own row below the View/Brush toolbars.
+    addToolBarBreak();
+
+    QToolBar *bar = addToolBar(tr("Sculpting"));
+    bar->setObjectName(QStringLiteral("SculptToolbar"));
+    bar->setMovable(false);
+    bar->setFloatable(false);
+    bar->setIconSize(QSize(22, 22));
+    bar->setStyleSheet(
+        QStringLiteral("QToolButton:enabled:hover, QToolButton:enabled:checked "
+                       "{ background: rgba(0, 96, 170, 35); border-radius: 4px; }"));
+
+    bar->addAction(actBrushSmooth_);
+    bar->addAction(actBrushFlatten_);
+
+    // The fraction spinbox (0..1) shared by both sculpting brushes: the part
+    // of the distance towards the reference (average / fitted plane) that
+    // ONE stamp moves a covered cell.
+    sculptEffectSpin_ = new QDoubleSpinBox(bar);
+    sculptEffectSpin_->setObjectName(QStringLiteral("sculptEffectSpin"));
+    sculptEffectSpin_->setRange(0.0, 1.0);
+    sculptEffectSpin_->setDecimals(2);
+    sculptEffectSpin_->setSingleStep(0.05);
+    sculptEffectSpin_->setValue(0.5);
+    sculptEffectSpin_->setToolTip(
+        tr("Sculpting fraction (0..1) shared by Smooth and Flatten: the "
+           "part of the distance towards the reference (average height / "
+           "fitted plane) that ONE stamp moves each covered cell. 1.0 "
+           "reaches the reference in a single stamp."));
+    connect(sculptEffectSpin_, &QDoubleSpinBox::valueChanged, this,
+            [this](double value) {
+                MapEditor::BrushParams params = brushTool_->params();
+                params.sculptEffect = value;
+                brushTool_->setParams(params);
+            });
+    bar->addWidget(sculptEffectSpin_);
+
+    // Type buttons are created in createBrushActions() — mirror the rest of
+    // the initial control state into the new toolbar.
+    updateActionStates();
+}
+
 void MainWindow::createBrushActions()
 {
     using Viewport = MapEditor::ViewportWidget;
@@ -2040,6 +2140,39 @@ void MainWindow::createBrushActions()
                                  5000);
     });
 
+    // --- Sculpting (Smooth / Flatten) ------------------------------------
+    // Dam-mode only; selecting either forces the Dam layer like the other
+    // Dam-only types. The fraction spinbox lives on the toolbar between the
+    // two buttons (sculpting section, after the delimiter).
+    const auto addSculptType = [this, typeGroup, &addType](
+            QIcon icon, const QString& text, const QString& toolTip,
+            MapEditor::BrushEffect effect) {
+        QAction* action = addType(icon, text, toolTip, effect, 0);
+        // Dam layer only — mirror the scripted brush mode forcing.
+        connect(action, &QAction::triggered, this, [this] {
+            MapEditor::BrushParams params = brushTool_->params();
+            params.mode = MapEditor::BrushMode::Dam;
+            brushTool_->setParams(params);
+            syncBrushControls();
+        });
+        return action;
+    };
+    actBrushSmooth_ = addSculptType(
+        makeSmoothBrushIcon(), tr("Smooth"),
+        tr("Sculpting (Dam layer only): averages the surface height under "
+           "the stamp and moves every covered cell a fraction towards that "
+           "average — bumps and dips blend away while the overall level "
+           "stays. The fraction spinbox next to it controls the blend "
+           "(1.0 = full average in one stamp)."),
+        MapEditor::BrushEffect::Smooth);
+    actBrushFlatten_ = addSculptType(
+        makeFlattenBrushIcon(), tr("Flatten"),
+        tr("Sculpting (Dam layer only): fits a least-squares plane through "
+           "the surface under the stamp and moves every covered cell a "
+           "fraction towards that plane — large-scale slopes survive, local "
+           "bumps die. Uses the same fraction spinbox as Smooth."),
+        MapEditor::BrushEffect::Flatten);
+
     // T3.5 — load brush image from file. The loaded image becomes the stamp
     // mask of the CURRENT brush type (raise/lower/level/... — the image
     // pixel value is the per-cell influence) until a stamp shape is picked
@@ -2101,11 +2234,14 @@ void MainWindow::createBrushActions()
             // The zeroplast brushes are a Dam-mode tool (the zeroplast
             // belongs to the dam domain) — the UI keeps them disabled in the
             // Geo mode, so a type left active by the switch falls back to a
-            // plain raise. Same for the scripted brush (Dam mode only).
+            // plain raise. Same for the scripted and sculpting brushes
+            // (Dam mode only).
             if (mode == MapEditor::BrushMode::Geo &&
                 (params.effect == MapEditor::BrushEffect::Align4ZP ||
                  params.effect == MapEditor::BrushEffect::ImageDecal ||
-                 params.effect == MapEditor::BrushEffect::Script)) {
+                 params.effect == MapEditor::BrushEffect::Script ||
+                 params.effect == MapEditor::BrushEffect::Smooth ||
+                 params.effect == MapEditor::BrushEffect::Flatten)) {
                 params.effect = MapEditor::BrushEffect::ChangeHeight;
                 params.direction = 1;
             }
@@ -2487,6 +2623,19 @@ void MainWindow::syncBrushControls()
     syncType(actBrushVeryLightDam_,
              params.effect == MapEditor::BrushEffect::VeryLightDam);
     syncType(actBrushScript_, params.effect == MapEditor::BrushEffect::Script);
+    syncType(actBrushSmooth_, params.effect == MapEditor::BrushEffect::Smooth);
+    syncType(actBrushFlatten_, params.effect == MapEditor::BrushEffect::Flatten);
+
+    // Sculpting fraction spinbox mirrors the tool (shared by both types).
+    if (sculptEffectSpin_) {
+        const double shown = MapEditor::BrushTool::clampSculptEffect(
+            params.sculptEffect);
+        if (std::abs(sculptEffectSpin_->value() - shown) > 1e-9) {
+            sculptEffectSpin_->blockSignals(true);
+            sculptEffectSpin_->setValue(shown);
+            sculptEffectSpin_->blockSignals(false);
+        }
+    }
 
     if (brushLevelSpin_) {
         // One height control for the height tools: the raise/lower step for
@@ -3778,6 +3927,7 @@ void MainWindow::updateActionStates()
                             actBrushGeo_, actBrushDam_,
                             actBrushSoot_, actBrushVeryLightDam_,
                             actBrushScript_, actBrushScriptEdit_,
+                            actBrushSmooth_, actBrushFlatten_,
                             actLoadBrushImage_,
                             actShapeCircle_, actShapeSquare_,
                             actShapeCircleOutline_, actShapeSquareOutline_,
@@ -3792,16 +3942,29 @@ void MainWindow::updateActionStates()
             action->setEnabled(worldLoaded && damMode);
         }
     }
-    // ImageDecal paints Dam palette indices only and the scripted brush
-    // operates on the Dam layer: the Geo layer is not available while either
-    // is selected (switching to Geo falls back to a plain raise, see the
-    // mode action).
+    // ImageDecal paints Dam palette indices only; the scripted and the
+    // sculpting brushes operate on the Dam layer: the Geo layer is not
+    // available while any of them is selected (switching to Geo falls back
+    // to a plain raise, see the mode action).
     const bool decalEffect = brushTool_ &&
         brushTool_->params().effect == MapEditor::BrushEffect::ImageDecal;
     const bool scriptEffect = brushTool_ &&
         brushTool_->params().effect == MapEditor::BrushEffect::Script;
+    const bool sculptEffect = brushTool_ &&
+        (brushTool_->params().effect == MapEditor::BrushEffect::Smooth ||
+         brushTool_->params().effect == MapEditor::BrushEffect::Flatten);
     if (actBrushGeo_) {
-        actBrushGeo_->setEnabled(worldLoaded && !decalEffect && !scriptEffect);
+        actBrushGeo_->setEnabled(worldLoaded && !decalEffect && !scriptEffect &&
+                                 !sculptEffect);
+    }
+    // The sculpting fraction applies only with a sculpting type selected
+    // (same image/decal/pick exclusions the radius has).
+    if (sculptEffectSpin_) {
+        sculptEffectSpin_->setEnabled(worldLoaded && brushTool_ && sculptEffect &&
+                                      !brushTool_->params().useImageMask &&
+                                      !decalEffect &&
+                                      brushTool_->params().effect !=
+                                          MapEditor::BrushEffect::PickColor);
     }
     // T3.1 — the stamp radius applies to every form except the image stamps
     // (the brush image and the decal carry their own size) and the

@@ -105,6 +105,19 @@ enum class BrushEffect
     /// light dam, palette painting). Dam mode only; the whole evaluation
     /// is ONE undo entry and honours a time limit (see ScriptedBrush).
     Script,
+
+    /// Sculpting — Dam mode only. Two-pass stamp: the average surface
+    /// height under the mask is computed first, then every covered cell
+    /// moves a fraction (params.sculptEffect, 0..1) of the way towards
+    /// that average. One stamp = one undo entry.
+    Smooth,
+    /// Sculpting — Dam mode only. Like Smooth, but the reference is a
+    /// least-squares plane (linear regression z = a*dx + b*dy + c) fitted
+    /// over the pre-edit heights under the mask: cells move towards the
+    /// plane by the sculptEffect fraction, preserving large-scale slopes
+    /// while removing bumps. Falls back to the Smooth average when the
+    /// fit is degenerate.
+    Flatten,
 };
 
 /// The largest stamp radius the editor allows (map cells). The game's own
@@ -163,6 +176,12 @@ struct BrushParams
     /// "not configured yet" (the stamp refuses with a clear error).
     std::string script;
 
+    /// Sculpting brushes (Smooth / Flatten): the fraction (0..1) of the
+    /// distance towards the reference (average / fitted plane) that one
+    /// stamp moves each covered cell. 1.0 reaches the reference in one
+    /// stamp, smaller values blend progressively.
+    double sculptEffect = 0.5;
+
     /// T3.5 (reworked): when true, the loaded image mask (BrushTool::
     /// setImageMask) replaces the shape/radius stamp as the brush geometry
     /// for every terrain effect — the image pixel value is the per-cell
@@ -183,6 +202,8 @@ struct BrushParams
                // Epsilon compare: the angle comes out of wrapping/trig math
                // where bit-exact equality is not guaranteed.
                std::abs(polygonAngleDeg - other.polygonAngleDeg) < 1e-9 &&
+               // Same for the sculpt fraction (comes out of spinbox math).
+               std::abs(sculptEffect - other.sculptEffect) < 1e-9 &&
                script == other.script &&
                useImageMask == other.useImageMask;
     }
@@ -309,6 +330,8 @@ public:
     static int clampPolygonSides(int sides);
     /// Regular-polygon first-vertex angle wrapped into [0,360).
     static double clampPolygonAngleDeg(double deg);
+    /// Sculpting fraction clamped into [0,1] (Smooth / Flatten).
+    static double clampSculptEffect(double effect);
     /// Largest stroke width the unfilled shapes can take: the stamp's own
     /// extent (2*radius+1 cells) — a thicker band would leave the footprint.
     static int maxThickness(int radius);
@@ -400,6 +423,14 @@ private:
     /// Per-cell effect application (the T3.2 height tools; the T3.3+ switch
     /// cases are refused earlier, in applyMask()).
     void applyEffectToCell(const BrushParams& params, int x, int y, unsigned char influence);
+
+    /// Smooth / Flatten two-pass sculpting (see BrushEffect::Smooth): pass 1
+    /// computes the reference (average height or least-squares plane) over
+    /// the PRE-edit cells under the mask, pass 2 moves every covered cell a
+    /// sculptEffect fraction towards its target — through Terra's own
+    /// variable-H toolzer, exactly like the Set Height brush (Dam mode only).
+    bool applySculpt(const BrushMask& absoluteMask, const BrushParams& params,
+                     int bx, int by, int bxEnd, int byEnd);
 
     EditorSession& session_;
     BrushParams params_;

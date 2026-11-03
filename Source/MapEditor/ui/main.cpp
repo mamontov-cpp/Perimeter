@@ -6,6 +6,7 @@
 #include <QApplication>
 #include <QDir>
 #include <QDoubleSpinBox>
+#include <QToolBar>
 #include <QImage>
 #include <QMouseEvent>
 #include <QTimer>
@@ -63,6 +64,24 @@ int main(int argc, char *argv[])
                                shots.toStdString().c_str());
         QTimer::singleShot(1000, &window, [&window, gameDir] {
             window.debugOpenGameDir(gameDir.toStdString());
+        });
+        // The Sculpting toolbar must exist as its OWN toolbar (a toolbar
+        // break above it — own row), carrying both sculpting actions and
+        // the shared fraction spinbox.
+        QTimer::singleShot(1500, &window, [&window] {
+            QToolBar *sculpt = window.findChild<QToolBar *>(
+                QStringLiteral("SculptToolbar"));
+            QDoubleSpinBox *spin = window.findChild<QDoubleSpinBox *>(
+                QStringLiteral("sculptEffectSpin"));
+            const bool ownsSpin =
+                sculpt && spin && spin->parentWidget() == sculpt;
+            const int actions =
+                sculpt ? sculpt->actions().size() : 0;
+            MapEditor::editorTrace(
+                "autotest: sculpt toolbar found=%d actions=%d spinOwned=%d "
+                "breakRows=%d",
+                sculpt ? 1 : 0, actions, ownsSpin ? 1 : 0,
+                static_cast<int>(window.findChildren<QToolBar *>().size()));
         });
         QTimer::singleShot(10000, &window, [&window, world] {
             window.debugLoadWorld(world.toStdString());
