@@ -518,8 +518,15 @@ bool EditorSession::saveWorld()
         return false;
     }
 
-    hasSavedUndoPos_ = true;
-    savedUndoPos_ = undoPos_;
+    {
+        std::lock_guard<std::mutex> lock(undoMutex_);
+        hasSavedUndoPos_ = true;
+        // A pending coalescing transaction is not part of the stack yet; its
+        // edits are applied to the buffers but absent from the saved file, so
+        // the checkpoint correctly excludes it (finalize pushes it past
+        // savedUndoPos_ and the world reads as modified again).
+        savedUndoPos_ = undoPos_;
+    }
     modified_ = false;
     paletteModified_ = false;
     vMap.worldChanged = false;
@@ -656,6 +663,11 @@ namespace {
 /// UNDO_REDO_BUFFER_SIZE accounting: 4096*4096 cells x 4 buffers).
 constexpr std::size_t kMaxUndoCells = 4096u * 4096u;
 
+/// Total cells a single pending undo transaction may collect before it is
+/// closed even though the coalescing window is still running — an
+/// uninterrupted stroke must not collect snapshots without limit.
+constexpr std::size_t kMaxPendingUndoCells = kMaxUndoCells / 2;
+
 /// Swap the snapshot bytes with the live buffers over the snapshot rectangle.
 /// After a call the snapshot holds whatever was in the buffers before — the
 /// caller decides whether that means "restore" (undo) or "re-apply" (redo).
@@ -756,23 +768,48 @@ void EditorSession::recordUndoArea(int x, int y, int width, int height)
         }
     }
 
-    // Inside an undo group the snapshot is collected, not pushed — the
-    // group merges into ONE entry at endUndoGroup().
-    if (undoGroupActive_) {
-        undoGroup_.push_back(std::move(snapshot));
+    // Inside an explicit undo group, or inside a pending coalescing-window
+    // transaction, the snapshot is collected, not pushed — the transaction
+    // merges into ONE undo-stack entry when it is closed.
+    std::lock_guard<std::mutex> lock(undoMutex_);
+    const auto now = std::chrono::steady_clock::now();
+    const bool withinWindow =
+        undoPendingOpen_ && undoCoalescingWindowMs_ > 0 &&
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - lastUndoActionTime_).count() <= undoCoalescingWindowMs_;
+    if (undoGroupActive_ || withinWindow) {
+        if (!undoGroupActive_ &&
+            pendingGroupCells() + cells > kMaxPendingUndoCells) {
+            // The pending transaction outgrew the memory budget (a long
+            // uninterrupted stroke): close it and start a fresh one.
+            finalizePendingUndoGroup();
+            undoGroup_.push_back(std::move(snapshot));
+            undoPendingOpen_ = true;
+        } else {
+            undoGroup_.push_back(std::move(snapshot));
+        }
+        lastUndoActionTime_ = now;
         setModified(true);
         return;
     }
 
     // A new edit discards every undone snapshot after the current position
-    // (they no longer correspond to any reachable world state).
+    // (they no longer correspond to any reachable world state). Closing the
+    // previous pending transaction first commits it at the current position,
+    // so it survives and is undoable separately.
+    finalizePendingUndoGroup();
     undoStack_.resize(undoPos_);
-    undoStack_.push_back(std::move(snapshot));
-    ++undoPos_;
-
-    // Bound the memory usage by dropping the oldest snapshots; the same
-    // trade-off Terra's dispatcher makes inside UndoDispatcher_PutPreChangedArea.
-    trimUndoStack();
+    if (undoCoalescingWindowMs_ > 0) {
+        undoGroup_.push_back(std::move(snapshot));
+        undoPendingOpen_ = true;
+    } else {
+        undoStack_.push_back(std::move(snapshot));
+        ++undoPos_;
+        // Bound the memory usage by dropping the oldest snapshots; the same
+        // trade-off Terra's dispatcher makes inside UndoDispatcher_PutPreChangedArea.
+        trimUndoStack();
+    }
+    lastUndoActionTime_ = now;
 
     // A recorded area happens right before an edit, so the world counts as
     // modified from this point on. undo()/redo() re-derive the flag
@@ -782,24 +819,61 @@ void EditorSession::recordUndoArea(int x, int y, int width, int height)
 
 void EditorSession::beginUndoGroup()
 {
-    // Nested groups are not used; treat a stray begin as a restart.
-    undoGroup_.clear();
+    std::lock_guard<std::mutex> lock(undoMutex_);
+    if (undoGroupActive_) {
+        return; // nested begin: collecting already
+    }
+    if (!undoPendingOpen_) {
+        undoGroup_.clear();
+        // The group as a whole is one fresh edit — drop the redo tail now, the
+        // same thing recordUndoArea() does for a standalone snapshot.
+        undoStack_.resize(undoPos_);
+    }
+    // When a transaction is pending (coalescing window), an explicit group
+    // continues collecting into it: the merged entry may still join the
+    // following edits that arrive within the window.
     undoGroupActive_ = true;
-    // The group as a whole is one fresh edit — drop the redo tail now, the
-    // same thing recordUndoArea() does for a standalone snapshot.
-    undoStack_.resize(undoPos_);
 }
 
 bool EditorSession::endUndoGroup()
 {
+    std::lock_guard<std::mutex> lock(undoMutex_);
     undoGroupActive_ = false;
     if (undoGroup_.empty()) {
+        undoPendingOpen_ = false;
         return false;
+    }
+
+    lastUndoActionTime_ = std::chrono::steady_clock::now();
+    // The collected snapshots form one entry either way: with a coalescing
+    // window the entry stays pending so edits that follow within the window
+    // join the same undo transaction; without a window it commits now.
+    undoPendingOpen_ = true;
+    if (undoCoalescingWindowMs_ == 0) {
+        finalizePendingUndoGroup();
+    }
+    return true;
+}
+
+std::size_t EditorSession::pendingGroupCells() const
+{
+    std::size_t total = 0;
+    for (const UndoAreaSnapshot& snap : undoGroup_) {
+        total += static_cast<std::size_t>(snap.sx) * snap.sy;
+    }
+    return total;
+}
+
+void EditorSession::finalizePendingUndoGroup()
+{
+    if (!undoPendingOpen_ || undoGroup_.empty()) {
+        undoPendingOpen_ = false;
+        return;
     }
 
     // Merge the collected snapshots into one entry over the union
     // rectangle. The snapshots were captured in edit order, so for every
-    // cell the EARLIEST snapshot covering it holds the pre-group state
+    // cell the EARLIEST snapshot covering it holds the pre-transaction state
     // (later snapshots may already contain earlier edits of this group).
     const UndoAreaSnapshot& first = undoGroup_.front();
     int x0 = first.x;
@@ -821,10 +895,10 @@ bool EditorSession::endUndoGroup()
     merged.sx = sx;
     merged.sy = sy;
     const std::size_t cells = static_cast<std::size_t>(sx) * sy;
-    // Cells no snapshot covers were never edited by the group (mask-clipped
-    // or render-side effects only) — their pre-state equals the CURRENT
-    // buffer content, so seed the merged entry with it and overwrite the
-    // covered cells with the captured pre-states below.
+    // Cells no snapshot covers were never edited by the transaction
+    // (mask-clipped or render-side effects only) — their pre-state equals the
+    // CURRENT buffer content, so seed the merged entry with it and overwrite
+    // the covered cells with the captured pre-states below.
     merged.geo.resize(cells);
     merged.dam.resize(cells);
     merged.atr.resize(cells);
@@ -868,11 +942,36 @@ bool EditorSession::endUndoGroup()
 
     // The same memory bound as recordUndoArea().
     trimUndoStack();
-    return true;
+    undoPendingOpen_ = false;
+}
+
+void EditorSession::breakUndoCoalescing()
+{
+    std::lock_guard<std::mutex> lock(undoMutex_);
+    finalizePendingUndoGroup();
+}
+
+void EditorSession::setUndoCoalescingWindowMs(int ms)
+{
+    std::lock_guard<std::mutex> lock(undoMutex_);
+    undoCoalescingWindowMs_ = std::max(0, ms);
+    if (undoCoalescingWindowMs_ == 0) {
+        // Window disabled: commit whatever is pending so the history keeps
+        // one-entry-per-record semantics from here on.
+        finalizePendingUndoGroup();
+    }
+}
+
+int EditorSession::undoCoalescingWindowMs() const
+{
+    std::lock_guard<std::mutex> lock(undoMutex_);
+    return undoCoalescingWindowMs_;
 }
 
 void EditorSession::trimUndoStack()
 {
+    // Caller must hold undoMutex_ (all callers do — it is only invoked from
+    // the recording/commit paths, never on its own).
     std::size_t totalCells = 0;
     for (const UndoAreaSnapshot& snap : undoStack_) {
         totalCells += static_cast<std::size_t>(snap.sx) * snap.sy;
@@ -907,6 +1006,10 @@ void EditorSession::trimUndoStack()
 
 bool EditorSession::undo()
 {
+    std::lock_guard<std::mutex> lock(undoMutex_);
+    // Close the pending transaction (if any): undo must revert the last
+    // COMPLETED group of actions, and it finalizes the window.
+    finalizePendingUndoGroup();
     if (!isWorldLoaded() || undoPos_ == 0) {
         return false;
     }
@@ -922,6 +1025,10 @@ bool EditorSession::undo()
 
 bool EditorSession::redo()
 {
+    std::lock_guard<std::mutex> lock(undoMutex_);
+    // Same as undo(): a pending transaction is closed first, so redo applies
+    // to committed history only.
+    finalizePendingUndoGroup();
     if (!isWorldLoaded() || undoPos_ >= undoStack_.size()) {
         return false;
     }
@@ -937,21 +1044,32 @@ bool EditorSession::redo()
 
 void EditorSession::clearUndoHistory()
 {
+    std::lock_guard<std::mutex> lock(undoMutex_);
     undoStack_.clear();
     undoPos_ = 0;
     savedUndoPos_ = 0;
     hasSavedUndoPos_ = false;
     undoGroup_.clear();
     undoGroupActive_ = false;
+    undoPendingOpen_ = false;
+}
+
+bool EditorSession::isUndoGroupActive() const
+{
+    std::lock_guard<std::mutex> lock(undoMutex_);
+    return undoGroupActive_;
 }
 
 bool EditorSession::canUndo() const
 {
-    return isWorldLoaded() && undoPos_ > 0;
+    std::lock_guard<std::mutex> lock(undoMutex_);
+    return isWorldLoaded() &&
+           (undoPos_ > 0 || (undoPendingOpen_ && !undoGroup_.empty()));
 }
 
 bool EditorSession::canRedo() const
 {
+    std::lock_guard<std::mutex> lock(undoMutex_);
     return isWorldLoaded() && undoPos_ < undoStack_.size();
 }
 

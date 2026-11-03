@@ -294,6 +294,8 @@ bool checkUndoRestores(const StampPre& pre, int stampX, int stampY)
 bool runBrushAlignDamOnGeoTests()
 {
     MapEditor::EditorSession session;
+    // Undo coalescing off: these tests expect one undo entry per action.
+    session.setUndoCoalescingWindowMs(0);
     const bool loaded = prepareBrushTestSession("load_root_align_dam", session);
     TEST_REQUIRE(loaded,
                  "the align dam on geo test could not load the temporary world.");

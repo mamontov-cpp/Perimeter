@@ -97,6 +97,8 @@ int wholeAt(int x, int y)
 bool runBrushHeightGateTests()
 {
     MapEditor::EditorSession session;
+    // Undo coalescing off: these tests expect one undo entry per action.
+    session.setUndoCoalescingWindowMs(0);
     const bool loaded = prepareGateTestSession("load_root_gate", session);
     TEST_REQUIRE(loaded,
                  "the height-gate test could not load the temporary world.");

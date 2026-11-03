@@ -167,6 +167,8 @@ bool checkPatchAtTarget(const MapEditor::BrushMask& mask, int stampX,
 bool runBrushSetHeightTests()
 {
     MapEditor::EditorSession session;
+    // Undo coalescing off: these tests expect one undo entry per action.
+    session.setUndoCoalescingWindowMs(0);
     const bool loaded = prepareBrushTestSession("load_root_set_height", session);
     TEST_REQUIRE(loaded,
                  "the set-height test could not load the temporary world.");

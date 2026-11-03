@@ -3,10 +3,12 @@
 #include "WorldFiles.h"
 #include "WorldParams.h"
 
+#include <chrono>
+#include <cstdint>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
-#include <cstdint>
 
 // ============================================================================
 // MapEditorCore — EditorSession.
@@ -207,6 +209,9 @@ public:
     /// Snapshot the current voxel buffers over the given rectangle (clipped to
     /// the map). Call this BEFORE modifying VxGBuf/VxDBuf/AtrBuf/SurBuf.
     /// Any snapshot previously undone is discarded (it becomes unreachable).
+    /// Consecutive calls land in ONE undo transaction while they arrive within
+    /// the coalescing window (see setUndoCoalescingWindowMs()) — a stroke of
+    /// brush stamps is undone by a single undo().
     void recordUndoArea(int x, int y, int width, int height);
 
     /// Begin an undo group: recordUndoArea() calls collect their snapshots
@@ -219,9 +224,25 @@ public:
     void beginUndoGroup();
     /// Merge the collected snapshots into a single undo entry. No-op (returns
     /// false) when the group recorded nothing. Must follow beginUndoGroup().
+    /// With a non-zero coalescing window the entry stays "pending" afterwards,
+    /// so edits that follow within the window join the same transaction.
     bool endUndoGroup();
     /// True between beginUndoGroup() and endUndoGroup().
-    bool isUndoGroupActive() const { return undoGroupActive_; }
+    bool isUndoGroupActive() const;
+
+    /// Close the currently pending undo transaction (if any) so the next
+    /// recordUndoArea() starts a fresh one regardless of the 500 ms window.
+    /// Called implicitly on undo()/redo(); useful as an explicit boundary
+    /// (e.g. between two logically separate edits that happen to be close in
+    /// time, or from tests).
+    void breakUndoCoalescing();
+
+    /// Width of the undo coalescing window in milliseconds: undoable actions
+    /// that follow one another within this period form ONE undo transaction.
+    /// 500 by default; 0 disables coalescing (every recordUndoArea() is its
+    /// own undo entry — the pre-coalescing behaviour, used by the tests).
+    void setUndoCoalescingWindowMs(int ms);
+    int undoCoalescingWindowMs() const;
 
     /// Undo the last terrain edit operation (restore the last not-yet-undone
     /// snapshot and mark the area for re-render). Returns true if an operation
@@ -366,7 +387,20 @@ public:
 private:
     /// Re-derive modified_ from the undo position vs. the position recorded at
     /// the last successful save. Called after every undo/redo.
+    /// All undo-state access (undo stack, pending group, positions) is
+    /// serialized through undoMutex_ — recordUndoArea()/undo()/redo() may be
+    /// invoked while the world is being edited, so the history must stay
+    /// consistent even if a caller runs outside the UI thread.
     void markModifiedAgainstSavedState();
+
+    /// Merge the pending transaction (undoGroup_) into ONE undo-stack entry
+    /// and push it. No-op when nothing is pending. Caller must hold
+    /// undoMutex_.
+    void finalizePendingUndoGroup();
+
+    /// Total snapshot cells currently collected in the pending transaction.
+    /// Caller must hold undoMutex_.
+    std::size_t pendingGroupCells() const;
 
     /// Populate vMap.wTable for RESOURCE/Worlds. Terra's prepare() may only be
     /// called once per process (its landPrepare() accumulates global radius
@@ -391,6 +425,8 @@ private:
     // are currently "applied" (not undone); entries at/after undoPos_ hold
     // their original (pre-change) bytes when undone and post-change bytes when
     // redone — the same swap semantics as vrtMap's preCAs list.
+    // Everything in this block is guarded by undoMutex_.
+    mutable std::mutex undoMutex_;
     std::vector<UndoAreaSnapshot> undoStack_;
     size_t undoPos_ = 0;
     /// Undo-stack position (undoPos_) recorded at the last successful save.
@@ -401,6 +437,18 @@ private:
     /// recordUndoArea() appends here instead of pushing entries.
     bool undoGroupActive_ = false;
     std::vector<UndoAreaSnapshot> undoGroup_;
+    /// Pending undo transaction: with a non-zero coalescing window the
+    /// snapshots of undoGroup_ are NOT pushed as their own stack entry but
+    /// kept here, so further undoable actions arriving within the window
+    /// merge into the same transaction. The transaction is closed (merged
+    /// into undoStack_ by finalizePendingUndoGroup()) when the window
+    /// expires, on undo()/redo(), on clearUndoHistory() or when it grows past
+    /// the memory budget.
+    bool undoPendingOpen_ = false;
+    std::chrono::steady_clock::time_point lastUndoActionTime_{};
+    /// Coalescing window width, milliseconds (0 = every record is its own
+    /// entry). See setUndoCoalescingWindowMs().
+    int undoCoalescingWindowMs_ = 500;
 
     /// Bound the undo stack by kMaxUndoCells: drop the oldest entries in ONE
     /// range erase (per-entry erase(begin) would re-move the tail on every

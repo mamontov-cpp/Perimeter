@@ -158,6 +158,8 @@ bool runBrushToolTests()
     }
 
     MapEditor::EditorSession session;
+    // Undo coalescing off: these tests expect one undo entry per action.
+    session.setUndoCoalescingWindowMs(0);
     TEST_REQUIRE(session.setGameDir(loadRoot.u8string()),
                  "EditorSession::setGameDir() failed.");
     TEST_REQUIRE(session.scanWorlds() && session.worldCount() >= 1,

@@ -31,7 +31,10 @@ cmake --build build --config Release --target map_editor -- -m
 2. `File → Load World...` — мир из `RESOURCE/Worlds/*`.
 
 Все правки рельефа/цвета делаются кистями (панель Brush на тулбаре);
-Undo `Ctrl+Z` / Redo `Ctrl+R`/`Ctrl+Y`. Мир сохраняется через `File → Save`
+Undo `Ctrl+Z` / Redo `Ctrl+R`/`Ctrl+Y`. Правки, следующие друг за другом с
+интервалом меньше **500 мс**, объединяются в одну транзакцию истории — один
+`Ctrl+Z` откатывает всю серию (весь штрих кисти), пауза дольше 500 мс
+начинает новую транзакцию. Мир сохраняется через `File → Save`
 (`Ctrl+S`) — пишет `output.vmp`, палитры, `world.ini`, `hardness.bin`
 (если был), `cache.tga`, `map.tga`.
 

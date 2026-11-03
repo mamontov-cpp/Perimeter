@@ -107,6 +107,8 @@ bool runImageExportTests()
     // loaded world) stays alive for the whole test — SGetAlt is read after
     // the exports.
     MapEditor::EditorSession session;
+    // Undo coalescing off: these tests expect one undo entry per action.
+    session.setUndoCoalescingWindowMs(0);
     TEST_REQUIRE(session.setGameDir(ctx.gameDir.u8string()) &&
                      session.scanWorlds() && session.worldCount() >= 1,
                  "no world available for the export tests.");
@@ -206,6 +208,8 @@ bool runImageImportTests()
     TEST_REQUIRE(!ctx.gameDir.empty(), "game dir missing.");
 
     MapEditor::EditorSession session;
+    // Undo coalescing off: these tests expect one undo entry per action.
+    session.setUndoCoalescingWindowMs(0);
     TEST_REQUIRE(session.setGameDir(ctx.gameDir.u8string()) &&
                      session.scanWorlds() && session.worldCount() >= 1,
                  "no world available for the import tests.");

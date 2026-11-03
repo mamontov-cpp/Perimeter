@@ -146,6 +146,8 @@ bool prepareBrushTestSession(const char* subdirName,
 bool runScriptedBrushTests()
 {
     MapEditor::EditorSession session;
+    // Undo coalescing off: these tests expect one undo entry per action.
+    session.setUndoCoalescingWindowMs(0);
     const bool loaded = prepareBrushTestSession("load_root_scripted", session);
     TEST_REQUIRE(loaded,
                  "the scripted-brush test could not load the temporary world.");

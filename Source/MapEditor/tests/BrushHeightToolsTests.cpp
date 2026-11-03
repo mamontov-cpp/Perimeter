@@ -398,6 +398,8 @@ bool checkUndoRestores(const StampPre& pre, int stampX, int stampY)
 bool runBrushAlignTests()
 {
     MapEditor::EditorSession session;
+    // Undo coalescing off: these tests expect one undo entry per action.
+    session.setUndoCoalescingWindowMs(0);
     const bool loaded = prepareBrushTestSession("load_root_align", session);
     TEST_REQUIRE(loaded, "the align test could not load the temporary world.");
 
@@ -540,6 +542,8 @@ bool runBrushAlignTests()
 bool runBrushModeTests()
 {
     MapEditor::EditorSession session;
+    // Undo coalescing off: these tests expect one undo entry per action.
+    session.setUndoCoalescingWindowMs(0);
     const bool loaded = prepareBrushTestSession("load_root_modes", session);
     TEST_REQUIRE(loaded, "the mode test could not load the temporary world.");
 

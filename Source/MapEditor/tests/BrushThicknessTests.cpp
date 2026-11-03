@@ -327,6 +327,8 @@ MAP_EDITOR_REGISTER_TEST("Brush thickness geometry", 87,
 bool runBrushThicknessApplyTests()
 {
     MapEditor::EditorSession session;
+    // Undo coalescing off: these tests expect one undo entry per action.
+    session.setUndoCoalescingWindowMs(0);
     const bool loaded = prepareBrushTestSession("load_root_thickness", session);
     TEST_REQUIRE(loaded,
                  "the thickness test could not load the temporary world.");

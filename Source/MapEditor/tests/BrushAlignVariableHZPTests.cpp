@@ -203,6 +203,8 @@ bool prepareBrushTestSession(const char* subdirName,
 bool runBrushAlignVariableHZPTests()
 {
     MapEditor::EditorSession session;
+    // Undo coalescing off: these tests expect one undo entry per action.
+    session.setUndoCoalescingWindowMs(0);
     const bool loaded = prepareBrushTestSession("load_root_vh_zp", session);
     TEST_REQUIRE(loaded,
                  "the AlignVariableH ZP test could not load the temporary world.");

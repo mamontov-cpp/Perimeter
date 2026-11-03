@@ -209,6 +209,8 @@ bool checkStampEquals(const StampState& want, int stampX, int stampY,
 bool runBrushZeroplastGeoTests()
 {
     MapEditor::EditorSession session;
+    // Undo coalescing off: these tests expect one undo entry per action.
+    session.setUndoCoalescingWindowMs(0);
     const bool loaded =
         prepareBrushTestSession("load_root_zp_geo", session);
     TEST_REQUIRE(loaded,

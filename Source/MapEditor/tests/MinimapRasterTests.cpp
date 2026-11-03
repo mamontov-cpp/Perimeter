@@ -170,6 +170,8 @@ bool sampleMinimap(std::vector<unsigned char>& bgr)
 bool runMinimapRasterIdentityTests()
 {
     MapEditor::EditorSession session;
+    // Undo coalescing off: these tests expect one undo entry per action.
+    session.setUndoCoalescingWindowMs(0);
     const bool loaded = prepareBrushTestSession("load_root_minimap_raster",
                                                 session);
     TEST_REQUIRE(loaded,
@@ -215,6 +217,8 @@ MAP_EDITOR_REGISTER_TEST("Live minimap raster equals the saved map.tga raster",
 bool runMinimapRasterEditTests()
 {
     MapEditor::EditorSession session;
+    // Undo coalescing off: these tests expect one undo entry per action.
+    session.setUndoCoalescingWindowMs(0);
     const bool loaded = prepareBrushTestSession("load_root_minimap_edit",
                                                 session);
     TEST_REQUIRE(loaded,
@@ -297,6 +301,8 @@ MAP_EDITOR_REGISTER_TEST("Live minimap raster follows brush and undo/redo", 83,
 bool runMinimapSamplerBoundsTests()
 {
     MapEditor::EditorSession session;
+    // Undo coalescing off: these tests expect one undo entry per action.
+    session.setUndoCoalescingWindowMs(0);
     const bool loaded = prepareBrushTestSession("load_root_minimap_bounds",
                                                 session);
     TEST_REQUIRE(loaded,

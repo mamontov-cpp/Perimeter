@@ -149,6 +149,8 @@ int wholeAt(int x, int y)
 bool runSculptBrushTests()
 {
     MapEditor::EditorSession session;
+    // Undo coalescing off: these tests expect one undo entry per action.
+    session.setUndoCoalescingWindowMs(0);
     const bool loaded = prepareBrushTestSession("load_root_sculpt", session);
     TEST_REQUIRE(loaded,
                  "the sculpt test could not load the temporary world.");
