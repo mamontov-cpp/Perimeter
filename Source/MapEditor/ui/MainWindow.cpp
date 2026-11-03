@@ -413,6 +413,56 @@ QIcon makeEyedropperIcon()
     return QIcon(pm);
 }
 
+/// 3D shape brush glyphs: side-view silhouettes on a ground line.
+QIcon makeShape3DIcon(MapEditor::Shape3DKind kind)
+{
+    QPixmap pm(22, 22);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setPen(QPen(kInk, 2.0));
+    drawGroundLine(p, 18.5);
+    p.setPen(QPen(kInk, 1.6));
+    p.setBrush(kAccent);
+    switch (kind) {
+    case MapEditor::Shape3DKind::Cone:
+        // Triangle with an elliptic base.
+        p.drawLine(QPointF(11.0, 3.0), QPointF(4.0, 17.0));
+        p.drawLine(QPointF(11.0, 3.0), QPointF(18.0, 17.0));
+        p.drawLine(QPointF(4.0, 17.0), QPointF(18.0, 17.0));
+        break;
+    case MapEditor::Shape3DKind::Pyramid:
+        // A triangle too — the polygon plan shows in the preview.
+        p.drawLine(QPointF(11.0, 3.0), QPointF(4.0, 17.0));
+        p.drawLine(QPointF(11.0, 3.0), QPointF(18.0, 17.0));
+        p.drawLine(QPointF(4.0, 17.0), QPointF(18.0, 17.0));
+        p.setPen(Qt::NoPen);
+        p.drawEllipse(QRectF(9.2, 1.2, 3.6, 3.6)); // apex dot
+        break;
+    case MapEditor::Shape3DKind::TruncatedCone:
+        p.drawPolygon(QPolygonF()
+                      << QPointF(8.0, 4.0) << QPointF(14.0, 4.0)
+                      << QPointF(19.0, 17.0) << QPointF(3.0, 17.0));
+        break;
+    case MapEditor::Shape3DKind::TruncatedPyramid:
+        p.drawPolygon(QPolygonF()
+                      << QPointF(8.0, 4.0) << QPointF(14.0, 4.0)
+                      << QPointF(17.0, 17.0) << QPointF(5.0, 17.0));
+        break;
+    case MapEditor::Shape3DKind::Torus:
+        // A half ring: outer arc + inner arc.
+        p.drawArc(QRectF(2.0, 6.0, 18.0, 18.0), 0, 180 * 16);
+        p.drawArc(QRectF(7.0, 11.0, 8.0, 8.0), 0, 180 * 16);
+        break;
+    case MapEditor::Shape3DKind::HalfEllipsoid:
+        p.drawChord(QRectF(3.0, 5.0, 16.0, 16.0), 0, 180 * 16);
+        break;
+    case MapEditor::Shape3DKind::None:
+        break;
+    }
+    return QIcon(pm);
+}
+
 /// Place Spawn mode glyph: a map pin over a ground line — the spawn the
 /// click drops at the target cell.
 QIcon makePlaceSpawnIcon()
@@ -2238,6 +2288,113 @@ void MainWindow::buildSculptToolbar()
     });
     bar->addWidget(blurRadiusSpin_);
 
+    // --- 3D shape brushes --------------------------------------------------
+    bar->addSeparator();
+    bar->addAction(actBrush3DCone_);
+    bar->addAction(actBrush3DPyramid_);
+    bar->addAction(actBrush3DTruncCone_);
+    bar->addAction(actBrush3DTruncPyramid_);
+    bar->addAction(actBrush3DTorus_);
+    bar->addAction(actBrush3DEllipsoid_);
+
+    // Shape Height: the amplitude of the 3D shapes — the per-cell target is
+    // Height + profile * Shape Height. 0 flattens the footprint down to the
+    // Height base in Lower / Set-to-Height modes (the dam is removed there).
+    shapeHeightSpin_ = new QSpinBox(bar);
+    shapeHeightSpin_->setObjectName(QStringLiteral("shapeHeightSpin"));
+    shapeHeightSpin_->setRange(0, 255);
+    shapeHeightSpin_->setValue(32);
+    shapeHeightSpin_->setSuffix(tr(" v"));
+    shapeHeightSpin_->setToolTip(
+        tr("Shape Height of the 3D brushes: the amplitude of the solid — "
+           "every covered cell moves towards Height + the shape profile * "
+           "Shape Height (whole voxels). 0 flattens the footprint to the "
+           "Height base (Lower / Set-to-Height remove the dam)."));
+    connect(shapeHeightSpin_, &QSpinBox::valueChanged, this, [this](int value) {
+        MapEditor::BrushParams params = brushTool_->params();
+        params.shapeHeight = value;
+        brushTool_->setParams(params);
+        syncBrushControls();
+    });
+    bar->addWidget(shapeHeightSpin_);
+
+    // Upper part offset: the top circle/polygon centre shift (cells) — tilts
+    // the cone/pyramid/frusta. The clamp keeps the top strictly inside the
+    // base (applied in Shape3D.h).
+    shapeTopOffsetXSpin_ = new QSpinBox(bar);
+    shapeTopOffsetXSpin_->setObjectName(QStringLiteral("shapeTopOffsetXSpin"));
+    shapeTopOffsetXSpin_->setRange(-MapEditor::BrushTool::maxRadius(),
+                                   MapEditor::BrushTool::maxRadius());
+    shapeTopOffsetXSpin_->setSuffix(tr(" c"));
+    shapeTopOffsetXSpin_->setToolTip(
+        tr("Upper part X offset (cells): the top circle/polygon centre shift "
+           "— tilts the cone, pyramid, truncated cone and truncated pyramid. "
+           "The offset is clamped to keep the top inside the base."));
+    connect(shapeTopOffsetXSpin_, &QSpinBox::valueChanged, this,
+            [this](int value) {
+                MapEditor::BrushParams params = brushTool_->params();
+                params.shapeTopOffsetX = value;
+                brushTool_->setParams(params);
+                syncBrushControls();
+            });
+    bar->addWidget(shapeTopOffsetXSpin_);
+
+    shapeTopOffsetYSpin_ = new QSpinBox(bar);
+    shapeTopOffsetYSpin_->setObjectName(QStringLiteral("shapeTopOffsetYSpin"));
+    shapeTopOffsetYSpin_->setRange(-MapEditor::BrushTool::maxRadius(),
+                                   MapEditor::BrushTool::maxRadius());
+    shapeTopOffsetYSpin_->setSuffix(tr(" c"));
+    shapeTopOffsetYSpin_->setToolTip(
+        tr("Upper part Y offset (cells): the top circle/polygon centre shift "
+           "— tilts the cone, pyramid, truncated cone and truncated pyramid. "
+           "The offset is clamped to keep the top inside the base."));
+    connect(shapeTopOffsetYSpin_, &QSpinBox::valueChanged, this,
+            [this](int value) {
+                MapEditor::BrushParams params = brushTool_->params();
+                params.shapeTopOffsetY = value;
+                brushTool_->setParams(params);
+                syncBrushControls();
+            });
+    bar->addWidget(shapeTopOffsetYSpin_);
+
+    // Upper part radius: the truncated cone's top radius, or the torus'
+    // inner radius. Clamped below the base radius (Shape3D.h).
+    shapeTopRadiusSpin_ = new QSpinBox(bar);
+    shapeTopRadiusSpin_->setObjectName(QStringLiteral("shapeTopRadiusSpin"));
+    shapeTopRadiusSpin_->setRange(0, MapEditor::BrushTool::maxRadius());
+    shapeTopRadiusSpin_->setSuffix(tr(" c"));
+    shapeTopRadiusSpin_->setToolTip(
+        tr("Upper part radius (cells): the truncated cone's top radius, or "
+           "the inner radius of the half torus. Must stay below the base "
+           "radius (clamped)."));
+    connect(shapeTopRadiusSpin_, &QSpinBox::valueChanged, this,
+            [this](int value) {
+                MapEditor::BrushParams params = brushTool_->params();
+                params.shapeTopRadius = value;
+                brushTool_->setParams(params);
+                syncBrushControls();
+            });
+    bar->addWidget(shapeTopRadiusSpin_);
+
+    // Upper part side length: the truncated pyramid's top edge length (the
+    // top polygon stays similar to the base). Clamped below the base.
+    shapeTopSideSpin_ = new QSpinBox(bar);
+    shapeTopSideSpin_->setObjectName(QStringLiteral("shapeTopSideSpin"));
+    shapeTopSideSpin_->setRange(0, 2 * MapEditor::BrushTool::maxRadius());
+    shapeTopSideSpin_->setSuffix(tr(" c"));
+    shapeTopSideSpin_->setToolTip(
+        tr("Upper part side length (cells): the top edge length of the "
+           "truncated pyramid (the top polygon is similar to the base). "
+           "Must stay below the base (clamped)."));
+    connect(shapeTopSideSpin_, &QSpinBox::valueChanged, this,
+            [this](int value) {
+                MapEditor::BrushParams params = brushTool_->params();
+                params.shapeTopSide = value;
+                brushTool_->setParams(params);
+                syncBrushControls();
+            });
+    bar->addWidget(shapeTopSideSpin_);
+
     // Type buttons are created in createBrushActions() — mirror the rest of
     // the initial control state into the new toolbar.
     updateActionStates();
@@ -2318,6 +2475,9 @@ void MainWindow::createBrushActions()
             MapEditor::BrushParams params = brushTool_->params();
             params.effect = effect;
             params.direction = direction;
+            // A common brush type paints a flat mask — the 3D shape solid
+            // belongs to the sculpting shapes (same rule as the image mask).
+            params.shape3d = MapEditor::Shape3DKind::None;
             brushTool_->setParams(params);
             // T4.2 — keep the interaction mode in step with the brush type:
             // the picking type (eyedropper) drives the Eyedropper mode, every
@@ -2530,6 +2690,73 @@ void MainWindow::createBrushActions()
            "fraction spinbox as the other sculpting brushes."),
         MapEditor::BrushEffect::GaussianBlur);
 
+    // --- 3D shape brushes --------------------------------------------------
+    // Dam-mode solids stamped instead of a flat mask (Shape3D.h). They layer
+    // on the COMMON brush types: with Raise/Lower Terrain the cells close on
+    // the shape from below/above only, with Set-to-Height the Height spin is
+    // the shape's base and the move goes both ways. Selecting a 3D shape
+    // forces the Dam layer and drops any non-height brush type back to a
+    // raise; selecting any other brush type or stamp shape clears the 3D
+    // shape (mirrors the image-mask rule).
+    QActionGroup *shape3dGroup = new QActionGroup(this);
+    const auto addShape3D = [this, shape3dGroup](
+            MapEditor::Shape3DKind kind, const QString &text,
+            const QString &toolTip) {
+        QAction *action = new QAction(makeShape3DIcon(kind), text, this);
+        action->setToolTip(toolTip);
+        action->setCheckable(true);
+        action->setChecked(brushTool_->params().shape3d == kind);
+        connect(action, &QAction::triggered, this, [this, kind] {
+            MapEditor::BrushParams params = brushTool_->params();
+            params.shape3d = kind;
+            params.mode = MapEditor::BrushMode::Dam;
+            params.useImageMask = false;
+            if (params.effect != MapEditor::BrushEffect::ChangeHeight &&
+                params.effect != MapEditor::BrushEffect::AlignVariableH) {
+                params.effect = MapEditor::BrushEffect::ChangeHeight;
+                params.direction = 1;
+            }
+            brushTool_->setParams(params);
+            if (viewport_) {
+                viewport_->setEditorMode(
+                    MapEditor::ViewportWidget::EditorMode::Brush);
+            }
+            syncBrushControls();
+        });
+        shape3dGroup->addAction(action);
+        return action;
+    };
+    actBrush3DCone_ = addShape3D(
+        MapEditor::Shape3DKind::Cone, tr("Cone"),
+        tr("3D shape brush (Dam layer only): stamps a cone — the base is the "
+           "stamp footprint, every covered cell moves towards Height + the "
+           "cone profile * Shape Height. Combine with Raise / Lower / "
+           "Set-to-Height; the upper part offset tilts the apex."));
+    actBrush3DPyramid_ = addShape3D(
+        MapEditor::Shape3DKind::Pyramid, tr("Pyramid"),
+        tr("3D shape brush (Dam layer only): stamps a pyramid on a regular "
+           "polygon base (the polygon side count and angle spins shape the "
+           "base). Otherwise like the cone."));
+    actBrush3DTruncCone_ = addShape3D(
+        MapEditor::Shape3DKind::TruncatedCone, tr("Truncated Cone"),
+        tr("3D shape brush (Dam layer only): stamps a cone truncated at the "
+           "upper part radius (top circle), optionally tilted with the upper "
+           "part offset."));
+    actBrush3DTruncPyramid_ = addShape3D(
+        MapEditor::Shape3DKind::TruncatedPyramid, tr("Truncated Pyramid"),
+        tr("3D shape brush (Dam layer only): stamps a pyramid truncated at "
+           "the upper part side length (a smaller similar polygon on top), "
+           "optionally shifted with the upper part offset."));
+    actBrush3DTorus_ = addShape3D(
+        MapEditor::Shape3DKind::Torus, tr("Half Torus"),
+        tr("3D shape brush (Dam layer only): stamps the upper half of a "
+           "torus — a ring ridge. The upper part radius is the ring's INNER "
+           "radius; the base radius is the outer one."));
+    actBrush3DEllipsoid_ = addShape3D(
+        MapEditor::Shape3DKind::HalfEllipsoid, tr("Half Ellipsoid"),
+        tr("3D shape brush (Dam layer only): stamps a half ellipsoid — a "
+           "dome with a circular base."));
+
     // T3.5 — load brush image from file. The loaded image becomes the stamp
     // mask of the CURRENT brush type (raise/lower/level/... — the image
     // pixel value is the per-cell influence) until a stamp shape is picked
@@ -2605,6 +2832,12 @@ void MainWindow::createBrushActions()
                  params.effect == MapEditor::BrushEffect::GaussianBlur)) {
                 params.effect = MapEditor::BrushEffect::ChangeHeight;
                 params.direction = 1;
+            }
+            // The 3D shape brushes own the Dam layer like the sculpting
+            // types — switching to Geo drops the solid back to a plain raise.
+            if (mode == MapEditor::BrushMode::Geo &&
+                params.shape3d != MapEditor::Shape3DKind::None) {
+                params.shape3d = MapEditor::Shape3DKind::None;
             }
             brushTool_->setParams(params);
             syncBrushControls();
@@ -2695,6 +2928,8 @@ void MainWindow::createBrushActions()
             MapEditor::BrushParams params = brushTool_->params();
             params.shape = shape;
             params.useImageMask = false;
+            // A 2D stamp shape replaces the 3D solid as well.
+            params.shape3d = MapEditor::Shape3DKind::None;
             brushTool_->setParams(params);
             syncBrushControls();
         });
@@ -3064,6 +3299,31 @@ void MainWindow::syncBrushControls()
              params.effect == MapEditor::BrushEffect::Deflate);
     syncType(actBrushGaussianBlur_,
              params.effect == MapEditor::BrushEffect::GaussianBlur);
+    syncType(actBrush3DCone_,
+             params.shape3d == MapEditor::Shape3DKind::Cone);
+    syncType(actBrush3DPyramid_,
+             params.shape3d == MapEditor::Shape3DKind::Pyramid);
+    syncType(actBrush3DTruncCone_,
+             params.shape3d == MapEditor::Shape3DKind::TruncatedCone);
+    syncType(actBrush3DTruncPyramid_,
+             params.shape3d == MapEditor::Shape3DKind::TruncatedPyramid);
+    syncType(actBrush3DTorus_, params.shape3d == MapEditor::Shape3DKind::Torus);
+    syncType(actBrush3DEllipsoid_,
+             params.shape3d == MapEditor::Shape3DKind::HalfEllipsoid);
+
+    // 3D shape settings mirror the tool.
+    const auto syncSpin = [](QSpinBox *spin, int shown) {
+        if (spin && spin->value() != shown) {
+            spin->blockSignals(true);
+            spin->setValue(shown);
+            spin->blockSignals(false);
+        }
+    };
+    syncSpin(shapeHeightSpin_, params.shapeHeight);
+    syncSpin(shapeTopOffsetXSpin_, qRound(params.shapeTopOffsetX));
+    syncSpin(shapeTopOffsetYSpin_, qRound(params.shapeTopOffsetY));
+    syncSpin(shapeTopRadiusSpin_, qRound(params.shapeTopRadius));
+    syncSpin(shapeTopSideSpin_, qRound(params.shapeTopSide));
 
     // Blur radius mirrors the tool; its maximum follows the stamp radius
     // (it must stay strictly smaller).
@@ -3185,20 +3445,21 @@ void MainWindow::syncBrushControls()
     const bool imageMaskActive = params.useImageMask && brushTool_->hasImageMask();
     const bool decalActive = params.effect == MapEditor::BrushEffect::ImageDecal &&
                              brushTool_->hasDecalImage();
+    const bool shape3dActive = params.shape3d != MapEditor::Shape3DKind::None;
     if (actShapeCircle_) actShapeCircle_->setChecked(!imageMaskActive && !decalActive &&
-        params.shape == MapEditor::BrushShape::FilledCircle);
+        !shape3dActive && params.shape == MapEditor::BrushShape::FilledCircle);
     if (actShapeSquare_) actShapeSquare_->setChecked(!imageMaskActive && !decalActive &&
-        params.shape == MapEditor::BrushShape::FilledSquare);
+        !shape3dActive && params.shape == MapEditor::BrushShape::FilledSquare);
     if (actShapeCircleOutline_) actShapeCircleOutline_->setChecked(!imageMaskActive && !decalActive &&
-        params.shape == MapEditor::BrushShape::CircleOutline);
+        !shape3dActive && params.shape == MapEditor::BrushShape::CircleOutline);
     if (actShapeSquareOutline_) actShapeSquareOutline_->setChecked(!imageMaskActive && !decalActive &&
-        params.shape == MapEditor::BrushShape::SquareOutline);
+        !shape3dActive && params.shape == MapEditor::BrushShape::SquareOutline);
     if (actShapePolygon_) actShapePolygon_->setChecked(!imageMaskActive && !decalActive &&
-        params.shape == MapEditor::BrushShape::FilledPolygon);
+        !shape3dActive && params.shape == MapEditor::BrushShape::FilledPolygon);
     if (actShapePolygonOutline_) actShapePolygonOutline_->setChecked(!imageMaskActive && !decalActive &&
-        params.shape == MapEditor::BrushShape::PolygonOutline);
+        !shape3dActive && params.shape == MapEditor::BrushShape::PolygonOutline);
     if (actShapeLine_) actShapeLine_->setChecked(!imageMaskActive && !decalActive &&
-        params.shape == MapEditor::BrushShape::Line);
+        !shape3dActive && params.shape == MapEditor::BrushShape::Line);
 
     // Regular-polygon params mirror the tool (the shape buttons' exclusive
     // group only carries the shape itself).
@@ -3238,12 +3499,18 @@ void MainWindow::syncBrushControls()
     if (viewport_) {
         const bool scriptPreview = !imageMaskActive && !decalActive &&
             params.effect == MapEditor::BrushEffect::Script;
+        // 3D shapes preview as their BASEMENT (both view modes): the circle
+        // or polygon footprint, the half torus with its inner ring.
+        const bool shape3dPolygon = shape3dActive &&
+            MapEditor::shape3DIsPolygonal(params.shape3d);
         const bool polygonPreview = !imageMaskActive && !decalActive &&
-            (params.shape == MapEditor::BrushShape::FilledPolygon ||
+            (shape3dPolygon ||
+             params.shape == MapEditor::BrushShape::FilledPolygon ||
              params.shape == MapEditor::BrushShape::PolygonOutline);
-        const bool squarePreview = imageMaskActive || decalActive ||
-            params.shape == MapEditor::BrushShape::FilledSquare ||
-            params.shape == MapEditor::BrushShape::SquareOutline;
+        const bool squarePreview = !shape3dActive &&
+            (imageMaskActive || decalActive ||
+             params.shape == MapEditor::BrushShape::FilledSquare ||
+             params.shape == MapEditor::BrushShape::SquareOutline);
         int previewRadius = params.radius;
         if (imageMaskActive) {
             previewRadius = std::max(brushTool_->imageMask().sx,
@@ -3258,13 +3525,18 @@ void MainWindow::syncBrushControls()
         // band, so its preview keeps the outer footprint only. The polygon
         // inner contour is the same polygon at the reduced radius — the
         // polygon band is distance-based, so that is the closest simple
-        // inset the preview can draw.
+        // inset the preview can draw. The half torus draws the ring's inner
+        // circle as its basement hole.
         int previewInner = 0;
         if (!imageMaskActive && !decalActive && params.thickness > 0 &&
             (params.shape == MapEditor::BrushShape::CircleOutline ||
              params.shape == MapEditor::BrushShape::SquareOutline ||
              params.shape == MapEditor::BrushShape::PolygonOutline)) {
             previewInner = std::max(0, params.radius - params.thickness + 1);
+        }
+        if (shape3dActive && params.shape3d == MapEditor::Shape3DKind::Torus &&
+            params.shapeTopRadius > 0) {
+            previewInner = qRound(params.shapeTopRadius);
         }
         viewport_->setBrushPreview(
             scriptPreview
@@ -4462,9 +4734,15 @@ void MainWindow::updateActionStates()
          brushTool_->params().effect == MapEditor::BrushEffect::Inflate ||
          brushTool_->params().effect == MapEditor::BrushEffect::Deflate ||
          brushTool_->params().effect == MapEditor::BrushEffect::GaussianBlur);
+    // The 3D shape brushes own the Dam layer like the sculpting types — the
+    // Geo mode button is disabled while a shape is selected.
+    const MapEditor::Shape3DKind activeShape3d =
+        brushTool_ ? brushTool_->params().shape3d
+                   : MapEditor::Shape3DKind::None;
+    const bool shape3dActive = activeShape3d != MapEditor::Shape3DKind::None;
     if (actBrushGeo_) {
         actBrushGeo_->setEnabled(worldLoaded && !decalEffect && !scriptEffect &&
-                                 !sculptEffect);
+                                 !sculptEffect && !shape3dActive);
     }
     // The sculpting fraction applies only with a sculpting type selected
     // (same image/decal/pick exclusions the radius has).
@@ -4506,16 +4784,18 @@ void MainWindow::updateActionStates()
             !brushTool_->params().useImageMask && !decalEffect &&
             brushTool_->params().effect != MapEditor::BrushEffect::PickColor);
     }
-    // The polygon params apply only with a polygon shape selected (and the
-    // same image/decal/pick exclusions the radius has: those replace the
-    // generated shape stamp entirely).
+    // The polygon params apply with a polygon shape selected OR with a 3D
+    // polygonal solid (pyramid / truncated pyramid base) — and the same
+    // image/decal/pick exclusions the radius has.
     if (polygonSidesSpin_ || polygonAngleSpin_) {
         const bool polygonShape =
             brushTool_ &&
             (brushTool_->params().shape == MapEditor::BrushShape::FilledPolygon ||
              brushTool_->params().shape == MapEditor::BrushShape::PolygonOutline);
+        const bool polygon3d = shape3dActive &&
+            MapEditor::shape3DIsPolygonal(activeShape3d);
         const bool polygonEnabled =
-            worldLoaded && brushTool_ && polygonShape &&
+            worldLoaded && brushTool_ && (polygonShape || polygon3d) &&
             !brushTool_->params().useImageMask && !decalEffect &&
             brushTool_->params().effect != MapEditor::BrushEffect::PickColor;
         if (polygonSidesSpin_) {
@@ -4524,6 +4804,27 @@ void MainWindow::updateActionStates()
         if (polygonAngleSpin_) {
             polygonAngleSpin_->setEnabled(polygonEnabled);
         }
+    }
+    // 3D shape settings apply only while a 3D shape is selected; each field
+    // only with the shapes that consume it (Shape3D.h predicates).
+    if (shapeHeightSpin_) {
+        shapeHeightSpin_->setEnabled(worldLoaded && shape3dActive);
+    }
+    if (shapeTopOffsetXSpin_) {
+        shapeTopOffsetXSpin_->setEnabled(
+            worldLoaded && MapEditor::shape3DHasTopOffset(activeShape3d));
+    }
+    if (shapeTopOffsetYSpin_) {
+        shapeTopOffsetYSpin_->setEnabled(
+            worldLoaded && MapEditor::shape3DHasTopOffset(activeShape3d));
+    }
+    if (shapeTopRadiusSpin_) {
+        shapeTopRadiusSpin_->setEnabled(
+            worldLoaded && MapEditor::shape3DHasTopRadius(activeShape3d));
+    }
+    if (shapeTopSideSpin_) {
+        shapeTopSideSpin_->setEnabled(
+            worldLoaded && MapEditor::shape3DHasTopSide(activeShape3d));
     }
     // T3.5 — the image scale applies to whichever image stamp is active: the
     // influence mask or the ImageDecal decal.

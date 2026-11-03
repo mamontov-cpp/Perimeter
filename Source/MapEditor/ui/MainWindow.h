@@ -368,6 +368,25 @@ private:
     QAction *actBrushInflate_ = nullptr;
     QAction *actBrushDeflate_ = nullptr;
     QAction *actBrushGaussianBlur_ = nullptr;
+    // 3D shape brushes (Dam mode only): the solid stamped instead of a flat
+    // mask (cone / pyramid / truncated cone / truncated pyramid / half torus /
+    // half ellipsoid — BrushParams::shape3d). Exclusive group of their own;
+    // they combine with the common Raise / Lower / Set-to-Height brush types.
+    QAction *actBrush3DCone_ = nullptr;
+    QAction *actBrush3DPyramid_ = nullptr;
+    QAction *actBrush3DTruncCone_ = nullptr;
+    QAction *actBrush3DTruncPyramid_ = nullptr;
+    QAction *actBrush3DTorus_ = nullptr;
+    QAction *actBrush3DEllipsoid_ = nullptr;
+    // 3D shape settings (sculpting toolbar): the amplitude, the upper part
+    // XY offset, the upper part radius (truncated cone top / torus inner) and
+    // the upper part side length (truncated pyramid). The polygon side count
+    // and angle come from the shared 2D polygon spins.
+    QSpinBox *shapeHeightSpin_ = nullptr;
+    QSpinBox *shapeTopOffsetXSpin_ = nullptr;
+    QSpinBox *shapeTopOffsetYSpin_ = nullptr;
+    QSpinBox *shapeTopRadiusSpin_ = nullptr;
+    QSpinBox *shapeTopSideSpin_ = nullptr;
     // Gaussian-blur convolution radius (cells) — always less than the
     // stamp radius (the maximum follows the brush-radius spinbox).
     QSpinBox *blurRadiusSpin_ = nullptr;

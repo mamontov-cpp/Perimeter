@@ -2,6 +2,7 @@
 
 #include "EditorSession.h"
 #include "ImageDecal.h"
+#include "Shape3D.h"
 
 #include <cmath>
 #include <cstdint>
@@ -242,6 +243,30 @@ struct BrushParams
     /// or loads a new image.
     bool useImageMask = false;
 
+    /// 3D shape brushes (sculpting toolbar): the solid stamped instead of a
+    /// flat mask — the footprint is the shape's BASE (circle or regular
+    /// polygon at the brush radius), and each covered cell's target is
+    /// `Height + profile(cell) * shapeHeight`, where profile is the
+    /// normalized shape cross-section (Shape3D.h). Dam mode only; combines
+    /// with the Raise/Lower direction (cells move towards the target from
+    /// below / above only) and the Set-to-Height brush (absolute base =
+    /// Height, both directions). None = the plain 2D stamp geometry.
+    Shape3DKind shape3d = Shape3DKind::None;
+    /// The shape amplitude in whole voxels (0..MAX_VX_HEIGHT_WHOLE) — the
+    /// "affected change height" of the 3D brushes.
+    int shapeHeight = 32;
+    /// Upper part centre offset in cells (cone / pyramid / truncated cone /
+    /// truncated pyramid); clamped to keep the top strictly inside the base.
+    double shapeTopOffsetX = 0.0;
+    double shapeTopOffsetY = 0.0;
+    /// Upper part radius in cells: the truncated cone's top radius or the
+    /// torus' inner radius; must stay below the base radius.
+    double shapeTopRadius = 0.0;
+    /// Upper part side length in cells (truncated pyramid); converted to the
+    /// top circumradius through the polygon side count, clamped to stay
+    /// below the base.
+    double shapeTopSide = 0.0;
+
     bool operator==(const BrushParams& other) const
     {
         return shape == other.shape && radius == other.radius &&
@@ -260,7 +285,13 @@ struct BrushParams
                heightGate == other.heightGate &&
                gateHeight == other.gateHeight &&
                script == other.script &&
-               useImageMask == other.useImageMask;
+               useImageMask == other.useImageMask &&
+               shape3d == other.shape3d &&
+               shapeHeight == other.shapeHeight &&
+               std::abs(shapeTopOffsetX - other.shapeTopOffsetX) < 1e-9 &&
+               std::abs(shapeTopOffsetY - other.shapeTopOffsetY) < 1e-9 &&
+               std::abs(shapeTopRadius - other.shapeTopRadius) < 1e-9 &&
+               std::abs(shapeTopSide - other.shapeTopSide) < 1e-9;
     }
 };
 
@@ -492,6 +523,16 @@ private:
     /// variable-H toolzer, exactly like the Set Height brush (Dam mode only).
     bool applySculpt(const BrushMask& absoluteMask, const BrushParams& params,
                      int bx, int by, int bxEnd, int byEnd);
+
+    /// 3D shape brushes (see BrushParams::shape3d): two-pass stamp like
+    /// applySculpt, but the per-cell reference is the shape profile
+    /// (Shape3D.h) scaled by shapeHeight over the Height base. The direction
+    /// comes from the brush type the shape combines with: Raise (ChangeHeight
+    /// direction > 0) moves cells towards the target from below only, Lower
+    /// (direction < 0) from above only, Set-to-Height (AlignVariableH) both
+    /// ways. Dam mode only; one stamp = one undo entry.
+    bool applyShape3D(const BrushMask& absoluteMask, const BrushParams& params,
+                      int bx, int by, int bxEnd, int byEnd);
 
     EditorSession& session_;
     BrushParams params_;

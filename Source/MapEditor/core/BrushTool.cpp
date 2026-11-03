@@ -404,6 +404,25 @@ BrushParams clampedParams(const BrushParams& params)
     if (clamped.direction != 0) {
         clamped.direction = clamped.direction > 0 ? 1 : -1;
     }
+    // 3D shape brushes: amplitude in whole voxels; the geometry fields finite
+    // and non-negative (the offset keeps its sign). The shape-specific
+    // upper-part clamps need the base radius — those run in
+    // clampShape3DSettings() at stamp time.
+    clamped.shapeHeight = std::clamp(clamped.shapeHeight, 0,
+                                     MAX_VX_HEIGHT_WHOLE);
+    const auto finiteLen = [](double v) {
+        return std::isfinite(v) ? std::max(0.0, v) : 0.0;
+    };
+    clamped.shapeTopRadius = finiteLen(clamped.shapeTopRadius);
+    clamped.shapeTopSide = finiteLen(clamped.shapeTopSide);
+    const auto finiteOffset = [](double v) {
+        return std::isfinite(v)
+                   ? std::clamp(v, -static_cast<double>(kMaxBrushRadius),
+                                static_cast<double>(kMaxBrushRadius))
+                   : 0.0;
+    };
+    clamped.shapeTopOffsetX = finiteOffset(clamped.shapeTopOffsetX);
+    clamped.shapeTopOffsetY = finiteOffset(clamped.shapeTopOffsetY);
     return clamped;
 }
 
@@ -590,6 +609,22 @@ bool BrushTool::applyStamp(int cx, int cy, const BrushParams& params)
         }
         return ok;
     }
+    // 3D shape brushes: the stamp footprint is the shape's BASE — a filled
+    // disc (cone / truncated cone / torus / half ellipsoid) or a filled
+    // regular polygon (pyramid / truncated pyramid, reusing the polygon
+    // params) at the brush radius. Routed before the 2D shape stamp and the
+    // image mask (the solid's own geometry wins).
+    if (clamped.shape3d != Shape3DKind::None) {
+        BrushMask mask = shape3DIsPolygonal(clamped.shape3d)
+            ? BrushMasks::filledPolygon(clamped.radius, clamped.polygonSides,
+                                        clamped.polygonAngleDeg)
+            : BrushMasks::filledCircle(clamped.radius);
+        if (mask.empty()) {
+            return false;
+        }
+        mask.translate(cx, cy);
+        return applyMask(mask, clamped);
+    }
     // T3.5: the loaded image mask replaces the shape stamp as the brush
     // geometry for every effect — the image pixel value is the per-cell
     // influence (raised/lowered/levelled/painted through the current effect).
@@ -629,8 +664,10 @@ bool BrushTool::applyLine(int x0, int y0, int x1, int y1, const BrushParams& par
     }
     // The decal is a rectangular image stamp with its own geometry: a line
     // stroke has no meaning for it (the viewport does not start one either).
+    // The 3D shapes stamp one solid at the click — no line either.
     if (clamped.effect == BrushEffect::ImageDecal ||
-        clamped.effect == BrushEffect::Script) {
+        clamped.effect == BrushEffect::Script ||
+        clamped.shape3d != Shape3DKind::None) {
         return false;
     }
     const int stampRadius = BrushTool::lineStrokeRadius(clamped.radius, clamped.thickness);
@@ -669,6 +706,16 @@ bool BrushTool::applyMask(const BrushMask& absoluteMask, const BrushParams& para
     // ---    swap semantics allow overlapping snapshots between strokes). ---
     // Sculpting validates its Dam-only mode here too — a refused stamp must
     // not record an undo entry.
+    // 3D shape brushes (cone / pyramid / ...): Dam layer only, like the
+    // sculpting types. Their whole flow (no-op precheck -> undo record ->
+    // two-pass apply) is self-contained in applyShape3D so an all-refused
+    // stamp leaves no empty history entry.
+    if (params.shape3d != Shape3DKind::None) {
+        if (params.mode != BrushMode::Dam) {
+            return false; // 3D shapes own the Dam layer only
+        }
+        return applyShape3D(absoluteMask, params, bx, by, bxEnd, byEnd);
+    }
     if ((params.effect == BrushEffect::Smooth ||
          params.effect == BrushEffect::Flatten ||
          params.effect == BrushEffect::Tricubic ||
@@ -1192,6 +1239,147 @@ bool BrushTool::applySculpt(const BrushMask& absoluteMask,
         seedDamLayer(off);
         sculptToolzer.setHAppoximation(target32 >> VX_FRACTION);
         sculptToolzer.tVoxSetAll(off, dV);
+    }
+
+    // Grid + viewport dirty rectangles, margin 1 like the generic path.
+    const int mapW = static_cast<int>(vMap.H_SIZE);
+    const int mapH = static_cast<int>(vMap.V_SIZE);
+    const int x0 = std::max(0, bx - 1);
+    const int y0 = std::max(0, by - 1);
+    const int x1 = std::min(mapW - 1, bxEnd + 1);
+    const int y1 = std::min(mapH - 1, byEnd + 1);
+    vMap.recalcArea2Grid(x0, y0, x1, y1);
+    session_.regRenderWithShadowTrail(x0, y0, x1, y1);
+    return true;
+}
+
+bool BrushTool::applyShape3D(const BrushMask& absoluteMask,
+                             const BrushParams& params, int bx, int by,
+                             int bxEnd, int byEnd)
+{
+    // The direction comes from the brush type the shape combines with (the
+    // sculpting-toolbar shapes do not change the Raise / Lower / Set-to-Height
+    // buttons): Set-to-Height moves both ways, Raise only closes on the
+    // target from below, Lower only from above.
+    const bool setMode = params.effect == BrushEffect::AlignVariableH;
+    const int dir = setMode ? 0 : (params.direction < 0 ? -1 : 1);
+
+    Shape3DSettings shape;
+    shape.radius = params.radius;
+    shape.sides = params.polygonSides;
+    shape.angleDeg = params.polygonAngleDeg;
+    shape.topOffsetX = params.shapeTopOffsetX;
+    shape.topOffsetY = params.shapeTopOffsetY;
+    shape.topRadius = params.shapeTopRadius;
+    shape.topSide = params.shapeTopSide;
+    shape = clampShape3DSettings(params.shape3d, shape);
+
+    // Pass 1 (PRE-edit): collect the covered cells, their heights and their
+    // shape targets. The target is absolute: the Height base plus the shape
+    // profile (Shape3D.h) scaled by the Shape Height amplitude, QUANTIZED to
+    // whole voxels — Terra's alignment toolzer caps at whole-voxel
+    // granularity (setHAppoximation shifts, zeroing the fraction bits), so a
+    // fractional target would sit above the cap and the stamp would never
+    // converge to a no-op.
+    const int shapeHeightVox =
+        std::clamp(params.shapeHeight, 0, MAX_VX_HEIGHT_WHOLE);
+    const int baseVox = clampHeightLevel(params.heightLevel);
+    const int cx = (bx + bxEnd - 1) / 2;
+    const int cy = (by + byEnd - 1) / 2;
+    std::vector<int> offs;
+    std::vector<int> alts;
+    std::vector<int> targets;
+    std::vector<unsigned char> influences;
+    for (int y = by; y < byEnd; ++y) {
+        for (int x = bx; x < bxEnd; ++x) {
+            const int mdx = x - absoluteMask.x;
+            const int mdy = y - absoluteMask.y;
+            if (mdx < 0 || mdy < 0 || mdx >= absoluteMask.sx ||
+                mdy >= absoluteMask.sy) {
+                continue; // clipped-away mask border
+            }
+            const unsigned char influence = absoluteMask.at(mdx, mdy);
+            if (!influence) {
+                continue;
+            }
+            const double profile =
+                shape3DProfile(params.shape3d, shape,
+                               static_cast<double>(x - cx),
+                               static_cast<double>(y - cy));
+            const int targetVox = std::clamp(
+                baseVox +
+                    static_cast<int>(std::lround(profile * shapeHeightVox)),
+                0, MAX_VX_HEIGHT_WHOLE);
+            const int off = y * static_cast<int>(vMap.H_SIZE) + x;
+            offs.push_back(off);
+            alts.push_back(vMap.SGetAlt(off));
+            targets.push_back(targetVox << VX_FRACTION);
+            influences.push_back(influence);
+        }
+    }
+
+    // No-op precheck (before the undo record): a cell can move only when it
+    // passes the height gate (PRE-edit height) and the direction cap — a
+    // re-stamp over an already-formed shape, or a raise over higher ground,
+    // changes nothing and must not even enter the history.
+    bool anyMoves = false;
+    for (std::size_t k = 0; k < offs.size() && !anyMoves; ++k) {
+        if (!heightGateAllows(params, alts[k])) {
+            continue;
+        }
+        const int target32 = targets[k];
+        if (dir > 0 && alts[k] < target32) {
+            anyMoves = true;
+        } else if (dir < 0 && alts[k] > target32) {
+            anyMoves = true;
+        } else if (dir == 0 && alts[k] != target32) {
+            anyMoves = true;
+        }
+    }
+    if (!anyMoves) {
+        return false;
+    }
+
+    session_.recordUndoArea(bx, by, bxEnd - bx, byEnd - by);
+
+    // Pass 2: move every covered cell the whole remaining distance towards
+    // its target, through Terra's variable-H toolzer — the same mechanism as
+    // the Set Height brush and the sculpting pass 2: the toolzer drives the
+    // dam layer, caps the step at the target and removes the dam when the
+    // surface drops back to the geo height (Shape Height 0 flattens the
+    // footprint down to the Height base — "remove dam"). The zeroplast gate
+    // is cleared first: a moved cell no longer represents zeroplast. Dam-free
+    // cells are seeded like the other Dam-mode brushes, so the shapes build
+    // on raw geo too. tVoxSetAll: the shape placement must not depend on the
+    // GRIDAT hardness (same rule as Set Height / sculpting).
+    static individualToolzer<T2TE_ALIGNMENT_TERRAIN_VARIABLE_H> shapeToolzer;
+    for (std::size_t k = 0; k < offs.size(); ++k) {
+        // The height gate (Dam mode only): the decision comes from the
+        // PRE-edit height of the individual voxel — pass 2 must not let one
+        // cell's movement change whether its neighbour is edited.
+        if (!heightGateAllows(params, alts[k])) {
+            continue;
+        }
+        const int target32 = targets[k];
+        int dV = target32 - alts[k];
+        if (dir > 0 && dV <= 0) {
+            continue; // raise: only cells below the target move
+        }
+        if (dir < 0 && dV >= 0) {
+            continue; // lower: only cells above the target move
+        }
+        dV = scaleDeltaByInfluence(dV, influences[k]);
+        if (dV == 0) {
+            continue;
+        }
+        const int off = offs[k];
+        if ((vMap.AtrBuf[off] & At_ZPMASK) == At_ZEROPLAST) {
+            vMap.AtrBuf[off] = static_cast<unsigned char>(
+                vMap.AtrBuf[off] & ~At_ZPMASK);
+        }
+        seedDamLayer(off);
+        shapeToolzer.setHAppoximation(target32 >> VX_FRACTION);
+        shapeToolzer.tVoxSetAll(off, dV);
     }
 
     // Grid + viewport dirty rectangles, margin 1 like the generic path.
