@@ -423,6 +423,12 @@ BrushParams clampedParams(const BrushParams& params)
     };
     clamped.shapeTopOffsetX = finiteOffset(clamped.shapeTopOffsetX);
     clamped.shapeTopOffsetY = finiteOffset(clamped.shapeTopOffsetY);
+    // Model brush: amplitude in whole voxels, scales in [0,1], mode 0..2.
+    clamped.modelHeight =
+        std::clamp(clamped.modelHeight, 0, MAX_VX_HEIGHT_WHOLE);
+    clamped.modelScaleX = std::clamp(clamped.modelScaleX, 0.0, 1.0);
+    clamped.modelScaleY = std::clamp(clamped.modelScaleY, 0.0, 1.0);
+    clamped.modelMode = std::clamp(clamped.modelMode, 0, 2);
     return clamped;
 }
 
@@ -533,6 +539,15 @@ void BrushTool::setDecalImage(const ImageDecal::DecalImage& decal)
     decal_ = decal;
 }
 
+void BrushTool::setModelBrushData(const ModelBrush::ModelRaster& raster,
+                                  const ImageDecal::DecalImage& indices)
+{
+    modelRaster_ = raster;
+    modelIndices_ = indices;
+    pendingModel_ = ModelBrush::ModelRaster();
+    pendingModelIndices_.clear();
+}
+
 int BrushTool::heightDeltaMagnitude(const BrushParams& params, unsigned char influence)
 {
     if (influence == 0) {
@@ -625,6 +640,45 @@ bool BrushTool::applyStamp(int cx, int cy, const BrushParams& params)
         mask.translate(cx, cy);
         return applyMask(mask, clamped);
     }
+    // Model-heightmap brush: the stamp is the placement RECTANGLE of the
+    // scaled model — the raster and its palette indices are resampled to
+    // that size (nearest) and handed to applyMask through pendingModel_.
+    if (clamped.modelBrush) {
+        if (modelRaster_.empty() || modelIndices_.empty()) {
+            return false; // nothing imported yet
+        }
+        const int stampW = std::max(
+            1, static_cast<int>(
+                   std::lround(modelRaster_.width * clamped.modelScaleX)));
+        const int stampH = std::max(
+            1, static_cast<int>(
+                   std::lround(modelRaster_.height * clamped.modelScaleY)));
+        pendingModel_ = ModelBrush::resample(modelRaster_, stampW, stampH);
+        pendingModelIndices_.assign(
+            static_cast<std::size_t>(stampW) * stampH, -1);
+        for (int y = 0; y < stampH; ++y) {
+            const int sy = std::min(
+                modelIndices_.height - 1,
+                static_cast<int>(static_cast<long long>(y) *
+                                 modelIndices_.height / stampH));
+            for (int x = 0; x < stampW; ++x) {
+                const int sx = std::min(
+                    modelIndices_.width - 1,
+                    static_cast<int>(static_cast<long long>(x) *
+                                     modelIndices_.width / stampW));
+                pendingModelIndices_[static_cast<std::size_t>(y) * stampW + x] =
+                    modelIndices_.at(sx, sy);
+            }
+        }
+        BrushMask mask;
+        mask.x = -(stampW / 2);
+        mask.y = -(stampH / 2);
+        mask.sx = stampW;
+        mask.sy = stampH;
+        mask.influence.assign(static_cast<std::size_t>(stampW) * stampH, 255);
+        mask.translate(cx, cy);
+        return applyMask(mask, clamped);
+    }
     // T3.5: the loaded image mask replaces the shape stamp as the brush
     // geometry for every effect — the image pixel value is the per-cell
     // influence (raised/lowered/levelled/painted through the current effect).
@@ -664,10 +718,12 @@ bool BrushTool::applyLine(int x0, int y0, int x1, int y1, const BrushParams& par
     }
     // The decal is a rectangular image stamp with its own geometry: a line
     // stroke has no meaning for it (the viewport does not start one either).
-    // The 3D shapes stamp one solid at the click — no line either.
+    // The 3D shapes and the model-heightmap brush stamp one solid/rectangle
+    // at the click — no line either.
     if (clamped.effect == BrushEffect::ImageDecal ||
         clamped.effect == BrushEffect::Script ||
-        clamped.shape3d != Shape3DKind::None) {
+        clamped.shape3d != Shape3DKind::None ||
+        clamped.modelBrush) {
         return false;
     }
     const int stampRadius = BrushTool::lineStrokeRadius(clamped.radius, clamped.thickness);
@@ -715,6 +771,14 @@ bool BrushTool::applyMask(const BrushMask& absoluteMask, const BrushParams& para
             return false; // 3D shapes own the Dam layer only
         }
         return applyShape3D(absoluteMask, params, bx, by, bxEnd, byEnd);
+    }
+    // Model-heightmap brush: same self-contained flow through
+    // applyModelBrush (place/add/subtract), Dam layer only.
+    if (params.modelBrush) {
+        if (params.mode != BrushMode::Dam) {
+            return false; // the model brush owns the Dam layer only
+        }
+        return applyModelBrush(absoluteMask, params, bx, by, bxEnd, byEnd);
     }
     if ((params.effect == BrushEffect::Smooth ||
          params.effect == BrushEffect::Flatten ||
@@ -1393,6 +1457,169 @@ bool BrushTool::applyShape3D(const BrushMask& absoluteMask,
     session_.regRenderWithShadowTrail(x0, y0, x1, y1);
     return true;
 }
+
+bool BrushTool::applyModelBrush(const BrushMask& absoluteMask,
+                                const BrushParams& params, int bx, int by,
+                                int bxEnd, int byEnd)
+{
+    if (pendingModel_.empty() ||
+        pendingModelIndices_.size() !=
+            static_cast<std::size_t>(pendingModel_.width) *
+                pendingModel_.height) {
+        return false; // the rectangle path did not run (defensive)
+    }
+    // Modes: 0 place — absolute set to the scaled model height + palette
+    // colours; 1 add — the covered average raised by the local model height;
+    // 2 subtract — the covered average lowered (the dam is removed where the
+    // result drops to the terrain). Targets are whole voxels, like the 3D
+    // shape brushes (Terra's toolzer caps at whole-voxel granularity).
+    const int mode = params.modelMode;
+    const int heightVox =
+        std::clamp(params.modelHeight, 0, MAX_VX_HEIGHT_WHOLE);
+    const int stampW = pendingModel_.width;
+    const int stampH = pendingModel_.height;
+    const int mx = bx + (bxEnd - bx - stampW) / 2; // stamp bbox == mask bbox
+    const int my = by + (byEnd - by - stampH) / 2;
+
+    // Pass 1 (PRE-edit): collect the covered cells, heights, model samples
+    // and (after the average is known) the targets.
+    std::vector<int> offs;
+    std::vector<int> alts;
+    std::vector<int> targets;
+    std::vector<int> indices;
+    std::vector<double> norms;
+    double altSum = 0.0;
+    std::size_t altCount = 0;
+    for (int y = by; y < byEnd; ++y) {
+        for (int x = bx; x < bxEnd; ++x) {
+            const int mdx = x - absoluteMask.x;
+            const int mdy = y - absoluteMask.y;
+            if (mdx < 0 || mdy < 0 || mdx >= absoluteMask.sx ||
+                mdy >= absoluteMask.sy) {
+                continue;
+            }
+            if (!absoluteMask.at(mdx, mdy)) {
+                continue;
+            }
+            const int off = y * static_cast<int>(vMap.H_SIZE) + x;
+            const int alt = vMap.SGetAlt(off);
+            // Clipped at the map border the bbox can be smaller than the
+            // stamp — clamp the sample into the raster.
+            const int sy = std::clamp(y - my, 0, stampH - 1);
+            const int sx = std::clamp(x - mx, 0, stampW - 1);
+            offs.push_back(off);
+            alts.push_back(alt);
+            indices.push_back(pendingModelIndices_[static_cast<std::size_t>(
+                                                       sy) *
+                                                       stampW +
+                                                   sx]);
+            norms.push_back(pendingModel_.normHeight[static_cast<std::size_t>(
+                                                         sy) *
+                                                         stampW +
+                                                     sx]);
+            targets.push_back(0); // filled below (modes 1/2 need the average)
+            altSum += static_cast<double>(alt);
+            ++altCount;
+        }
+    }
+    if (offs.empty() || altCount == 0) {
+        return false;
+    }
+    const double averageAlt = altSum / static_cast<double>(altCount);
+    const double averageVox =
+        averageAlt / static_cast<double>(1 << VX_FRACTION);
+    for (std::size_t k = 0; k < offs.size(); ++k) {
+        const double norm = norms[k];
+        if (mode == 0) {
+            targets[k] = std::clamp(
+                static_cast<int>(std::lround(norm * heightVox)), 0,
+                MAX_VX_HEIGHT_WHOLE);
+        } else if (mode == 1) {
+            targets[k] = std::clamp(
+                static_cast<int>(
+                    std::lround(averageVox + norm * heightVox)),
+                0, MAX_VX_HEIGHT_WHOLE);
+        } else {
+            // Subtract: a negative result removes the dam (clamped at 0 —
+            // the toolzer removes the dam on its way down to the terrain).
+            targets[k] = std::clamp(
+                static_cast<int>(
+                    std::lround(averageVox - norm * heightVox)),
+                0, MAX_VX_HEIGHT_WHOLE);
+        }
+    }
+
+    // No-op precheck (before the undo record): gate (PRE-edit height) plus
+    // the mode's direction cap — a re-placement over the formed model, or an
+    // add over higher ground, changes nothing and must not enter the history.
+    const int dir = mode == 0 ? 0 : (mode == 1 ? 1 : -1);
+    bool anyMoves = false;
+    for (std::size_t k = 0; k < offs.size() && !anyMoves; ++k) {
+        if (!heightGateAllows(params, alts[k])) {
+            continue;
+        }
+        const int target32 = targets[k] << VX_FRACTION;
+        if (dir > 0 && alts[k] < target32) {
+            anyMoves = true;
+        } else if (dir < 0 && alts[k] > target32) {
+            anyMoves = true;
+        } else if (dir == 0 && alts[k] != target32) {
+            anyMoves = true;
+        }
+    }
+    if (!anyMoves) {
+        return false;
+    }
+
+    session_.recordUndoArea(bx, by, bxEnd - bx, byEnd - by);
+
+    // Pass 2: move the cells through Terra's variable-H toolzer (the same
+    // mechanism as Set Height / the 3D shapes: dam seeding, whole-voxel cap,
+    // dam removal at the geo height, zeroplast gate cleared, hardness
+    // ignored). "place" also paints the quantized Dam palette colour of the
+    // cell where a dam exists after the move.
+    static individualToolzer<T2TE_ALIGNMENT_TERRAIN_VARIABLE_H> modelToolzer;
+    for (std::size_t k = 0; k < offs.size(); ++k) {
+        if (!heightGateAllows(params, alts[k])) {
+            continue;
+        }
+        const int target32 = targets[k] << VX_FRACTION;
+        int dV = target32 - alts[k];
+        if (dir > 0 && dV <= 0) {
+            continue;
+        }
+        if (dir < 0 && dV >= 0) {
+            continue;
+        }
+        dV = scaleDeltaByInfluence(dV, 255);
+        if (dV == 0) {
+            continue;
+        }
+        const int off = offs[k];
+        if ((vMap.AtrBuf[off] & At_ZPMASK) == At_ZEROPLAST) {
+            vMap.AtrBuf[off] = static_cast<unsigned char>(
+                vMap.AtrBuf[off] & ~At_ZPMASK);
+        }
+        seedDamLayer(off);
+        modelToolzer.setHAppoximation(targets[k]);
+        modelToolzer.tVoxSetAll(off, dV);
+        if (mode == 0 && indices[k] >= 0 && vMap.VxDBuf[off] != 0) {
+            vMap.SurBuf[off] = static_cast<unsigned char>(indices[k]);
+        }
+    }
+
+    // Grid + viewport dirty rectangles, margin 1 like the generic path.
+    const int mapW = static_cast<int>(vMap.H_SIZE);
+    const int mapH = static_cast<int>(vMap.V_SIZE);
+    const int x0 = std::max(0, bx - 1);
+    const int y0 = std::max(0, by - 1);
+    const int x1 = std::min(mapW - 1, bxEnd + 1);
+    const int y1 = std::min(mapH - 1, byEnd + 1);
+    vMap.recalcArea2Grid(x0, y0, x1, y1);
+    session_.regRenderWithShadowTrail(x0, y0, x1, y1);
+    return true;
+}
+
 
 //   * Geo — only VxGBuf is driven (dam height caps the raise, the dam buffer
 //     itself is never written), keeping the game invariant "dam ≥ geo";

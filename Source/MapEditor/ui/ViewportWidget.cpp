@@ -771,6 +771,13 @@ void ViewportWidget::setBrushPreviewPolygon(int sides, double angleDeg)
     update();
 }
 
+void ViewportWidget::setBrushPreviewRect(int halfExtentX, int halfExtentY)
+{
+    brushRectX_ = halfExtentX;
+    brushRectY_ = halfExtentY;
+    update();
+}
+
 namespace {
 
 /// Preview contour of the regular-polygon shape in widget space: the stamp
@@ -1675,8 +1682,15 @@ void ViewportWidget::drawBrushPreview(QPainter &painter)
                         center));
                 }
             } else {
-                painter.drawRect(QRectF(center.x() - rx, center.y() - ry,
-                                        rx * 2.0, ry * 2.0));
+                // Square or the model brush rectangle (asymmetric extents).
+                const double rrx = qMax(
+                    minDim, (brushRectX_ > 0 ? brushRectX_ : brushRadius_) *
+                                pxPerCell.x());
+                const double rry = qMax(
+                    minDim, (brushRectY_ > 0 ? brushRectY_ : brushRadius_) *
+                                pxPerCell.y());
+                painter.drawRect(QRectF(center.x() - rrx, center.y() - rry,
+                                        rrx * 2.0, rry * 2.0));
                 if (brushPreviewInnerRadius_ > 0) {
                     const double irx = qMax(minDim, brushPreviewInnerRadius_ * pxPerCell.x());
                     const double iry = qMax(minDim, brushPreviewInnerRadius_ * pxPerCell.y());
@@ -1712,8 +1726,13 @@ void ViewportWidget::drawBrushPreview(QPainter &painter)
                 brushPolygonAngleDeg_, zoom_, zoom_, center));
         }
     } else {
-        QRectF r(center.x() - screenR, center.y() - screenR,
-                 screenR * 2, screenR * 2);
+        // Square or the model brush rectangle (asymmetric half extents).
+        const double screenRx =
+            (brushRectX_ > 0 ? brushRectX_ : brushRadius_) * zoom_;
+        const double screenRy =
+            (brushRectY_ > 0 ? brushRectY_ : brushRadius_) * zoom_;
+        QRectF r(center.x() - screenRx, center.y() - screenRy,
+                 screenRx * 2, screenRy * 2);
         painter.drawRect(r);
         if (brushPreviewInnerRadius_ > 0) {
             const double screenInner = brushPreviewInnerRadius_ * zoom_;
@@ -2500,16 +2519,20 @@ QPolygonF ViewportWidget::projectedBrushContour() const
             }
         }
     } else {
+        // Square / rectangle footprint (the rectangle half extents come from
+        // the model brush when set, the symmetric radius otherwise).
+        const double hx = brushRectX_ > 0 ? brushRectX_ : r;
+        const double hy = brushRectY_ > 0 ? brushRectY_ : r;
         const int seg = qBound(2, static_cast<int>(r) / 8, 16);
         static const double kCorners[4][2] = {
             {-1.0, -1.0}, {1.0, -1.0}, {1.0, 1.0}, {-1.0, 1.0},
         };
         pts.reserve(4 * static_cast<std::size_t>(seg) * 2);
         for (int e = 0; e < 4; ++e) {
-            const double x0 = cx + kCorners[e][0] * r;
-            const double y0 = cy + kCorners[e][1] * r;
-            const double x1 = cx + kCorners[(e + 1) % 4][0] * r;
-            const double y1 = cy + kCorners[(e + 1) % 4][1] * r;
+            const double x0 = cx + kCorners[e][0] * hx;
+            const double y0 = cy + kCorners[e][1] * hy;
+            const double x1 = cx + kCorners[(e + 1) % 4][0] * hx;
+            const double y1 = cy + kCorners[(e + 1) % 4][1] * hy;
             for (int i = 0; i < seg; ++i) {
                 const double t = i / static_cast<double>(seg);
                 pts.push_back(x0 + (x1 - x0) * t);

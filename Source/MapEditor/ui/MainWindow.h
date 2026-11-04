@@ -232,6 +232,16 @@ private:
     /// inside, before the toolbar is inserted into the main window.
     void buildSculptToolbar();
     void buildModifierToolbar();
+    /// The Model toolbar (own row): the PLY import, the model brush toggle,
+    /// the place/add/subtract modes and the height/x/y scale spinboxes.
+    void buildModelToolbar();
+    /// Import a PLY model as the model-heightmap brush (file dialog, error
+    /// box on failure, palette quantization + activation helpers).
+    void onImportModel();
+    /// Quantize the imported model colours against the loaded world's Dam
+    /// palette (ImageDecal::prepare, same unused-colour accounting) and hand
+    /// raster + indices to the brush tool. False without a loaded world.
+    bool quantizeModelBrush();
     // T3.2 — re-read the tool parameters into the buttons/spinbox state.
     void syncBrushControls();
     // T3.3 — update the color swatch label and spinbox to reflect the
@@ -387,6 +397,20 @@ private:
     QSpinBox *shapeTopOffsetYSpin_ = nullptr;
     QSpinBox *shapeTopRadiusSpin_ = nullptr;
     QSpinBox *shapeTopSideSpin_ = nullptr;
+    // Model-heightmap brush (own toolbar): the import action, the use-brush
+    // toggle, the place/add/subtract mode buttons and the height/x/y scale
+    // spinboxes. The imported raster lives in BrushTool; the actions here
+    // manage its activation and parameters.
+    QAction *actImportModel_ = nullptr;
+    QAction *actModelBrush_ = nullptr;
+    QAction *actModelPlace_ = nullptr;
+    QAction *actModelAdd_ = nullptr;
+    QAction *actModelSubtract_ = nullptr;
+    QSpinBox *modelHeightSpin_ = nullptr;
+    QDoubleSpinBox *modelScaleXSpin_ = nullptr;
+    QDoubleSpinBox *modelScaleYSpin_ = nullptr;
+    // The last imported model path (status messages / re-quantization).
+    QString modelImportPath_;
     // Gaussian-blur convolution radius (cells) — always less than the
     // stamp radius (the maximum follows the brush-radius spinbox).
     QSpinBox *blurRadiusSpin_ = nullptr;

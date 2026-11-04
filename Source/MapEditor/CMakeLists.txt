@@ -84,6 +84,7 @@ ADD_LIBRARY(MapEditorCore STATIC
         core/ScriptedBrush.cpp
         core/scripted_brush_timeout.cpp
         core/ImageDecal.cpp
+        core/ModelBrush.cpp
         core/PaletteOps.cpp
         core/ColorMipmap.cpp
         core/ViewportRenderer.cpp

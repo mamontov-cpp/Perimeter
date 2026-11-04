@@ -1004,6 +1004,7 @@ MainWindow::MainWindow(QWidget *parent)
     buildBrushToolbar();
     buildSculptToolbar();
     buildModifierToolbar();
+    buildModelToolbar();
     buildStatusBar();
     buildViewport();
 
@@ -2449,6 +2450,263 @@ void MainWindow::buildModifierToolbar()
     updateActionStates();
 }
 
+void MainWindow::buildModelToolbar()
+{
+    // The toolbar break must come BEFORE the toolbar is inserted: it forces
+    // this toolbar onto its own row below the Sculpting/Modifier toolbars
+    // (same rule the others use).
+    addToolBarBreak();
+
+    QToolBar *bar = addToolBar(tr("Model"));
+    bar->setObjectName(QStringLiteral("ModelToolbar"));
+    bar->setMovable(false);
+    bar->setFloatable(false);
+    bar->setIconSize(QSize(22, 22));
+    bar->setStyleSheet(
+        QStringLiteral("QToolButton:enabled:hover, QToolButton:enabled:checked "
+                       "{ background: rgba(0, 96, 170, 35); border-radius: 4px; }"));
+
+    actImportModel_ = new QAction(makeLoadImageIcon(), tr("Import &Model..."),
+                                  this);
+    actImportModel_->setToolTip(
+        tr("Import a PLY model (ASCII or binary) as the heightmap brush: the "
+           "model's XY rectangle becomes the stamp, each cell takes the max "
+           "vertex height (scaled by the Height spinbox) and the top vertex "
+           "colour (quantized into the Dam palette like the Image Decal). A "
+           "texture named by a PLY header comment is sampled through the "
+           "UVs."));
+    connect(actImportModel_, &QAction::triggered, this,
+            &MainWindow::onImportModel);
+    bar->addAction(actImportModel_);
+
+    actModelBrush_ = new QAction(makeBrushIcon(), tr("Use &Model Brush"),
+                                 this);
+    actModelBrush_->setToolTip(
+        tr("Stamp the imported model as a heightmap (Dam layer only). "
+           "Place sets the dam to the scaled model height and paints the "
+           "palette colours; Add raises the covered average by the local "
+           "model height; Subtract lowers it (removing the dam where the "
+           "result drops to the terrain)."));
+    actModelBrush_->setCheckable(true);
+    actModelBrush_->setEnabled(false); // enabled by a successful import
+    connect(actModelBrush_, &QAction::triggered, this, [this](bool checked) {
+        if (checked && !brushTool_->hasModelBrushData()) {
+            actModelBrush_->setChecked(false);
+            return;
+        }
+        if (checked && (!session_ || !session_->isWorldLoaded())) {
+            statusBar()->showMessage(
+                tr("Load a world first — the model brush needs the Dam "
+                   "palette of the loaded world."),
+                5000);
+            actModelBrush_->setChecked(false);
+            return;
+        }
+        MapEditor::BrushParams params = brushTool_->params();
+        params.modelBrush = checked;
+        if (checked) {
+            params.mode = MapEditor::BrushMode::Dam;
+            params.shape3d = MapEditor::Shape3DKind::None;
+            params.useImageMask = false;
+            if (params.effect != MapEditor::BrushEffect::ChangeHeight &&
+                params.effect != MapEditor::BrushEffect::AlignVariableH) {
+                params.effect = MapEditor::BrushEffect::ChangeHeight;
+                params.direction = 1;
+            }
+            quantizeModelBrush();
+        }
+        brushTool_->setParams(params);
+        if (viewport_) {
+            viewport_->setEditorMode(
+                checked ? MapEditor::ViewportWidget::EditorMode::Brush
+                        : MapEditor::ViewportWidget::EditorMode::Brush);
+        }
+        syncBrushControls();
+    });
+    bar->addAction(actModelBrush_);
+
+    bar->addSeparator();
+
+    // Place / Add / Subtract — the exclusive mode group of the model brush.
+    QActionGroup *modelModeGroup = new QActionGroup(this);
+    const auto addModelMode = [this, modelModeGroup, bar](
+            QAction *&slot, int mode, const QString &text,
+            const QString &toolTip) {
+        QAction *action = new QAction(text, this);
+        action->setToolTip(toolTip);
+        action->setCheckable(true);
+        action->setChecked(brushTool_->params().modelMode == mode);
+        connect(action, &QAction::triggered, this, [this, mode] {
+            MapEditor::BrushParams params = brushTool_->params();
+            params.modelMode = mode;
+            brushTool_->setParams(params);
+            syncBrushControls();
+        });
+        modelModeGroup->addAction(action);
+        slot = action;
+        bar->addAction(action);
+        return action;
+    };
+    addModelMode(actModelPlace_, 0, tr("Place"),
+                 tr("Place mode: the stamp SETS the dam to the scaled model "
+                    "height and paints the quantized Dam palette colours "
+                    "(a Set-to-Height style stamp)."));
+    addModelMode(actModelAdd_, 1, tr("Add"),
+                 tr("Add mode: the covered area's average height is RAISED "
+                    "by the local model height (cells below the target move "
+                    "up only)."));
+    addModelMode(actModelSubtract_, 2, tr("Subtract"),
+                 tr("Subtract mode: the covered area's average height is "
+                    "LOWERED by the local model height; where the result "
+                    "drops to the terrain the dam is removed."));
+    actModelPlace_->setChecked(true);
+
+    // Height: the model's z range is scaled proportionally onto 0..Height
+    // (whole voxels).
+    modelHeightSpin_ = new QSpinBox(bar);
+    modelHeightSpin_->setObjectName(QStringLiteral("modelHeightSpin"));
+    modelHeightSpin_->setRange(0, 255);
+    modelHeightSpin_->setValue(32);
+    modelHeightSpin_->setSuffix(tr(" v"));
+    modelHeightSpin_->setToolTip(
+        tr("Model brush height: the model's z range maps onto 0..Height "
+           "(whole voxels), proportionally scaled."));
+    connect(modelHeightSpin_, &QSpinBox::valueChanged, this, [this](int value) {
+        MapEditor::BrushParams params = brushTool_->params();
+        params.modelHeight = value;
+        brushTool_->setParams(params);
+        syncBrushControls();
+    });
+    bar->addWidget(modelHeightSpin_);
+
+    // X/Y scales: the placement rectangle as a fraction of the model size.
+    modelScaleXSpin_ = new QDoubleSpinBox(bar);
+    modelScaleXSpin_->setObjectName(QStringLiteral("modelScaleXSpin"));
+    modelScaleXSpin_->setRange(0.0, 1.0);
+    modelScaleXSpin_->setDecimals(2);
+    modelScaleXSpin_->setSingleStep(0.05);
+    modelScaleXSpin_->setValue(1.0);
+    modelScaleXSpin_->setToolTip(
+        tr("X scale of the placement rectangle (0..1, fraction of the "
+           "imported model width)."));
+    connect(modelScaleXSpin_, &QDoubleSpinBox::valueChanged, this,
+            [this](double value) {
+                MapEditor::BrushParams params = brushTool_->params();
+                params.modelScaleX = value;
+                brushTool_->setParams(params);
+                syncBrushControls();
+            });
+    bar->addWidget(modelScaleXSpin_);
+
+    modelScaleYSpin_ = new QDoubleSpinBox(bar);
+    modelScaleYSpin_->setObjectName(QStringLiteral("modelScaleYSpin"));
+    modelScaleYSpin_->setRange(0.0, 1.0);
+    modelScaleYSpin_->setDecimals(2);
+    modelScaleYSpin_->setSingleStep(0.05);
+    modelScaleYSpin_->setValue(1.0);
+    modelScaleYSpin_->setToolTip(
+        tr("Y scale of the placement rectangle (0..1, fraction of the "
+           "imported model height/length)."));
+    connect(modelScaleYSpin_, &QDoubleSpinBox::valueChanged, this,
+            [this](double value) {
+                MapEditor::BrushParams params = brushTool_->params();
+                params.modelScaleY = value;
+                brushTool_->setParams(params);
+                syncBrushControls();
+            });
+    bar->addWidget(modelScaleYSpin_);
+
+    updateActionStates();
+}
+
+void MainWindow::onImportModel()
+{
+    const QString filePath = QFileDialog::getOpenFileName(
+        this, tr("Import PLY Model"), QString(),
+        tr("PLY models (*.ply);;All Files (*)"));
+    if (filePath.isEmpty()) {
+        return;
+    }
+    const MapEditor::ModelBrush::ImportResult imported =
+        MapEditor::ModelBrush::importPly(
+            std::filesystem::u8path(filePath.toStdString()));
+    const QString name = QFileInfo(filePath).fileName();
+    if (!imported.ok) {
+        QMessageBox::warning(
+            this, tr("Import Model"),
+            tr("Unable to import from PLY the model %1\n%2")
+                .arg(name, QString::fromStdString(imported.error)));
+        return;
+    }
+
+    modelImportPath_ = filePath;
+    // Store the raster first; the palette quantization (it needs the loaded
+    // world's Dam palette) fills the indices in right after when possible.
+    brushTool_->setModelBrushData(imported.model, MapEditor::ImageDecal::DecalImage());
+    bool quantized = false;
+    if (session_ && session_->isWorldLoaded()) {
+        quantized = quantizeModelBrush();
+    }
+    if (actModelBrush_) {
+        actModelBrush_->setEnabled(true);
+    }
+    statusBar()->showMessage(
+        tr("Model imported: %1x%2 cells (%3). %4")
+            .arg(imported.model.width)
+            .arg(imported.model.height)
+            .arg(name)
+            .arg(quantized ? tr("Ready — toggle \"Use Model Brush\".")
+                           : tr("Load a world, then toggle \"Use Model "
+                                "Brush\".")),
+        8000);
+}
+
+bool MainWindow::quantizeModelBrush()
+{
+    if (!session_ || !session_->isWorldLoaded() ||
+        !brushTool_->hasModelBrushData()) {
+        return false;
+    }
+    const MapEditor::ModelBrush::ModelRaster& raster =
+        brushTool_->modelRaster();
+    // The raster colours as an RGBA image (all cells opaque — the holes were
+    // filled with the model's average colour at import).
+    std::vector<unsigned char> rgba(
+        static_cast<std::size_t>(raster.width) * raster.height * 4, 255);
+    for (std::size_t i = 0; i < raster.rgb.size(); ++i) {
+        rgba[i * 4 + 0] = static_cast<unsigned char>((raster.rgb[i] >> 16) & 0xFF);
+        rgba[i * 4 + 1] = static_cast<unsigned char>((raster.rgb[i] >> 8) & 0xFF);
+        rgba[i * 4 + 2] = static_cast<unsigned char>(raster.rgb[i] & 0xFF);
+    }
+    const std::vector<unsigned char> palette =
+        session_->paletteBytes(MapEditor::EditorSession::PaletteLayer::Dam);
+    const std::vector<unsigned char> usage = session_->damPaletteUsage();
+    const MapEditor::ImageDecal::PrepareResult prepared =
+        MapEditor::ImageDecal::prepare(rgba.data(), raster.width,
+                                       raster.height, palette.data(),
+                                       usage.data());
+    if (!prepared.ok) {
+        statusBar()->showMessage(
+            tr("Model brush colours cannot be quantized: %1")
+                .arg(QString::fromStdString(prepared.error)),
+            8000);
+        return false;
+    }
+    // The new colours go into the Dam palette like the decal flow does.
+    for (const MapEditor::ImageDecal::PaletteWrite &write :
+         prepared.paletteWrites) {
+        session_->setPaletteRgb(MapEditor::EditorSession::PaletteLayer::Dam,
+                                write.index, write.rgb);
+    }
+    session_->applyPalettes();
+    if (palettePanel_) {
+        palettePanel_->refresh();
+    }
+    refreshPaletteRenderers();
+    brushTool_->setModelBrushData(raster, prepared.image);
+    return true;
+}
+
 void MainWindow::createBrushActions()
 {
     using Viewport = MapEditor::ViewportWidget;
@@ -2476,8 +2734,10 @@ void MainWindow::createBrushActions()
             params.effect = effect;
             params.direction = direction;
             // A common brush type paints a flat mask — the 3D shape solid
-            // belongs to the sculpting shapes (same rule as the image mask).
+            // and the model-heightmap stamp belong to their own buttons
+            // (same rule as the image mask).
             params.shape3d = MapEditor::Shape3DKind::None;
+            params.modelBrush = false;
             brushTool_->setParams(params);
             // T4.2 — keep the interaction mode in step with the brush type:
             // the picking type (eyedropper) drives the Eyedropper mode, every
@@ -2711,6 +2971,7 @@ void MainWindow::createBrushActions()
             params.shape3d = kind;
             params.mode = MapEditor::BrushMode::Dam;
             params.useImageMask = false;
+            params.modelBrush = false;
             if (params.effect != MapEditor::BrushEffect::ChangeHeight &&
                 params.effect != MapEditor::BrushEffect::AlignVariableH) {
                 params.effect = MapEditor::BrushEffect::ChangeHeight;
@@ -2787,6 +3048,8 @@ void MainWindow::createBrushActions()
         params.effect = MapEditor::BrushEffect::ImageDecal;
         params.mode = MapEditor::BrushMode::Dam; // the decal owns the Dam layer
         params.useImageMask = false;
+        params.shape3d = MapEditor::Shape3DKind::None;
+        params.modelBrush = false;
         brushTool_->setParams(params);
         if (viewport_) {
             viewport_->setEditorMode(
@@ -2834,10 +3097,14 @@ void MainWindow::createBrushActions()
                 params.direction = 1;
             }
             // The 3D shape brushes own the Dam layer like the sculpting
-            // types — switching to Geo drops the solid back to a plain raise.
+            // types — switching to Geo drops the solid back to a plain
+            // raise. Same for the model-heightmap stamp.
             if (mode == MapEditor::BrushMode::Geo &&
                 params.shape3d != MapEditor::Shape3DKind::None) {
                 params.shape3d = MapEditor::Shape3DKind::None;
+            }
+            if (mode == MapEditor::BrushMode::Geo && params.modelBrush) {
+                params.modelBrush = false;
             }
             brushTool_->setParams(params);
             syncBrushControls();
@@ -2928,8 +3195,9 @@ void MainWindow::createBrushActions()
             MapEditor::BrushParams params = brushTool_->params();
             params.shape = shape;
             params.useImageMask = false;
-            // A 2D stamp shape replaces the 3D solid as well.
+            // A 2D stamp shape replaces the 3D solid and the model stamp.
             params.shape3d = MapEditor::Shape3DKind::None;
+            params.modelBrush = false;
             brushTool_->setParams(params);
             syncBrushControls();
         });
@@ -3310,6 +3578,18 @@ void MainWindow::syncBrushControls()
     syncType(actBrush3DTorus_, params.shape3d == MapEditor::Shape3DKind::Torus);
     syncType(actBrush3DEllipsoid_,
              params.shape3d == MapEditor::Shape3DKind::HalfEllipsoid);
+    if (actModelBrush_) {
+        actModelBrush_->setChecked(params.modelBrush);
+    }
+    if (actModelPlace_) {
+        actModelPlace_->setChecked(params.modelMode == 0);
+    }
+    if (actModelAdd_) {
+        actModelAdd_->setChecked(params.modelMode == 1);
+    }
+    if (actModelSubtract_) {
+        actModelSubtract_->setChecked(params.modelMode == 2);
+    }
 
     // 3D shape settings mirror the tool.
     const auto syncSpin = [](QSpinBox *spin, int shown) {
@@ -3324,6 +3604,17 @@ void MainWindow::syncBrushControls()
     syncSpin(shapeTopOffsetYSpin_, qRound(params.shapeTopOffsetY));
     syncSpin(shapeTopRadiusSpin_, qRound(params.shapeTopRadius));
     syncSpin(shapeTopSideSpin_, qRound(params.shapeTopSide));
+    // Model brush settings mirror the tool.
+    syncSpin(modelHeightSpin_, params.modelHeight);
+    const auto syncDoubleSpin = [](QDoubleSpinBox *spin, double shown) {
+        if (spin && std::abs(spin->value() - shown) > 1e-9) {
+            spin->blockSignals(true);
+            spin->setValue(shown);
+            spin->blockSignals(false);
+        }
+    };
+    syncDoubleSpin(modelScaleXSpin_, params.modelScaleX);
+    syncDoubleSpin(modelScaleYSpin_, params.modelScaleY);
 
     // Blur radius mirrors the tool; its maximum follows the stamp radius
     // (it must stay strictly smaller).
@@ -3446,20 +3737,21 @@ void MainWindow::syncBrushControls()
     const bool decalActive = params.effect == MapEditor::BrushEffect::ImageDecal &&
                              brushTool_->hasDecalImage();
     const bool shape3dActive = params.shape3d != MapEditor::Shape3DKind::None;
+    const bool modelStampActive = params.modelBrush;
     if (actShapeCircle_) actShapeCircle_->setChecked(!imageMaskActive && !decalActive &&
-        !shape3dActive && params.shape == MapEditor::BrushShape::FilledCircle);
+        !shape3dActive && !modelStampActive && params.shape == MapEditor::BrushShape::FilledCircle);
     if (actShapeSquare_) actShapeSquare_->setChecked(!imageMaskActive && !decalActive &&
-        !shape3dActive && params.shape == MapEditor::BrushShape::FilledSquare);
+        !shape3dActive && !modelStampActive && params.shape == MapEditor::BrushShape::FilledSquare);
     if (actShapeCircleOutline_) actShapeCircleOutline_->setChecked(!imageMaskActive && !decalActive &&
-        !shape3dActive && params.shape == MapEditor::BrushShape::CircleOutline);
+        !shape3dActive && !modelStampActive && params.shape == MapEditor::BrushShape::CircleOutline);
     if (actShapeSquareOutline_) actShapeSquareOutline_->setChecked(!imageMaskActive && !decalActive &&
-        !shape3dActive && params.shape == MapEditor::BrushShape::SquareOutline);
+        !shape3dActive && !modelStampActive && params.shape == MapEditor::BrushShape::SquareOutline);
     if (actShapePolygon_) actShapePolygon_->setChecked(!imageMaskActive && !decalActive &&
-        !shape3dActive && params.shape == MapEditor::BrushShape::FilledPolygon);
+        !shape3dActive && !modelStampActive && params.shape == MapEditor::BrushShape::FilledPolygon);
     if (actShapePolygonOutline_) actShapePolygonOutline_->setChecked(!imageMaskActive && !decalActive &&
-        !shape3dActive && params.shape == MapEditor::BrushShape::PolygonOutline);
+        !shape3dActive && !modelStampActive && params.shape == MapEditor::BrushShape::PolygonOutline);
     if (actShapeLine_) actShapeLine_->setChecked(!imageMaskActive && !decalActive &&
-        !shape3dActive && params.shape == MapEditor::BrushShape::Line);
+        !shape3dActive && !modelStampActive && params.shape == MapEditor::BrushShape::Line);
 
     // Regular-polygon params mirror the tool (the shape buttons' exclusive
     // group only carries the shape itself).
@@ -3538,17 +3830,34 @@ void MainWindow::syncBrushControls()
             params.shapeTopRadius > 0) {
             previewInner = qRound(params.shapeTopRadius);
         }
+        // The model brush previews its placement RECTANGLE (asymmetric half
+        // extents in cells); 0/0 hands the preview back to the shapes.
+        int previewRectX = 0;
+        int previewRectY = 0;
+        if (params.modelBrush && brushTool_->hasModelBrushData()) {
+            const MapEditor::ModelBrush::ModelRaster& raster =
+                brushTool_->modelRaster();
+            previewRectX = std::max(
+                1, static_cast<int>(
+                       std::lround(raster.width * params.modelScaleX))) / 2;
+            previewRectY = std::max(
+                1, static_cast<int>(
+                       std::lround(raster.height * params.modelScaleY))) / 2;
+        }
         viewport_->setBrushPreview(
             scriptPreview
                 ? (scriptStampShape_ == MapEditor::ScriptStampShape::Square
                        ? MapEditor::BrushPreviewShape::Square
                        : MapEditor::BrushPreviewShape::Circle)
+            : (params.modelBrush && brushTool_->hasModelBrushData())
+                    ? MapEditor::BrushPreviewShape::Square
             : polygonPreview ? MapEditor::BrushPreviewShape::Polygon
             : squarePreview ? MapEditor::BrushPreviewShape::Square
                             : MapEditor::BrushPreviewShape::Circle,
             previewRadius, previewInner);
         viewport_->setBrushPreviewPolygon(params.polygonSides,
                                           params.polygonAngleDeg);
+        viewport_->setBrushPreviewRect(previewRectX, previewRectY);
     }
 
     // Enabled/disabled states depend on the effect AND on the session state
@@ -4373,6 +4682,8 @@ void MainWindow::onLoadBrushImage()
     // View mode would otherwise do nothing on click).
     MapEditor::BrushParams params = brushTool_->params();
     params.useImageMask = true;
+    params.shape3d = MapEditor::Shape3DKind::None;
+    params.modelBrush = false;
     if (params.effect == MapEditor::BrushEffect::PickColor ||
         params.effect == MapEditor::BrushEffect::None) {
         params.effect = MapEditor::BrushEffect::ChangeHeight;
@@ -4740,9 +5051,12 @@ void MainWindow::updateActionStates()
         brushTool_ ? brushTool_->params().shape3d
                    : MapEditor::Shape3DKind::None;
     const bool shape3dActive = activeShape3d != MapEditor::Shape3DKind::None;
+    const bool modelBrushActive =
+        brushTool_ && brushTool_->params().modelBrush;
     if (actBrushGeo_) {
         actBrushGeo_->setEnabled(worldLoaded && !decalEffect && !scriptEffect &&
-                                 !sculptEffect && !shape3dActive);
+                                 !sculptEffect && !shape3dActive &&
+                                 !modelBrushActive);
     }
     // The sculpting fraction applies only with a sculpting type selected
     // (same image/decal/pick exclusions the radius has).
@@ -4825,6 +5139,30 @@ void MainWindow::updateActionStates()
     if (shapeTopSideSpin_) {
         shapeTopSideSpin_->setEnabled(
             worldLoaded && MapEditor::shape3DHasTopSide(activeShape3d));
+    }
+    // Model brush: the use-toggle is enabled once a model is imported; the
+    // mode buttons and the scales apply while the brush is active.
+    if (actModelBrush_) {
+        actModelBrush_->setEnabled(brushTool_ &&
+                                   brushTool_->hasModelBrushData());
+    }
+    if (actModelPlace_) {
+        actModelPlace_->setEnabled(worldLoaded && modelBrushActive);
+    }
+    if (actModelAdd_) {
+        actModelAdd_->setEnabled(worldLoaded && modelBrushActive);
+    }
+    if (actModelSubtract_) {
+        actModelSubtract_->setEnabled(worldLoaded && modelBrushActive);
+    }
+    if (modelHeightSpin_) {
+        modelHeightSpin_->setEnabled(worldLoaded && modelBrushActive);
+    }
+    if (modelScaleXSpin_) {
+        modelScaleXSpin_->setEnabled(worldLoaded && modelBrushActive);
+    }
+    if (modelScaleYSpin_) {
+        modelScaleYSpin_->setEnabled(worldLoaded && modelBrushActive);
     }
     // T3.5 — the image scale applies to whichever image stamp is active: the
     // influence mask or the ImageDecal decal.

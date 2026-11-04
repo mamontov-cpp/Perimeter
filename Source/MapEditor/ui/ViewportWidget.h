@@ -347,6 +347,10 @@ public:
     int brushPreviewRadius() const { return brushRadius_; }
     int brushPreviewInnerRadius() const { return brushPreviewInnerRadius_; }
     void setBrushPreviewVisible(bool visible);
+    /// Asymmetric rectangle preview (the model-heightmap brush): the half
+    /// extents in map cells. Both <= 0 disables it (the symmetric shape
+    /// preview is back in charge). Works with BrushPreviewShape::Square.
+    void setBrushPreviewRect(int halfExtentX, int halfExtentY);
     /// Regular-polygon preview geometry (BrushPreviewShape::Polygon): the
     /// vertex count and the first-vertex angle offset in degrees — the same
     /// values BrushParams carries, so the outline shows exactly the stamp.
@@ -688,6 +692,10 @@ private:
     int brushRadius_ = kFineGridCell;
     /// Inner radius of the band for the outline shapes; 0 = no inner ring.
     int brushPreviewInnerRadius_ = 0;
+    /// Asymmetric rectangle half extents (cells) for the model brush
+    /// preview; <= 0 on either axis = the symmetric radius preview.
+    int brushRectX_ = 0;
+    int brushRectY_ = 0;
     /// Regular-polygon preview geometry (BrushPreviewShape::Polygon).
     int brushPolygonSides_ = 6;
     double brushPolygonAngleDeg_ = 0.0;

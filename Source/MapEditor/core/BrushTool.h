@@ -2,6 +2,7 @@
 
 #include "EditorSession.h"
 #include "ImageDecal.h"
+#include "ModelBrush.h"
 #include "Shape3D.h"
 
 #include <cmath>
@@ -267,6 +268,19 @@ struct BrushParams
     /// below the base.
     double shapeTopSide = 0.0;
 
+    /// Model-heightmap brush (Model toolbar): the imported model raster is
+    /// the stamp — a rectangle of the scaled model size. Dam mode only.
+    /// Mode 0 "place" sets the dam to the scaled model height and paints
+    /// the quantized Dam palette colours (a Set-to-Height style stamp);
+    /// mode 1 "add" raises the covered area's average height by the local
+    /// model height; mode 2 "subtract" lowers it (the dam is removed where
+    /// the result drops to the terrain).
+    bool modelBrush = false;
+    int modelMode = 0;      ///< 0 place, 1 add, 2 subtract.
+    int modelHeight = 32;   ///< whole voxels; the model z range maps onto it.
+    double modelScaleX = 1.0; ///< 0..1, the placement size along x.
+    double modelScaleY = 1.0; ///< 0..1, the placement size along y.
+
     bool operator==(const BrushParams& other) const
     {
         return shape == other.shape && radius == other.radius &&
@@ -291,7 +305,12 @@ struct BrushParams
                std::abs(shapeTopOffsetX - other.shapeTopOffsetX) < 1e-9 &&
                std::abs(shapeTopOffsetY - other.shapeTopOffsetY) < 1e-9 &&
                std::abs(shapeTopRadius - other.shapeTopRadius) < 1e-9 &&
-               std::abs(shapeTopSide - other.shapeTopSide) < 1e-9;
+               std::abs(shapeTopSide - other.shapeTopSide) < 1e-9 &&
+               modelBrush == other.modelBrush &&
+               modelMode == other.modelMode &&
+               modelHeight == other.modelHeight &&
+               std::abs(modelScaleX - other.modelScaleX) < 1e-9 &&
+               std::abs(modelScaleY - other.modelScaleY) < 1e-9;
     }
 };
 
@@ -495,6 +514,19 @@ public:
     /// Whether a non-empty decal image is loaded.
     bool hasDecalImage() const { return !decal_.empty(); }
 
+    // --- Model-heightmap brush ---------------------------------------------
+    /// Set the imported model raster (ModelBrush::importPly) and its palette
+    /// quantization (ImageDecal::prepare over the raster colours — the caller
+    /// writes paletteWrites into the Dam palette like the decal does). The
+    /// raster carries normalized heights + per-cell RGB; the indices carry
+    /// the Dam palette entry per cell (all cells opaque).
+    void setModelBrushData(const ModelBrush::ModelRaster& raster,
+                           const ImageDecal::DecalImage& indices);
+    /// The imported model raster (empty when none is imported).
+    const ModelBrush::ModelRaster& modelRaster() const { return modelRaster_; }
+    /// Whether a non-empty model raster is loaded.
+    bool hasModelBrushData() const { return !modelRaster_.empty(); }
+
     /// The per-cell delta the ChangeHeight effect uses: the direction times
     /// the strength in 1/32 m voxel units scaled by the mask influence
     /// (0..255); rounded half away from zero. Exposed for the tests.
@@ -534,6 +566,17 @@ private:
     bool applyShape3D(const BrushMask& absoluteMask, const BrushParams& params,
                       int bx, int by, int bxEnd, int byEnd);
 
+    /// Model-heightmap brush (see BrushParams::modelBrush): stamps the
+    /// imported model raster as a rectangle — "place" sets the dam to the
+    /// scaled model height and paints the quantized palette colours, "add"
+    /// raises the covered average by the local model height, "subtract"
+    /// lowers it. The resampled stamp data arrives through pendingModel_
+    /// (set by the applyStamp rectangle path). Dam mode only; one stamp =
+    /// one undo entry.
+    bool applyModelBrush(const BrushMask& absoluteMask,
+                         const BrushParams& params, int bx, int by, int bxEnd,
+                         int byEnd);
+
     EditorSession& session_;
     BrushParams params_;
 
@@ -546,6 +589,16 @@ private:
     ImageDecal::DecalImage decal_;
     int decalOriginX_ = 0;
     int decalOriginY_ = 0;
+
+    /// Model-heightmap brush: the imported raster + its palette quantization
+    /// (per-cell Dam palette index). The rectangle stamp path in applyStamp
+    /// resamples both to the scale-spin size into pendingModel_.
+    ModelBrush::ModelRaster modelRaster_;
+    ImageDecal::DecalImage modelIndices_;
+    /// Transient: the resampled stamp data for the applyMask call the
+    /// rectangle path is about to make (consumed by applyModelBrush).
+    ModelBrush::ModelRaster pendingModel_;
+    std::vector<int> pendingModelIndices_;
 
     /// T4.2: the last index pickColorAt() sampled (SurBuf at the click cell).
     unsigned char lastPickedColorIndex_ = 0;
