@@ -851,12 +851,6 @@ void ViewportWidget::setDamFrozen(bool frozen)
     update();
 }
 
-void ViewportWidget::setMarkers(const std::vector<MapMarker> &markers)
-{
-    markers_ = markers;
-    update();
-}
-
 void ViewportWidget::setSpawnPoints(const std::vector<SpawnPoint> &spawns)
 {
     spawns_ = spawns;
@@ -1247,7 +1241,6 @@ void ViewportWidget::paintGL()
     // --- Overlays (QPainter on top of the GL-drawn base raster) ---
     if (gridVisible_) drawGrid(painter);
     if (brushPreviewVisible_) drawBrushPreview(painter);
-    drawMarkers(painter);
     drawSpawnPoints(painter);
     drawHud(painter);
 
@@ -1752,34 +1745,6 @@ void ViewportWidget::drawBrushPreview(QPainter &painter)
         } else {
             painter.drawEllipse(start, 3.0, 3.0);
         }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Markers
-// ---------------------------------------------------------------------------
-
-void ViewportWidget::drawMarkers(QPainter &painter)
-{
-    if (markers_.empty() || !renderer_->isBound()) return;
-
-    for (const MapMarker &m : markers_) {
-        QPointF pos = mapToScreen(m.mapX, m.mapY);
-        if (m.radius > 0) {
-            // Zone: a circle outline with the radius in map cells.
-            const double screenRadius = static_cast<double>(m.radius) * zoom_;
-            painter.setPen(QPen(m.color, 2));
-            painter.setBrush(QColor(m.color.red(), m.color.green(),
-                                    m.color.blue(), 40));
-            painter.drawEllipse(pos, screenRadius, screenRadius);
-        }
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(m.color);
-        painter.drawEllipse(pos, 5, 5);
-
-        painter.setPen(QColor(255, 255, 255));
-        painter.setBrush(Qt::NoBrush);
-        painter.drawText(pos.x() + 7, pos.y() - 3, m.label);
     }
 }
 

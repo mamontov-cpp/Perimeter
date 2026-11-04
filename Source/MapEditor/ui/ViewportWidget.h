@@ -93,21 +93,10 @@ class TerrainGpuView;
 // QOpenGLTextureBlitter with linear/nearest sampling per the render style —
 // the same filtered-terrain-texture technique the game itself uses
 // (Source/Game/CopyToGraph.cpp GetTileColor). All overlays (grid, brush
-// preview, markers, spawns, HUD) are drawn by QPainter on top of the same
+// preview, spawns, HUD) are drawn by QPainter on top of the same
 // framebuffer. All vMap access happens in the UI thread (Terra is not
 // thread-safe).
 // ============================================================================
-
-/// Marker on the map (owned by T7 — the widget only renders what it is given).
-struct MapMarker
-{
-    QString label;
-    QString type = QStringLiteral("point"); // point | zone | unit | building
-    int mapX = 0;
-    int mapY = 0;
-    int radius = 0; // zone radius in map cells (0 = plain dot)
-    QColor color{Qt::yellow};
-};
 
 /// Battle-map spawn point (owned by T8 — the widget only renders it).
 struct SpawnPoint
@@ -378,9 +367,6 @@ public:
     void setDamFrozen(bool frozen);
     bool isDamFrozen() const { return damFrozen_; }
 
-    void setMarkers(const std::vector<MapMarker> &markers);
-    const std::vector<MapMarker> &markers() const { return markers_; }
-
     void setSpawnPoints(const std::vector<SpawnPoint> &spawns);
     const std::vector<SpawnPoint> &spawnPoints() const { return spawns_; }
 
@@ -514,7 +500,6 @@ private:
     /// camera (the CPU 3D view bakes the same grid into its frame).
     void drawGrid3D(QPainter &painter);
     void drawBrushPreview(QPainter &painter);
-    void drawMarkers(QPainter &painter);
     void drawSpawnPoints(QPainter &painter);
     /// 3D spawn markers: colored circles projected at the spawn ground
     /// cells (GPU: through the real camera at the terrain height; CPU
@@ -721,7 +706,6 @@ private:
     /// Polygon emitted through viewPolygonChanged the last time.
     QPolygonF lastEmittedViewPolygon_;
 
-    std::vector<MapMarker> markers_;
     std::vector<SpawnPoint> spawns_;
 
     /// Default grid step in map cells: 1 << kmGrid (VMAP.h:89).

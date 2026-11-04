@@ -19,6 +19,8 @@
 //                                                 0 where no dam)
 //   getGeoColor(pos)                   -> {r,g,b} SurBuf index resolved
 //   getDamColor(pos)                   -> {r,g,b} through the Geo/Dam palette
+//   setGeoPalette(index, {r, g, b})    -> set a Geo palette entry (0..255)
+//   setDamPalette(index, {r, g, b})    -> set a Dam palette entry (0..255)
 //   showInfoMessageBox(text)           -> the UI message hook (info mode)
 //   showErrorMessageBox(text)           -> the UI message hook (error mode)
 //
@@ -78,6 +80,16 @@ ScriptEnv* getEnv(duk_context* ctx)
     duk_pop_2(ctx);
     return env;
 }
+
+/// The message-box hook (installed by the Qt UI; see
+/// setScriptedBrushMessageHook). Null = messages drop silently.
+void (*g_messageBoxHook)(bool isError, const std::string& text) = nullptr;
+
+/// The palette-edit hook (installed by the Qt UI; see setScriptPaletteHook):
+/// fired after a script's setGeoPalette/setDamPalette so the UI repaints the
+/// viewport (every pixel re-tints) and refreshes the palette widgets. Null =
+/// the edit still lands, only the views stay stale until the next repaint.
+void (*g_paletteHook)() = nullptr;
 
 /// Nearest palette entry (squared RGB distance) in a 768-byte RGB table.
 unsigned char nearestPaletteEntry(const unsigned char* palette, int r, int g,
@@ -308,9 +320,52 @@ duk_ret_t apiGetDamColor(duk_context* ctx)
     return pushLayerColor(ctx, EditorSession::PaletteLayer::Dam);
 }
 
-/// The message-box hook (installed by the Qt UI; see
-/// setScriptedBrushMessageHook). Null = messages drop silently.
-void (*g_messageBoxHook)(bool isError, const std::string& text) = nullptr;
+/// Shared tail of setGeoPalette/setDamPalette: (index, {r, g, b}) with the
+/// index and the colour components range-checked. The edit goes through
+/// EditorSession::setPaletteRgb + applyPalettes, exactly like the palette
+/// panel — the render tables are rebuilt; the UI hook then repaints the
+/// viewport and the palette widgets.
+duk_ret_t apiSetPalette(duk_context* ctx, EditorSession::PaletteLayer layer)
+{
+    const int index = duk_to_int(ctx, 0);
+    if (index < 0 || index > 255) {
+        return duk_error(ctx, DUK_ERR_RANGE_ERROR,
+                         "palette index must be 0..255, got %d", index);
+    }
+    if (!duk_is_object(ctx, 1)) {
+        return duk_error(ctx, DUK_ERR_TYPE_ERROR,
+                         "second argument must be a colour {r, g, b}");
+    }
+    auto colorComponent = [&](const char* name) {
+        duk_get_prop_string(ctx, 1, name);
+        const int value = std::clamp(duk_to_int(ctx, -1), 0, 255);
+        duk_pop(ctx);
+        return value;
+    };
+    const int r = colorComponent("r");
+    const int g = colorComponent("g");
+    const int b = colorComponent("b");
+    getEnv(ctx)->session->setPaletteRgb(
+        layer, index,
+        (static_cast<unsigned int>(r) << 16) |
+            (static_cast<unsigned int>(g) << 8) |
+            static_cast<unsigned int>(b));
+    getEnv(ctx)->session->applyPalettes();
+    if (g_paletteHook) {
+        g_paletteHook();
+    }
+    return 0;
+}
+
+duk_ret_t apiSetGeoPalette(duk_context* ctx)
+{
+    return apiSetPalette(ctx, EditorSession::PaletteLayer::Geo);
+}
+
+duk_ret_t apiSetDamPalette(duk_context* ctx)
+{
+    return apiSetPalette(ctx, EditorSession::PaletteLayer::Dam);
+}
 
 duk_ret_t apiShowMessageBox(duk_context* ctx, bool isError)
 {
@@ -342,7 +397,65 @@ void registerBinding(duk_context* ctx, const char* name, duk_c_function fn,
 
 /// The interrupt callback is compiled into duktape itself via the
 /// DUK_USE_EXEC_TIMEOUT_CHECK config macro (scripted_brush_timeout.c) and
-/// fires the heap's MapEditorScriptTimeout — see runScriptedBrush().
+/// fires the heap's MapEditorScriptTimeout — see executeScript().
+
+/// Registers the whole editor API (shared by the scripted brush and the
+/// Run Script window).
+void registerApiBindings(duk_context* ctx)
+{
+    registerBinding(ctx, "getCurrentPos", apiGetCurrentPos, 0);
+    registerBinding(ctx, "getCurrentRadius", apiGetCurrentRadius, 0);
+    registerBinding(ctx, "getCurrentThickness", apiGetCurrentThickness, 0);
+    registerBinding(ctx, "getCurrentHeight", apiGetCurrentHeight, 0);
+    registerBinding(ctx, "raiseHeight", apiRaiseHeight, 4);
+    registerBinding(ctx, "lowerHeight", apiLowerHeight, 4);
+    registerBinding(ctx, "setHeight", apiSetHeight, 4);
+    registerBinding(ctx, "setToZP", apiSetToZP, 3);
+    registerBinding(ctx, "paintSoot", apiPaintSoot, 3);
+    registerBinding(ctx, "paintVeryLightDam", apiPaintVeryLightDam, 3);
+    registerBinding(ctx, "paintColor", apiPaintColor, 6);
+    registerBinding(ctx, "getDamHeight", apiGetDamHeight, 1);
+    registerBinding(ctx, "getGeoColor", apiGetGeoColor, 1);
+    registerBinding(ctx, "getDamColor", apiGetDamColor, 1);
+    registerBinding(ctx, "setGeoPalette", apiSetGeoPalette, 2);
+    registerBinding(ctx, "setDamPalette", apiSetDamPalette, 2);
+    registerBinding(ctx, "showInfoMessageBox", apiShowInfoMessageBox, 1);
+    registerBinding(ctx, "showErrorMessageBox", apiShowErrorMessageBox, 1);
+}
+
+/// Describes the error object on the stack top WITH its script location:
+/// "Name: message (brush.js:LINE)" when duktape recorded fileName/lineNumber
+/// (tracebacks), falling back to the plain safe string. Used for both the
+/// syntax errors (compile) and the runtime errors (pcall) so the user sees
+/// WHERE the script failed.
+std::string describeError(duk_context* ctx)
+{
+    if (!duk_is_error(ctx, -1)) {
+        return duk_safe_to_string(ctx, -1);
+    }
+    duk_dup(ctx, -1); // [err err]
+    duk_get_prop_string(ctx, -1, "name");
+    const std::string name = duk_safe_to_string(ctx, -1);
+    duk_pop(ctx);
+    duk_get_prop_string(ctx, -1, "message");
+    const std::string message = duk_safe_to_string(ctx, -1);
+    duk_pop(ctx);
+    duk_get_prop_string(ctx, -1, "fileName");
+    const char* file = duk_is_string(ctx, -1) ? duk_get_string(ctx, -1) : "";
+    const std::string fileName = file ? file : "";
+    duk_pop(ctx);
+    duk_get_prop_string(ctx, -1, "lineNumber");
+    const int line = duk_is_number(ctx, -1) ? duk_get_int(ctx, -1) : 0;
+    duk_pop_2(ctx); // []
+    if (!fileName.empty() && line > 0) {
+        return name + ": " + message + " (" + fileName + ":" +
+               std::to_string(line) + ")";
+    }
+    if (!name.empty() && !message.empty()) {
+        return name + ": " + message;
+    }
+    return name.empty() ? message : name;
+}
 
 /// Compiles `script` (program) and leaves the function on the stack.
 /// Returns false and fills errorOut with the duktape message.
@@ -354,11 +467,63 @@ bool compileScript(duk_context* ctx, const std::string& script,
     // Flags 0 = program (global) code — duktape has no DUK_COMPILE_PROGRAM;
     // EVAL/FUNCTION are opt-in bits.
     if (duk_pcompile(ctx, 0) != DUK_EXEC_SUCCESS) {
-        errorOut = duk_safe_to_string(ctx, -1);
+        errorOut = describeError(ctx);
         duk_pop(ctx);
         return false;
     }
     return true;
+}
+
+/// Creates the duktape heap, exposes the editor API and runs `script` once
+/// with (cx, cy) as the current position. No undo grouping here — the
+/// callers (runScriptedBrush/runEditorScript) own that.
+bool executeScript(EditorSession& session, BrushTool& brush,
+                   const BrushParams& params, int cx, int cy,
+                   const std::string& script, std::string& errorOut,
+                   int timeoutMs)
+{
+    // The timeout state is the heap user data: the executor calls
+    // mapeditorTimeoutCheck(heap_udata) on its interrupt interval (compiled
+    // into duktape via DUK_USE_EXEC_TIMEOUT_CHECK). Wall-clock deadline —
+    // see scripted_brush_timeout.h.
+    MapEditorScriptTimeout timeout;
+    mapeditorTimeoutSetDeadline(&timeout, timeoutMs);
+
+    ScriptEnv env;
+    env.session = &session;
+    env.brush = &brush;
+    env.params = &params;
+    env.centerX = cx;
+    env.centerY = cy;
+    env.timeout = &timeout;
+
+    duk_context* ctx = duk_create_heap(nullptr, nullptr, nullptr, &timeout,
+                                       nullptr);
+    bool ok = false;
+    if (!ctx) {
+        errorOut = "cannot create the script engine";
+    } else {
+        duk_push_global_stash(ctx);
+        duk_push_pointer(ctx, &env);
+        duk_put_prop_string(ctx, -2, "meScriptEnv");
+        duk_pop(ctx);
+
+        registerApiBindings(ctx);
+
+        if (compileScript(ctx, script, errorOut)) {
+            if (duk_pcall(ctx, 0) == DUK_EXEC_SUCCESS) {
+                ok = true;
+            } else if (timeout.hit) {
+                errorOut = "the script exceeded the " +
+                           std::to_string(timeoutMs) +
+                           " ms time limit and was aborted";
+            } else {
+                errorOut = describeError(ctx);
+            }
+        }
+        duk_destroy_heap(ctx);
+    }
+    return ok;
 }
 
 } // namespace
@@ -401,66 +566,31 @@ bool runScriptedBrush(EditorSession& session, BrushTool& brush,
     // Every world edit during the evaluation — however many ops the script
     // runs — merges into ONE undo entry.
     session.beginUndoGroup();
-
-    // The timeout state is the heap user data: the executor calls
-    // mapeditorTimeoutCheck(heap_udata) on its interrupt interval (compiled
-    // into duktape via DUK_USE_EXEC_TIMEOUT_CHECK). Wall-clock deadline —
-    // see scripted_brush_timeout.h.
-    MapEditorScriptTimeout timeout;
-    mapeditorTimeoutSetDeadline(&timeout, timeoutMs);
-
-    ScriptEnv env;
-    env.session = &session;
-    env.brush = &brush;
-    env.params = &params;
-    env.centerX = cx;
-    env.centerY = cy;
-    env.timeout = &timeout;
-
-    duk_context* ctx = duk_create_heap(nullptr, nullptr, nullptr, &timeout,
-                                       nullptr);
-    bool ok = false;
-    if (!ctx) {
-        errorOut = "cannot create the script engine";
-    } else {
-        duk_push_global_stash(ctx);
-        duk_push_pointer(ctx, &env);
-        duk_put_prop_string(ctx, -2, "meScriptEnv");
-        duk_pop(ctx);
-
-        registerBinding(ctx, "getCurrentPos", apiGetCurrentPos, 0);
-        registerBinding(ctx, "getCurrentRadius", apiGetCurrentRadius, 0);
-        registerBinding(ctx, "getCurrentThickness", apiGetCurrentThickness, 0);
-        registerBinding(ctx, "getCurrentHeight", apiGetCurrentHeight, 0);
-        registerBinding(ctx, "raiseHeight", apiRaiseHeight, 4);
-        registerBinding(ctx, "lowerHeight", apiLowerHeight, 4);
-        registerBinding(ctx, "setHeight", apiSetHeight, 4);
-        registerBinding(ctx, "setToZP", apiSetToZP, 3);
-        registerBinding(ctx, "paintSoot", apiPaintSoot, 3);
-        registerBinding(ctx, "paintVeryLightDam", apiPaintVeryLightDam, 3);
-        registerBinding(ctx, "paintColor", apiPaintColor, 6);
-        registerBinding(ctx, "getDamHeight", apiGetDamHeight, 1);
-        registerBinding(ctx, "getGeoColor", apiGetGeoColor, 1);
-        registerBinding(ctx, "getDamColor", apiGetDamColor, 1);
-        registerBinding(ctx, "showInfoMessageBox", apiShowInfoMessageBox, 1);
-        registerBinding(ctx, "showErrorMessageBox", apiShowErrorMessageBox, 1);
-
-        if (compileScript(ctx, params.script, errorOut)) {
-            if (duk_pcall(ctx, 0) == DUK_EXEC_SUCCESS) {
-                ok = true;
-            } else if (timeout.hit) {
-                errorOut = "the script exceeded the " +
-                           std::to_string(timeoutMs) +
-                           " ms time limit and was aborted";
-            } else {
-                errorOut = duk_safe_to_string(ctx, -1);
-            }
-        }
-        duk_destroy_heap(ctx);
-    }
-
+    const bool ok = executeScript(session, brush, params, cx, cy, params.script,
+                                  errorOut, timeoutMs);
     // Merge whatever was recorded (possibly nothing on a syntax error)
     // into the single undo entry.
+    session.endUndoGroup();
+    return ok;
+}
+
+bool runEditorScript(EditorSession& session, BrushTool& brush,
+                     const BrushParams& params, int cx, int cy,
+                     const std::string& script, std::string& errorOut,
+                     int timeoutMs)
+{
+    if (script.empty()) {
+        errorOut = "the script is empty";
+        return false;
+    }
+    if (!session.isWorldLoaded()) {
+        errorOut = "no world loaded";
+        return false;
+    }
+    // One Run = one undo entry, exactly like a scripted-brush stamp.
+    session.beginUndoGroup();
+    const bool ok = executeScript(session, brush, params, cx, cy, script,
+                                  errorOut, timeoutMs);
     session.endUndoGroup();
     return ok;
 }
@@ -469,6 +599,11 @@ void setScriptedBrushMessageHook(void (*hook)(bool isError,
                                               const std::string& text))
 {
     g_messageBoxHook = hook;
+}
+
+void setScriptPaletteHook(void (*hook)())
+{
+    g_paletteHook = hook;
 }
 
 } // namespace MapEditor

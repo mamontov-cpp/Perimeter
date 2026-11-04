@@ -11,8 +11,8 @@
 #include <ImageDecal.h>
 #include <MinimapWidget.h>
 #include <NewWorldWizard.h>
-#include <MarkerPanel.h>
 #include <PalettePanel.h>
+#include <RunScriptDialog.h>
 #include <ScriptedBrush.h>
 #include <ViewportRenderer.h>
 #include <ViewportWidget.h>
@@ -66,6 +66,10 @@ namespace fs = std::filesystem;
 #include <QVBoxLayout>
 
 namespace {
+
+/// The script palette hook is a context-free function pointer; this points
+/// it at the running MainWindow (set in the ctor, cleared in the dtor).
+MainWindow* g_mainWindowForScriptHook = nullptr;
 
 // ---------------------------------------------------------------------------
 // Toolbar icons — painted once per action with QPainter so the view toolbar
@@ -998,6 +1002,16 @@ MainWindow::MainWindow(QWidget *parent)
             }
         });
 
+    // A script's setGeoPalette/setDamPalette edits the palettes in the
+    // Qt-free core — the hook repaints the viewport (every pixel using the
+    // colour re-tints) and refreshes the palette panel.
+    g_mainWindowForScriptHook = this;
+    MapEditor::setScriptPaletteHook([] {
+        if (g_mainWindowForScriptHook) {
+            g_mainWindowForScriptHook->refreshAfterScriptPaletteEdit();
+        }
+    });
+
     buildMenuBar();
     buildViewToolbar();
     addToolBarBreak();
@@ -1031,6 +1045,10 @@ MainWindow::MainWindow(QWidget *parent)
 MainWindow::~MainWindow()
 {
     editorTrace("MainWindow: dtor start");
+    if (g_mainWindowForScriptHook == this) {
+        g_mainWindowForScriptHook = nullptr;
+        MapEditor::setScriptPaletteHook(nullptr);
+    }
     delete brushTool_;
     delete session_;
     delete gameDirMgr_;
@@ -1178,98 +1196,8 @@ void MainWindow::buildViewport()
     buildMinimapDock();
     // T4.1 — the palette panel takes its place below the minimap dock.
     buildPaletteDock();
-    // T7.2 — the marker panel dock.
-    buildMarkerDock();
     // T8 — the battle map panel dock.
     buildBattleMapDock();
-}
-
-void MainWindow::buildMarkerDock()
-{
-    markerPanel_ = new MapEditor::MarkerPanel(markerStore_, this);
-
-    markerDock_ = new QDockWidget(tr("Markers"), this);
-    markerDock_->setObjectName(QStringLiteral("MarkerDock"));
-    markerDock_->setWidget(markerPanel_);
-    markerDock_->setAllowedAreas(Qt::LeftDockWidgetArea |
-                                 Qt::RightDockWidgetArea |
-                                 Qt::TopDockWidgetArea |
-                                 Qt::BottomDockWidgetArea);
-    markerDock_->setFeatures(QDockWidget::DockWidgetClosable |
-                             QDockWidget::DockWidgetMovable |
-                             QDockWidget::DockWidgetFloatable);
-    addDockWidget(Qt::RightDockWidgetArea, markerDock_);
-
-    if (viewMenu_) {
-        viewMenu_->addSeparator();
-        QAction *toggleAction = markerDock_->toggleViewAction();
-        toggleAction->setText(tr("&Markers"));
-        toggleAction->setToolTip(tr("Show or hide the marker panel (K)"));
-        toggleAction->setShortcut(QKeySequence(Qt::Key_K));
-        viewMenu_->addAction(toggleAction);
-    }
-
-    // Any panel mutation: autosave the sidecar and refresh the overlay.
-    connect(markerPanel_, &MapEditor::MarkerPanel::markersChanged, this, [this] {
-        saveMarkerSidecar();
-        syncMarkerOverlay();
-    });
-    connect(markerPanel_, &MapEditor::MarkerPanel::goToMarker, this,
-            [this](int mapX, int mapY) {
-                if (viewport_ && session_ && session_->isWorldLoaded()) {
-                    viewport_->centerOnCell(QPoint(mapX, mapY));
-                    viewport_->update();
-                }
-            });
-}
-
-void MainWindow::loadMarkerSidecar()
-{
-    markerStore_.clear();
-    const auto files = session_ ? session_->currentWorldFiles() : std::nullopt;
-    if (files && session_->isWorldLoaded()) {
-        markerStore_.load(MapEditor::MarkerStore::sidecarPathFor(
-            files->worldDir()));
-    }
-    if (markerPanel_) {
-        markerPanel_->refresh();
-    }
-    syncMarkerOverlay();
-}
-
-void MainWindow::saveMarkerSidecar()
-{
-    const auto files = session_ ? session_->currentWorldFiles() : std::nullopt;
-    if (!files || !session_->isWorldLoaded()) {
-        return;
-    }
-    if (!markerStore_.save(
-            MapEditor::MarkerStore::sidecarPathFor(files->worldDir()),
-            session_->currentWorldName())) {
-        statusBar()->showMessage(tr("Failed to save the marker sidecar."), 5000);
-    }
-}
-
-void MainWindow::syncMarkerOverlay()
-{
-    if (!viewport_) {
-        return;
-    }
-    std::vector<MapEditor::MapMarker> overlay;
-    overlay.reserve(markerStore_.markers().size());
-    for (const MapEditor::MapMarkerData &marker : markerStore_.markers()) {
-        MapEditor::MapMarker ui;
-        ui.label = QString::fromStdString(marker.label);
-        ui.type = QString::fromStdString(marker.type);
-        ui.mapX = marker.x;
-        ui.mapY = marker.y;
-        ui.radius = marker.radius;
-        ui.color = QColor(static_cast<int>((marker.colorRgb >> 16) & 0xFF),
-                          static_cast<int>((marker.colorRgb >> 8) & 0xFF),
-                          static_cast<int>(marker.colorRgb & 0xFF));
-        overlay.push_back(std::move(ui));
-    }
-    viewport_->setMarkers(overlay);
 }
 
 void MainWindow::buildMinimapDock()
@@ -1313,15 +1241,6 @@ void MainWindow::buildMinimapDock()
     // save, so reading the file back after an edit would show the old surface.
     connect(viewport_, &MapEditor::ViewportWidget::terrainRepainted,
             minimap_, &MapEditor::MinimapWidget::refreshFromLiveTerrain);
-
-    // T7 — the "Add" marker default position follows the view centre.
-    connect(viewport_, &MapEditor::ViewportWidget::viewRectChanged, this,
-            [this](const QRect &rect) {
-                if (markerPanel_) {
-                    markerPanel_->setDefaultPosition(rect.center().x(),
-                                                     rect.center().y());
-                }
-            });
 
     // Clicking the minimap navigates there instead.
     connect(minimap_, &MapEditor::MinimapWidget::cellClicked,
@@ -1423,9 +1342,6 @@ void MainWindow::onWorldLoaded()
         palettePanel_->selectIndex(params.colorIndex,
                                    params.mode == MapEditor::BrushMode::Dam);
     }
-    editorTrace("onWorldLoaded: loading markers");
-    // T7 — markers of the new world: sidecar + overlay.
-    loadMarkerSidecar();
     editorTrace("onWorldLoaded: sync brush controls");
     // The brush-dependent controls (color swatch, spinboxes, cursor preview)
     // were only partially initialized before the world existed — re-read the
@@ -1455,12 +1371,6 @@ void MainWindow::onWorldUnload()
     if (palettePanel_ && session_) {
         palettePanel_->setSession(session_);
     }
-    // T7 — no world, no markers (the sidecar belongs to the world folder).
-    markerStore_.clear();
-    if (markerPanel_) {
-        markerPanel_->refresh();
-    }
-    syncMarkerOverlay();
     // The brush controls lose their world-bound state (color swatch RGB,
     // palette selection) — re-read the tool so nothing stale stays on screen.
     syncBrushControls();
@@ -4510,6 +4420,17 @@ void MainWindow::buildToolsMenu()
 {
     QMenu *toolsMenu = menuBar()->addMenu(tr("&Tools"));
 
+    QAction *actRunScript = toolsMenu->addAction(tr("&Run Script..."));
+    actRunScript->setToolTip(tr("Write and run a JavaScript with the editor "
+                                "brush API (the same functions the scripted "
+                                "brush runs) — one run is one undo step"));
+    actRunScript->setEnabled(false);
+    connect(actRunScript, &QAction::triggered, this,
+            &MainWindow::onActionRunScript);
+    actRunScript_ = actRunScript;
+
+    toolsMenu->addSeparator();
+
     QAction *actValidateWorld = toolsMenu->addAction(tr("&Validate World..."));
     actValidateWorld->setToolTip(tr("Files, sizes, palettes, textures and the volume balance of the loaded world"));
     actValidateWorld->setEnabled(false);
@@ -4642,6 +4563,73 @@ void MainWindow::onActionHelp()
 {
     // Non-modal: the manual stays open while the editor is being used.
     MapEditor::HelpWindow::openHelp(this);
+}
+
+void MainWindow::refreshAfterScriptPaletteEdit()
+{
+    // Every pixel may have changed colour: full 2D cache repaint + 3D redraw.
+    refreshPaletteRenderers();
+    if (palettePanel_) {
+        palettePanel_->refresh();
+    }
+}
+
+void MainWindow::onActionRunScript()
+{
+    if (!session_ || !session_->isWorldLoaded()) {
+        statusBar()->showMessage(
+            tr("Load a world first — the script works on the loaded world."),
+            5000);
+        return;
+    }
+    if (runScript_.isEmpty()) {
+        // A starter example the first time the window opens.
+        runScript_ = QStringLiteral(
+            "// Run Script: runs once with the editor brush API.\n"
+            "// getCurrentPos() reports the cursor cell (map centre off-cursor).\n"
+            "//   raiseHeight(pos, height, radius, square) / lowerHeight(...)\n"
+            "//   setHeight(pos, height, radius, square) / setToZP(pos, r, sq)\n"
+            "//   paintSoot(pos, r, sq) / paintVeryLightDam(pos, r, sq)\n"
+            "//   paintColor(pos, red, green, blue, radius, square)\n"
+            "//   setGeoPalette(index, {r, g, b}) / setDamPalette(index, {r, g, b})\n"
+            "//   getDamHeight(pos) / getGeoColor(pos) / getDamColor(pos)\n"
+            "\n"
+            "var p = getCurrentPos();\n"
+            "// Example: a red Geo palette entry and a pad at the cursor.\n"
+            "setGeoPalette(200, {r: 220, g: 40, b: 40});\n"
+            "setHeight({x: p.x, y: p.y}, 30, 8, false);\n");
+    }
+    MapEditor::RunScriptDialog dialog(this, runScript_);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+    runScript_ = dialog.script();
+
+    // No stamp: the API's "current position" is the cursor cell, falling
+    // back to the map centre.
+    int cx = static_cast<int>(session_->mapWidth()) / 2;
+    int cy = static_cast<int>(session_->mapHeight()) / 2;
+    if (viewport_) {
+        const QPoint cell = viewport_->cursorCell();
+        if (cell.x() >= 0 && cell.y() >= 0) {
+            cx = cell.x();
+            cy = cell.y();
+        }
+    }
+
+    std::string error;
+    if (!MapEditor::runEditorScript(*session_, *brushTool_,
+                                    brushTool_->params(), cx, cy,
+                                    runScript_.toStdString(), error)) {
+        QMessageBox::critical(this, tr("Run Script"),
+                              QString::fromStdString(error));
+        return;
+    }
+    // A script may have edited the terrain (dirty rects repaint) and/or the
+    // palettes (every pixel re-tints) — refresh both views fully.
+    refreshPaletteRenderers();
+    updateStatusBar();
+    statusBar()->showMessage(tr("Script executed (one undo step)."), 4000);
 }
 
 void MainWindow::onActionUndo()
@@ -5046,6 +5034,9 @@ void MainWindow::updateActionStates()
     }
     if (actRegenerateImages_) {
         actRegenerateImages_->setEnabled(worldLoaded);
+    }
+    if (actRunScript_) {
+        actRunScript_->setEnabled(worldLoaded);
     }
     if (actFixZeroLayer_) {
         actFixZeroLayer_->setEnabled(battleMapLoaded && worldLoaded);

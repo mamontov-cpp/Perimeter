@@ -72,7 +72,6 @@ ADD_LIBRARY(MapEditorCore STATIC
         core/WorldFiles.cpp
         core/WorldParams.cpp
         core/WorldCreation.cpp
-        core/MarkerStore.cpp
         core/spg/XPrmDocument.cpp
         core/spg/SpgFile.cpp
         core/spg/SpgTextCoding.cpp
@@ -315,10 +314,10 @@ SET(MAP_EDITOR_APP_SRCS
         ui/WorldSettingsDialog.h
         ui/NewWorldWizard.cpp
         ui/NewWorldWizard.h
-        ui/MarkerPanel.cpp
-        ui/MarkerPanel.h
         ui/ScriptEditorDialog.cpp
         ui/ScriptEditorDialog.h
+        ui/RunScriptDialog.cpp
+        ui/RunScriptDialog.h
 )
 
 ADD_EXECUTABLE(map_editor ${MAP_EDITOR_APP_SRCS})

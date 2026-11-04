@@ -57,6 +57,14 @@ void captureMessageHook(bool isError, const std::string& text)
     g_capturedMessages.emplace_back(isError, text);
 }
 
+/// Counts the palette-edit hook fires (setScriptPaletteHook takes a plain
+/// function pointer, so the counter lives here).
+int g_paletteHookFires = 0;
+void countPaletteHook()
+{
+    ++g_paletteHookFires;
+}
+
 /// Byte-exact four-buffer snapshot of a region (for the undo check).
 struct RegionBytes
 {
@@ -464,7 +472,134 @@ bool runScriptedBrushTests()
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// SetGeoPalette/SetDamPalette + runEditorScript (the Run Script window path).
+// ---------------------------------------------------------------------------
+
+bool runScriptPaletteApiTests()
+{
+    MapEditor::EditorSession session;
+    // Undo coalescing off: these tests expect one undo entry per action.
+    session.setUndoCoalescingWindowMs(0);
+    const bool loaded = prepareBrushTestSession("load_root_script_palette",
+                                                session);
+    TEST_REQUIRE(loaded,
+                 "the palette-API test could not load the temporary world.");
+
+    const int mapW = static_cast<int>(vMap.H_SIZE);
+    const int mapH = static_cast<int>(vMap.V_SIZE);
+    const int cx = mapW / 2 + 40;
+    const int cy = mapH / 2 + 40;
+    MapEditor::BrushTool brush(session);
+
+    // --- 1: runEditorScript runs the SAME API; getCurrentPos reports the ---
+    // ---    passed centre; SetGeoPalette/SetDamPalette edit the palettes. ---
+    {
+        const std::string script =
+            "var p = getCurrentPos();\n"
+            "if (p.x !== " +
+            std::to_string(cx) + " || p.y !== " + std::to_string(cy) +
+            ") { throw new Error('wrong current position'); }\n"
+            "setGeoPalette(200, {r: 11, g: 22, b: 33});\n"
+            "setDamPalette(201, {r: 44, g: 55, b: 66});\n"
+            "// a terrain op marking the current position (so undo has data)\n"
+            "paintSoot({x: p.x, y: p.y}, 1, false);\n";
+        std::string error;
+        g_paletteHookFires = 0;
+        MapEditor::setScriptPaletteHook(&countPaletteHook);
+        TEST_REQUIRE(
+            MapEditor::runEditorScript(session, brush, brush.params(), cx, cy,
+                                       script, error),
+            "runEditorScript refused: %s", error.c_str());
+        MapEditor::setScriptPaletteHook(nullptr);
+        TEST_REQUIRE(g_paletteHookFires == 2,
+                     "each setGeoPalette/setDamPalette must fire the palette "
+                     "hook, got %d.", g_paletteHookFires);
+        TEST_REQUIRE(session.paletteRgb(
+                         MapEditor::EditorSession::PaletteLayer::Geo, 200) ==
+                         0x0B1621u,
+                     "SetGeoPalette(200) must set 0x0B1621.");
+        TEST_REQUIRE(session.paletteRgb(
+                         MapEditor::EditorSession::PaletteLayer::Dam, 201) ==
+                         0x2C3742u,
+                     "SetDamPalette(201) must set 0x2C3742.");
+        TEST_REQUIRE(vMap.GeoPal[200 * 3 + 0] == 11 &&
+                         vMap.GeoPal[200 * 3 + 1] == 22 &&
+                         vMap.GeoPal[200 * 3 + 2] == 33,
+                     "vMap.GeoPal[200] must carry the scripted RGB.");
+        TEST_REQUIRE((vMap.AtrBuf[cy * mapW + cx] & At_SOOT) == At_SOOT,
+                     "the script must see the passed centre via getCurrentPos.");
+        // One run = one undo entry; undo reverts the terrain op (palette
+        // edits live outside the undo history, like the palette panel).
+        TEST_REQUIRE(session.canUndo(),
+                     "one run must be one undo entry.");
+        TEST_REQUIRE(session.undo(), "undo failed.");
+        TEST_REQUIRE((vMap.AtrBuf[cy * mapW + cx] & At_SOOT) != At_SOOT,
+                     "undo must revert the scripted soot mark.");
+    }
+    std::printf("[PASS] runEditorScript: same API, current position, palette "
+                "writes, one undo step.\n");
+
+    // --- 2: palette index validation. -------------------------------------
+    {
+        std::string error;
+        TEST_REQUIRE(!MapEditor::runEditorScript(
+                         session, brush, brush.params(), cx, cy,
+                         "setGeoPalette(300, {r: 0, g: 0, b: 0});", error) &&
+                         error.find("0..255") != std::string::npos,
+                     "an out-of-range index must fail with a clear error.");
+        TEST_REQUIRE(!MapEditor::runEditorScript(
+                         session, brush, brush.params(), cx, cy,
+                         "setDamPalette(7, 42);", error),
+                     "a non-object colour must fail.");
+    }
+    std::printf("[PASS] palette API validates its arguments.\n");
+
+    // --- 2b: errors carry the script location (brush.js:LINE). -------------
+    {
+        std::string error;
+        TEST_REQUIRE(!MapEditor::runEditorScript(
+                         session, brush, brush.params(), cx, cy,
+                         "// line 1\nthrow new Error('boom');", error) &&
+                         error.find("brush.js:2") != std::string::npos,
+                     "a runtime error must carry its location, got: %s",
+                     error.c_str());
+        TEST_REQUIRE(!MapEditor::runEditorScript(
+                         session, brush, brush.params(), cx, cy,
+                         "var x = ;", error) &&
+                         error.find("brush.js") != std::string::npos,
+                     "a syntax error must carry its location, got: %s",
+                     error.c_str());
+    }
+    std::printf("[PASS] runtime and syntax errors carry the script location.\n");
+
+    // --- 3: the scripted-brush stamp shares the new API. -------------------
+    {
+        BrushParams params;
+        params.effect = BrushEffect::Script;
+        params.mode = BrushMode::Dam;
+        params.radius = 4;
+        params.heightLevel = 42;
+        params.script =
+            "setDamPalette(202, {r: 1, g: 2, b: 3});\n"
+            "var p = getCurrentPos();\n"
+            "raiseHeight({x: p.x, y: p.y}, 4, 2, false);\n";
+        TEST_REQUIRE(brush.applyStamp(cx, cy, params),
+                     "the scripted stamp with the palette API was refused.");
+        TEST_REQUIRE(session.paletteRgb(
+                         MapEditor::EditorSession::PaletteLayer::Dam, 202) ==
+                         0x010203u,
+                     "the scripted-brush stamp must reach setDamPalette.");
+    }
+    std::printf("[PASS] the scripted brush shares setGeoPalette/"
+                "setDamPalette.\n");
+
+    return true;
+}
+
 } // namespace
 
 MAP_EDITOR_REGISTER_TEST("Scripted brush (duktape)", 90,
                          runScriptedBrushTests);
+MAP_EDITOR_REGISTER_TEST("Script palette API + Run Script", 99,
+                         runScriptPaletteApiTests);

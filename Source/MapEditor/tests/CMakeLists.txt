@@ -51,7 +51,6 @@ ADD_EXECUTABLE(map_editor_tests
         WorldParamsTests.cpp
         WorldCreationTests.cpp
         ImageImportExportTests.cpp
-        MarkerStoreTests.cpp
         SpgTests.cpp
         GameCameraPresetTests.cpp
         ValidationTests.cpp

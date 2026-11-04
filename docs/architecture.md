@@ -237,13 +237,13 @@ History. Доступность кнопок/действий пересчиты
 показывает их в статус-баре. В правом нижнем углу вьюпорта — HUD с
 координатами и текущим зумом.
 
-**Маркеры и спавны.** `drawMarkers()` / `drawSpawnPoints()` рисуют цветные
-точки с подписями. Данные подаются из T7 (маркеры) и T8 (спавны) — виджет
-только рендерит.
+**Спавны.** `drawSpawnPoints()` / `drawSpawnPoints3D()` рисуют цветные
+кольца (2D) и диски на рельефе (3D). Данные подаются из T8 — виджет только
+рендерит.
 
 **Порядок отрисовки в `paintEvent()`:** (1) `renderer_->update()` — слить
 грязные прямоугольники и пересчитать освещение; (2) фон; (3) растр;
-(4) сетка; (5) превью кисти; (6) маркеры; (7) спавны; (8) HUD.
+(4) сетка; (5) превью кисти; (6) спавны; (7) HUD.
 
 ## 5.6. Стили рендера: Chunky / Smooth (фикс «блочного» вида, post-T3.3)
 
@@ -972,27 +972,12 @@ drawGridOverlay (проекция сетки). Terra viewV2D остаётся т
   мир (`EditorSession::reloadLeveledTextureLive` = del+load), после чего
   3D-перерисовка показывает её без перезагрузки мира.
 
-## 5.20. Маркеры — сайдкар `.medit.json` + панель (T7)
+## 5.20. Маркеры — УДАЛЕНО
 
-- **`core/MarkerStore.{h,cpp}`** — Qt-free хранилище
-  (`MapMarkerData`: id/type/note/label/color/x/y/radius) и JSON-сайдкар
-  `RESOURCE/Worlds/<мир>.medit.json` (РЯДОМ с папкой мира — в саму папку
-  мира, которую читает игра, ничего не пишется; в `.spg` маркеры не
-  экспортируются). JSON парсится/пишется встроенным мини-парсером
-  (recursive descent, ~200 строк) — без Qt/сторонних зависимостей в core;
-  схема: `{version, world, nextId, markers:[{id,type,label,note,color:"#RRGGBB",x,y,radius}]}`.
-  Типы: point/zone/unit/building; radius>0 — зона. Чтение лояльное
-  (неизвестный тип → point), id продолжаются после максимума из файла.
-- **Оверлей** — `ViewportWidget::drawMarkers` (существовавшая точка
-  расширения; маркеры приходят через `setMarkers`, TopDown-only);
-  zone рисуется кругом с радиусом в клетках (`radius * zoom`).
-- **Панель** — `ui/MarkerPanel` (namespace MapEditor, как PalettePanel):
-  список, Add (в центре текущего вида — дефолтная позиция следует за
-  `viewRectChanged`), Edit/Delete, Go To (двойной клик) →
-  `viewport_->centerOnCell`. Каждое изменение панели автосохраняет
-  сайдкар (`MainWindow::saveMarkerSidecar`) и обновляет оверлей;
-  сайдкар грузится на `onWorldLoaded`, сбрасывается на unload.
-  Док включается из View-меню (клавиша K).
+Панель маркеров (T7) удалена по фидбеку: `core/MarkerStore`,
+`ui/MarkerPanel`, оверлей `ViewportWidget::drawMarkers` и
+сайдкар `<мир>.medit.json` вырезаны целиком. Спавны боевых
+карт (T8, `SpawnPoint`) — отдельная система, не затронута.
 
 
 ## 5.21. Боевые карты `.spg` — XPrmDocument/SpgFile + панель (T8)
@@ -1077,7 +1062,6 @@ Headless-тесты `map_editor_tests` (`tests/`), по файлу на моду
 | 66–68 | `ViewOptionsTests` | затемнение гео (серые не-дамбовые клетки, дамба в палитре, байт-точный возврат), сетка-оверлей 3D (метки = цвет оверлея), заморозка дамбы (повторы меняются, вид из центра карты — нет) |
 | 58–59 | `WorldCreationTests` | создание мира из шаблона: flat (файлы, ini, ровный гео-слой, S2T0, дубликат имени) и generated (buildWorld, размер) (T5.2) |
 | 60–61 | `ImageImportExportTests` | экспорт: heightmap == `SGetAlt>>5`, top-view/up.tga заголовки, чтение индексированного TGA + отказ true-color; импорт: RGB → ближайший индекс по слою клетки, гейт гео/дамба, whole-map undo байт-в-байт, indexed → SurBuf как есть (T6) |
-| 65 | `MarkerStoreTests` | JSON round-trip маркеров (поля, экранирование), CRUD/ids, путь сайдкара, файл round-trip (T7.1) |
 | 70–71 | `SpgTests` | load→save COMPASS.spg байт-в-байт (XPrm DOM + SpgFile); правки: worldName/playersData/zeroLayerHeight/movePlayerGroup (фрейм+сквад+stable+слоты+камера), setPlayerCount; неизвестные узлы (контролы UI) выживают (T8) |
 | 74 | `SpgPlayerMoveUndoTests` | `setPlayerAnchorUndoable`: undo восстанавливает якорь И frame z (пересохранённый файл), redo возвращает; два игрока стекаются/разматываются LIFO; новый ход отбрасывает redo-хвост; `load()` чистит историю (Place Spawn) |
 | 75 | `ValidationTests` | validateWorldFiles без ошибок; объёмный баланс плоского мира (fill/dig, допуск); validateBattleMap (чисто; ошибка отсутствия мира; out-of-bounds спавн с go-to); автофиксы (T9) |
@@ -1098,6 +1082,7 @@ Headless-тесты `map_editor_tests` (`tests/`), по файлу на моду
 | 96 | `ModelBrushTests` | на мире: place ставит высоты рампы и красит квантованный индекс там, где дamba есть (колонка ниже рельефа — гео без дамбы); undo/redo байт-в-байт; add/subtract от средней по прямоугольнику (глубокий subtract снимает дамбу); scale 0.5 сужает штамп; Geo отказан |
 | 97 | `ModWorldsTests` | мир под `Mods/TestMod/RESOURCE/Worlds` сканируется как `TestMod / <мир>`; одноимённый мод/база грузят СВОИ копии (key-matched wTable, различие по hZeroPlast); `loadWorldByName` предпочитает базу; сейв мода идёт в папку мода |
 | 98 | `GmpDiffTests` | тоггл режима различий (база vs база+diff, захват штампа, модель переживает OFF); .gmp по игровому формату (заголовок/флаги/абсолютные блока); загрузка рукотворного .gmp в обоих порядках тоггла; undo стирает модель; round-trip |
+| 99 | `ScriptedBrushTests` | setGeoPalette/setDamPalette пишут Geo/Dam-палитры из JS (байты vMap.GeoPal/DamPal + paletteRgb + хук перерисовки UI), валидация индекса 0..255 и объекта {r,g,b}; ошибки compile/pcall несут локацию (brush.js:LINE) через describeError (name/message/fileName/lineNumber); runEditorScript (окно Tools → Run Script) — тот же API, getCurrentPos = переданный центр, один шаг Undo; штамп scripted brush разделяет API |
 
 Тесты пишут только во временный content-root (`%TEMP%/map_editor_roundtrip`),
 исходный мир не изменяется. `SaveWorldTests` строит изолированный content-root

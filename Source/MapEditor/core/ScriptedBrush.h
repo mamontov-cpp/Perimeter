@@ -35,11 +35,29 @@ bool runScriptedBrush(EditorSession& session, BrushTool& brush,
                       const BrushParams& params, int cx, int cy,
                       std::string& errorOut, int timeoutMs = 20000);
 
+/// Runs a script through the SAME editor API as the scripted brush (the
+/// Run Script window), once, with (cx, cy) as the current position
+/// (what getCurrentPos() reports). Unlike the scripted brush there is no
+/// Dam-mode requirement — the API functions drive the layers themselves.
+/// Every world edit lands in ONE undo entry. Returns false and fills
+/// errorOut on any failure (empty script, no world, syntax/runtime error,
+/// timeout).
+bool runEditorScript(EditorSession& session, BrushTool& brush,
+                     const BrushParams& params, int cx, int cy,
+                     const std::string& script, std::string& errorOut,
+                     int timeoutMs = 20000);
+
 /// UI hook for the scripted brush's showInfoMessageBox/showErrorMessageBox:
 /// the core is Qt-free, so the UI layer installs this callback and the core
 /// forwards every message to it (isError selects the info/error mode).
 /// The hook may be null — messages are then dropped silently.
 void setScriptedBrushMessageHook(void (*hook)(bool isError,
                                              const std::string& text));
+
+/// UI hook fired after a script's setGeoPalette/setDamPalette edits a
+/// palette: the viewport must re-tint every pixel that uses the colour and
+/// the palette widgets must refresh. Null = views stay stale until the
+/// next repaint.
+void setScriptPaletteHook(void (*hook)());
 
 } // namespace MapEditor

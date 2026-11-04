@@ -6,7 +6,6 @@
 
 #include "BrushTool.h"
 #include "ImageDecal.h"
-#include "MarkerStore.h"
 #include "ScriptEditorDialog.h"
 #include "Validation.h"
 #include "spg/SpgFile.h"
@@ -29,7 +28,6 @@ class EditorSession;
 class ViewportWidget;
 class MinimapWidget;
 class PalettePanel;
-class MarkerPanel;
 class BattleMapPanel;
 class BrushTool;
 struct View3DCamera;
@@ -187,8 +185,6 @@ private:
     void buildMinimapDock();
     // T4.1 — the palette panel dock (built right after the minimap dock).
     void buildPaletteDock();
-    // T7.2 — the marker panel dock + View menu toggle.
-    void buildMarkerDock();
     // T8 — the battle map panel dock.
     void buildBattleMapDock();
     // T9 — the Tools menu (validation + autofixes).
@@ -199,6 +195,14 @@ private:
     // Help menu (F1 — the manual from data/map_editor_help.md).
     void buildHelpMenu();
     void onActionHelp();
+
+    /// Tools → Run Script: the dialog + one-shot execution through the
+    /// scripted-brush API (runEditorScript).
+    void onActionRunScript();
+
+    /// A script's setGeoPalette/setDamPalette ran in the Qt-free core —
+    /// repaint the viewport (palette re-tint) and refresh the palette panel.
+    void refreshAfterScriptPaletteEdit();
 
     // Difference mode (.gmp): File menu save/load of the difference data.
     // The default path is the loaded battle map's .gmp sibling; without a
@@ -219,12 +223,6 @@ private:
     QString askBattleMapSaveName(bool &toWorldsFolder) const;
     /// *.spg file names in RESOURCE/Battle of the current game dir.
     QStringList battleMapTemplates() const;
-
-    // T7 — marker sidecar lifecycle: load on world load, autosave on change,
-    // clear on unload; feeds the viewport overlay.
-    void loadMarkerSidecar();
-    void saveMarkerSidecar();
-    void syncMarkerOverlay();
 
     // T3.2 — create the brush type (effect), the brush mode (Geo/Dam) and
     // the editor interaction mode (View/Brush/Eyedropper) actions. Called
@@ -514,17 +512,15 @@ private:
     QDockWidget *paletteDock_ = nullptr;
     MapEditor::PalettePanel *palettePanel_ = nullptr;
 
-    // T7 — markers: sidecar-backed store, dock panel and View menu toggle.
-    MapEditor::MarkerStore markerStore_;
-    QDockWidget *markerDock_ = nullptr;
-    MapEditor::MarkerPanel *markerPanel_ = nullptr;
-
     // T9 — validation + autofixes (Tools menu).
     QAction *actValidateWorld_ = nullptr;
     QAction *actValidateBattleMap_ = nullptr;
     QAction *actFixShuffling_ = nullptr;
     QAction *actFixZeroLayer_ = nullptr;
     QAction *actRegenerateImages_ = nullptr;
+    /// Tools → Run Script (the dialog reuses the scripted-brush API).
+    QAction *actRunScript_ = nullptr;
+    QString runScript_;
 
     // T8 — the loaded battle map (.spg), its dock panel and File actions.
     MapEditor::SpgFile battleMap_;
