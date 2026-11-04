@@ -3,9 +3,12 @@
 #include "WorldFiles.h"
 #include "WorldParams.h"
 
+#include <array>
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -278,6 +281,46 @@ public:
     void regRenderWithShadowTrail(int lowX, int lowY, int hiX, int hiY);
 
     // -----------------------------------------------------------------------
+    // Difference mode (.gmp) — terrain differences carried beside the base
+    // world, in the game's legacy .gmp format (see loadGameMap/saveGameMap,
+    // VMAP.cpp:952-1090).
+    //
+    // OFF (default): vMap buffers hold the BASE terrain; brushes edit the
+    // base world itself.
+    // ON: vMap buffers hold BASE+DIFF (what the game would show with the
+    // .gmp applied); every terrain edit re-syncs the difference model over
+    // the edited rect (via the regRenderWithShadowTrail hook), so brushes
+    // effectively write difference data. Toggling swaps the whole buffer
+    // content and CLEARS the undo history (snapshots from the other state
+    // would corrupt the display).
+    // -----------------------------------------------------------------------
+
+    /// Switch the difference mode. Returns false when no world is loaded.
+    bool setDiffMode(bool on);
+    bool isDiffMode() const { return diffMode_; }
+    /// True when the difference model holds any cells.
+    bool hasDiffData() const { return !diffAreas_.empty(); }
+    /// True when the difference data was edited (or loaded) since the last
+    /// .gmp save — what the exit flow offers to save instead of the world.
+    bool hasUnsavedDiffChanges() const { return diffModified_; }
+
+    /// Write the current difference model in the game's .gmp format
+    /// (works in both modes). False on write error. Clears the unsaved-
+    /// difference flag.
+    bool saveDiffToGmp(const std::string& path);
+    /// Replace the difference model with a .gmp file (the game's format;
+    /// absolute per-area values, overlaid on the base terrain). When the
+    /// mode is ON the display updates immediately. False on parse error.
+    bool loadDiffFromGmp(const std::string& path);
+
+    /// Export the top-down preview TGA of the BASE world (what the game's
+    /// map-selection screen shows — it never applies .gmp), regardless of
+    /// the difference mode. False on write error.
+    bool exportTopView(const std::string& path);
+    /// Regenerate cache.tga/map.tga from the BASE terrain (see exportTopView).
+    bool regenerateWorldImages();
+
+    // -----------------------------------------------------------------------
     // T5.1 — world parameters (WorldParams / WorldSettingsDialog)
     // -----------------------------------------------------------------------
 
@@ -405,6 +448,45 @@ private:
     /// and push it. No-op when nothing is pending. Caller must hold
     /// undoMutex_.
     void finalizePendingUndoGroup();
+
+    /// Difference model: one entry per coarse 64x64 area (kmGridChA) that
+    /// holds at least one cell differing from the base terrain. The blocks
+    /// are ABSOLUTE buffer values (the .gmp format), keyed by the area
+    /// index (row-major over the coarse grid).
+    struct DiffArea
+    {
+        std::array<std::vector<unsigned char>, 4> buf; ///< geo, dam, atr, sur.
+    };
+    std::map<int, DiffArea> diffAreas_;
+    /// The difference data changed since the last saveDiffToGmp (or load).
+    bool diffModified_ = false;
+    /// Base terrain snapshot, kept while the difference mode is ON (vMap
+    /// buffers then carry BASE+DIFF).
+    std::vector<unsigned char> baseGeo_;
+    std::vector<unsigned char> baseDam_;
+    std::vector<unsigned char> baseAtr_;
+    std::vector<unsigned char> baseSur_;
+    bool diffMode_ = false;
+
+    /// Re-sync the difference model with the current buffers over the rect
+    /// (only meaningful while the mode is ON).
+    void resyncDiffRect(int x0, int y0, int x1, int y1);
+    /// Buffers := base snapshot + difference model (full re-render needed).
+    void applyDiffToBuffers();
+    /// Drop the difference state (world unload/switch).
+    void clearDiffState();
+    /// The Terra/WorldFiles part of saveWorld: buffers -> output.vmp etc.
+    /// Caller guarantees the buffers carry the BASE terrain (saveWorld runs
+    /// this through runWithBaseTerrain).
+    bool writeWorldFiles(const WorldFiles& files,
+                         const std::filesystem::path& worldDir);
+    /// Run `fn` with vMap buffers holding the BASE terrain. In difference
+    /// mode the effective content is swapped out for the duration and
+    /// restored afterwards (full re-render); with the mode off `fn` runs
+    /// as-is. Used for the top-down previews (map.tga / Export Top View):
+    /// the game's map-selection screen shows the base world and never
+    /// applies .gmp, so the previews must not carry difference data.
+    void runWithBaseTerrain(const std::function<void()>& fn);
 
     /// Total snapshot cells currently collected in the pending transaction.
     /// Caller must hold undoMutex_.

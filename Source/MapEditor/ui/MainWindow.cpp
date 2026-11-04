@@ -1798,6 +1798,24 @@ void MainWindow::buildMenuBar()
 
     fileMenu->addSeparator();
 
+    QAction *actSaveDiff = fileMenu->addAction(tr("Save &Difference (.gmp)..."));
+    actSaveDiff->setToolTip(tr("Write the difference data (terrain changed in "
+                               "Difference Mode) in the game's .gmp format — "
+                               "next to the loaded battle map by default"));
+    actSaveDiff->setEnabled(false);
+    connect(actSaveDiff, &QAction::triggered, this, &MainWindow::onActionSaveDiff);
+    actSaveDiff_ = actSaveDiff;
+
+    QAction *actLoadDiff = fileMenu->addAction(tr("&Load Difference (.gmp)..."));
+    actLoadDiff->setToolTip(tr("Load difference data from a .gmp file (the "
+                               "game's format) and overlay it on the loaded "
+                               "world — visible in Difference Mode"));
+    actLoadDiff->setEnabled(false);
+    connect(actLoadDiff, &QAction::triggered, this, &MainWindow::onActionLoadDiff);
+    actLoadDiff_ = actLoadDiff;
+
+    fileMenu->addSeparator();
+
     QAction *actQuit = fileMenu->addAction(tr("E&xit"));
     actQuit->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Q));
     connect(actQuit, &QAction::triggered, this, &QApplication::quit);
@@ -2100,6 +2118,44 @@ void MainWindow::buildViewMenu(QMenuBar *menuBar)
 
     viewMenu->addSeparator();
 
+    // Difference mode (.gmp): ON shows and edits BASE+DIFF (brushes write
+    // difference data), OFF shows/edits the base terrain. Toggling swaps the
+    // whole buffer content and clears the undo history.
+    actDiffMode_ = create();
+    actDiffMode_->setText(tr("Differenc&e Mode"));
+    actDiffMode_->setToolTip(
+        tr("Toggle the difference mode (F2). ON: the terrain shows the base "
+           "world with the .gmp difference data applied, and every brush "
+           "edit is captured as difference data (saved via File → Save "
+           "Difference (.gmp)). OFF: the plain base world. Switching clears "
+           "the undo history."));
+    actDiffMode_->setCheckable(true);
+    actDiffMode_->setShortcut(QKeySequence(Qt::Key_F2));
+    connect(actDiffMode_, &QAction::triggered, this, [this](bool on) {
+        if (!session_ || on == session_->isDiffMode()) {
+            return;
+        }
+        if (!session_->isWorldLoaded()) {
+            actDiffMode_->setChecked(false);
+            return;
+        }
+        if (session_->setDiffMode(on)) {
+            // Every cell may have changed: full 2D cache repaint + 3D redraw.
+            refreshPaletteRenderers();
+            statusBar()->showMessage(
+                on ? tr("Difference mode ON: brushes write .gmp difference "
+                        "data (undo history cleared).")
+                   : tr("Difference mode OFF: showing the base terrain "
+                        "(undo history cleared)."),
+                6000);
+        } else {
+            actDiffMode_->setChecked(!on);
+        }
+        updateActionStates();
+    });
+
+    viewMenu->addSeparator();
+
     // ------------------------------------------------------------------
     // Camera preset pair (exclusive): the main game's camera model vs the
     // editor camera model. The game variant needs the GPU terrain path —
@@ -2209,6 +2265,8 @@ void MainWindow::buildViewToolbar()
     bar->addAction(actZoomIn_);
     bar->addAction(actZoomOut_);
     bar->addAction(actResetView_);
+    bar->addSeparator();
+    bar->addAction(actDiffMode_);
 
     // The T3.1 brush editing toggle moved to the dedicated Brush toolbar
     // (T3.2), where the brush type/mode buttons live next to it.
@@ -4109,6 +4167,9 @@ void MainWindow::onActionSave()
     if (!session_->isWorldLoaded()) {
         return;
     }
+    // Save writes the BASE terrain — difference data never merges into the
+    // world (that is what File → Save Difference (.gmp) is for), even in
+    // Difference Mode.
     if (!session_->saveWorld()) {
         QMessageBox::critical(this, tr("Save Failed"),
             tr("Failed to save world '%1'. See the log for details.")
@@ -4433,7 +4494,7 @@ void MainWindow::onActionExportTopView()
     if (path.isEmpty()) {
         return;
     }
-    if (MapEditor::WorldImages::exportTopViewTga(path.toStdWString())) {
+    if (session_->exportTopView(path.toStdString())) {
         statusBar()->showMessage(tr("Top view exported to %1.").arg(path), 5000);
     } else {
         QMessageBox::warning(this, tr("Export Top View"),
@@ -4554,14 +4615,10 @@ void MainWindow::onActionAutofixZeroLayerHeight()
 
 void MainWindow::onActionRegenerateImages()
 {
-    const auto files = session_ ? session_->currentWorldFiles() : std::nullopt;
-    if (!files || !session_->isWorldLoaded()) {
+    if (!session_ || !session_->isWorldLoaded()) {
         return;
     }
-    const bool ok = MapEditor::WorldImages::generateCacheTga(
-                        files->worldDir()) &&
-                    MapEditor::WorldImages::generateMapTga(
-                        files->worldDir());
+    const bool ok = session_->regenerateWorldImages();
     statusBar()->showMessage(
         ok ? tr("cache.tga / map.tga regenerated.")
            : tr("Image regeneration failed."),
@@ -4824,26 +4881,48 @@ void MainWindow::onLoadDecalImage()
 
 bool MainWindow::confirmDiscardUnsavedChanges()
 {
-    if (session_ == nullptr || !session_->hasUnsavedChanges()) {
+    if (session_ == nullptr) {
         return true;
     }
+    if (session_->hasUnsavedChanges()) {
+        const QString message = QString::fromStdString(
+            session_->getUnsavedChangesWarning());
+        const QMessageBox::StandardButton chosen = QMessageBox::question(
+            this, tr("Unsaved Changes"), message,
+            QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
+            QMessageBox::Save);
 
-    const QString message = QString::fromStdString(
-        session_->getUnsavedChangesWarning());
-    const QMessageBox::StandardButton chosen = QMessageBox::question(
-        this, tr("Unsaved Changes"), message,
-        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
-        QMessageBox::Save);
-
-    if (chosen == QMessageBox::Cancel) {
-        return false;
-    }
-    if (chosen == QMessageBox::Save) {
-        if (!session_->saveWorld()) {
-            QMessageBox::critical(this, tr("Save Failed"),
-                tr("Failed to save world '%1'. See the log for details.")
-                    .arg(QString::fromStdString(session_->currentWorldName())));
+        if (chosen == QMessageBox::Cancel) {
             return false;
+        }
+        if (chosen == QMessageBox::Save) {
+            if (!session_->saveWorld()) {
+                QMessageBox::critical(this, tr("Save Failed"),
+                    tr("Failed to save world '%1'. See the log for details.")
+                        .arg(QString::fromStdString(session_->currentWorldName())));
+                return false;
+            }
+        }
+    }
+
+    // Unsaved DIFFERENCE data is saved to the .gmp — never merged into the
+    // world from this prompt.
+    if (session_->hasUnsavedDiffChanges()) {
+        const QMessageBox::StandardButton chosen = QMessageBox::question(
+            this, tr("Unsaved Difference Data"),
+            tr("The terrain difference data (.gmp) has unsaved changes.\n"
+               "Save them now?"),
+            QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
+            QMessageBox::Save);
+        if (chosen == QMessageBox::Cancel) {
+            return false;
+        }
+        if (chosen == QMessageBox::Save) {
+            onActionSaveDiff();
+            if (session_->hasUnsavedDiffChanges()) {
+                // The save failed or was cancelled — do not close.
+                return false;
+            }
         }
     }
     return true;
@@ -4929,6 +5008,22 @@ void MainWindow::updateActionStates()
     if (actNewBattleMap_) {
         // Creating a battle map builds it for the currently loaded world.
         actNewBattleMap_->setEnabled(gameDirSet && worldLoaded);
+    }
+    // Difference mode (.gmp): the toggle and the gmp save/load need a loaded
+    // world; the checked state mirrors the session.
+    if (actDiffMode_) {
+        actDiffMode_->setEnabled(worldLoaded);
+        if (actDiffMode_->isChecked() != session_->isDiffMode()) {
+            actDiffMode_->blockSignals(true);
+            actDiffMode_->setChecked(session_->isDiffMode());
+            actDiffMode_->blockSignals(false);
+        }
+    }
+    if (actSaveDiff_) {
+        actSaveDiff_->setEnabled(worldLoaded);
+    }
+    if (actLoadDiff_) {
+        actLoadDiff_->setEnabled(worldLoaded);
     }
     if (actModePlaceSpawn_) {
         actModePlaceSpawn_->setEnabled(battleMapLoaded);

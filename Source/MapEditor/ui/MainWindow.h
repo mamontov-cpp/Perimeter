@@ -200,6 +200,13 @@ private:
     void buildHelpMenu();
     void onActionHelp();
 
+    // Difference mode (.gmp): File menu save/load of the difference data.
+    // The default path is the loaded battle map's .gmp sibling; without a
+    // battle map a file dialog is used.
+    void onActionSaveDiff();
+    void onActionLoadDiff();
+    QString diffGmpPath(bool forSave);
+
     // T8 — battle map helpers: panel/overlay/action refresh, the world the
     // .spg refers to, and the spawn overlay contents.
     void refreshBattleMapUI();
@@ -528,4 +535,9 @@ private:
     QAction *actSaveBattleMap_ = nullptr;
     QAction *actSaveBattleMapAs_ = nullptr;
     QAction *actNewBattleMap_ = nullptr;
+    // Difference mode (.gmp): the View toolbar/menu toggle and the File menu
+    // save/load of the difference data.
+    QAction *actDiffMode_ = nullptr;
+    QAction *actSaveDiff_ = nullptr;
+    QAction *actLoadDiff_ = nullptr;
 };

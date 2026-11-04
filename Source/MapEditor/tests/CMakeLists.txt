@@ -38,6 +38,7 @@ ADD_EXECUTABLE(map_editor_tests
         Shape3DTests.cpp
         ModelBrushTests.cpp
         ModWorldsTests.cpp
+        GmpDiffTests.cpp
         MinimapRasterTests.cpp
         PaletteOpsTests.cpp
         WorldImagesTests.cpp

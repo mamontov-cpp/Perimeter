@@ -23,6 +23,7 @@
 #include <QDockWidget>
 #include <QDir>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFormLayout>
 #include <QInputDialog>
 #include <QLabel>
@@ -530,4 +531,87 @@ void MainWindow::onNewBattleMapRequested(const QString &name,
     refreshBattleMapUI();
     statusBar()->showMessage(
         tr("Battle map created: %1").arg(battleMapPath_), 5000);
+}
+
+
+// ---------------------------------------------------------------------------
+// Difference mode (.gmp) — File menu save/load.
+// ---------------------------------------------------------------------------
+
+QString MainWindow::diffGmpPath(bool forSave)
+{
+    // Default: the loaded battle map's .gmp sibling (the game looks for
+    // <map>.gmp next to <map>.spg). Without a battle map, ask for a file.
+    if (!battleMapPath_.isEmpty()) {
+        QString path = battleMapPath_;
+        path.replace(path.size() - 3, 3, QStringLiteral("gmp"));
+        if (!forSave && !QFileInfo::exists(path)) {
+            QMessageBox::information(
+                this, tr("Load Difference"),
+                tr("No .gmp found next to the battle map:\n%1").arg(path));
+            return QString();
+        }
+        return path;
+    }
+    if (forSave) {
+        return QFileDialog::getSaveFileName(
+            this, tr("Save Difference (.gmp)"), QString(),
+            tr("GMP differences (*.gmp);;All Files (*)"));
+    }
+    return QFileDialog::getOpenFileName(
+        this, tr("Load Difference (.gmp)"), QString(),
+        tr("GMP differences (*.gmp);;All Files (*)"));
+}
+
+void MainWindow::onActionSaveDiff()
+{
+    if (!session_ || !session_->isWorldLoaded()) {
+        return;
+    }
+    const QString path = diffGmpPath(true);
+    if (path.isEmpty()) {
+        return;
+    }
+    if (QFileInfo::exists(path) &&
+        QMessageBox::question(this, tr("Save Difference"),
+                              tr("Overwrite the existing file?\n%1").arg(path)) !=
+            QMessageBox::Yes) {
+        return;
+    }
+    if (!session_->saveDiffToGmp(path.toStdString())) {
+        QMessageBox::warning(this, tr("Save Difference"),
+                             tr("Failed to write '%1'.").arg(path));
+        return;
+    }
+    statusBar()->showMessage(
+        tr("Difference data saved to %1 (%2)")
+            .arg(path)
+            .arg(session_->hasDiffData() ? tr("with data") : tr("empty")),
+        6000);
+}
+
+void MainWindow::onActionLoadDiff()
+{
+    if (!session_ || !session_->isWorldLoaded()) {
+        return;
+    }
+    const QString path = diffGmpPath(false);
+    if (path.isEmpty()) {
+        return;
+    }
+    if (!session_->loadDiffFromGmp(path.toStdString())) {
+        QMessageBox::warning(
+            this, tr("Load Difference"),
+            tr("Failed to load the difference data from '%1'.").arg(path));
+        return;
+    }
+    // The buffers may now show different terrain: full repaint.
+    refreshPaletteRenderers();
+    statusBar()->showMessage(
+        tr("Difference data loaded from %1%2")
+            .arg(path)
+            .arg(session_->isDiffMode()
+                     ? QString()
+                     : tr(" — switch Difference Mode on (F2) to see it")),
+        6000);
 }

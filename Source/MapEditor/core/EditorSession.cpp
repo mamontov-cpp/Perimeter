@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <vector>
 
 #include "EditorTrace.h"
@@ -318,6 +319,7 @@ bool EditorSession::loadWorld(size_t worldIndex)
     editorTrace("EditorSession: WorldRender done");
 
     clearUndoHistory();
+    clearDiffState(); // difference data belongs to the previous world
     currentWorldIndex_ = static_cast<int32_t>(worldIndex);
     loadedWorldFolderName_ = wantedName;
     modified_ = false;
@@ -360,6 +362,7 @@ bool EditorSession::loadWorldByName(const std::string& worldName)
 
 void EditorSession::unloadWorld()
 {
+    clearDiffState();
     if (vMap.VxGBuf != nullptr) {
         // Mirror vrtMap's own teardown of a loaded world. worldFree() alone only
         // frees the net maps, so the voxel/surface buffers must be released here
@@ -402,7 +405,10 @@ bool EditorSession::isModified() const
     if (!isWorldLoaded()) {
         return false;
     }
-    return vMap.worldChanged || modified_;
+    // In difference mode vMap.worldChanged cannot be trusted: Terra's own
+    // RenderPrepare1 (LAND.cpp:947) sets it on every brush stamp, while the
+    // stamps write DIFFERENCE data and the world file stays untouched.
+    return (diffMode_ ? false : vMap.worldChanged) || modified_;
 }
 
 void EditorSession::setModified(bool modified)
@@ -520,66 +526,14 @@ bool EditorSession::saveWorld()
     }
     const fs::path worldDir = files->worldDir();
 
-    // ------------------------------------------------------------------
-    // 1. Buffers, palettes and [3DF Parameters] via Terra's own pipeline.
-    // ------------------------------------------------------------------
-    vMap.save3Buf();
-
-    // hardness.bin is optional: refresh it only when the world already has one,
-    // so "Save" never adds files the author did not ask for.
-    if (files->exists(WorldFiles::HardnessFile)) {
-        vMap.saveHardness();
-    }
-
-    // ------------------------------------------------------------------
-    // 1b. Edited palettes (T4.1): inGeo.act/inDam.act via Terra, plus the
-    // geoPal.xml color table — in _TX3D_LIBRARY_ builds the game reloads the
-    // geo palette from the XML, not from inGeo.act, so saving only the .act
-    // files would silently drop the edits on the next load.
-    // ------------------------------------------------------------------
-    if (paletteModified_) {
-        vMap.saveGeoDamPal();
-        if (!files->writeGeoPalXml(PaletteOps::geoPalXml(vMap.GeoPal))) {
-            fprintf(stderr, "EditorSession::saveWorld: geoPal.xml sync failed.\n");
-            return false;
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // 2. world.ini — size, zero-layer height and storage version.
-    // ------------------------------------------------------------------
-    // Map Power is authoritative for the map size the game allocates.
-    files->writeMapPower(static_cast<int>(vMap.H_SIZE_POWER),
-                         static_cast<int>(vMap.V_SIZE_POWER));
-    files->writeHZeroPlast(static_cast<int>(vMap.hZeroPlast));
-    if (const auto version = files->readStorageVersion()) {
-        files->writeStorageVersion(*version); // keep the existing version
-    } else {
-        files->writeStorageVersion("1.4");
-    }
-
-    // ------------------------------------------------------------------
-    // 2b. T5.1 — output.vmp compression: save3Buf() always writes S2T0,
-    // so the session target (from the World Settings dialog, initialised
-    // from the file header on load) is re-applied here.
-    // ------------------------------------------------------------------
-    files->writeStorageCompressedFormat(vmpCompressionTarget_);
-    if (vmpCompressionTarget_ != 0 &&
-        !convertVmpCompression(worldDir / WorldFiles::OutputVmpFile,
-                               vmpCompressionTarget_)) {
-        fprintf(stderr, "EditorSession::saveWorld: output.vmp compression failed.\n");
-        return false;
-    }
-
-    // ------------------------------------------------------------------
-    // 3. Images the game and its shell read.
-    // ------------------------------------------------------------------
-    if (!WorldImages::generateCacheTga(worldDir)) {
-        fprintf(stderr, "EditorSession::saveWorld: cache.tga generation failed.\n");
-        return false;
-    }
-    if (!WorldImages::generateMapTga(worldDir)) {
-        fprintf(stderr, "EditorSession::saveWorld: map.tga generation failed.\n");
+    // The world file must carry the BASE terrain — NEVER the difference
+    // data (that is what .gmp is for). In difference mode the effective
+    // BASE+DIFF buffers are swapped out for the duration of the write.
+    bool written = false;
+    runWithBaseTerrain([&] {
+        written = writeWorldFiles(*files, worldDir);
+    });
+    if (!written) {
         return false;
     }
 
@@ -597,6 +551,76 @@ bool EditorSession::saveWorld()
     vMap.worldChanged = false;
     printf("EditorSession: saved world '%s' to '%s'\n",
            currentWorldName().c_str(), worldDir.u8string().c_str());
+    return true;
+}
+
+bool EditorSession::writeWorldFiles(const WorldFiles& files,
+                                    const fs::path& worldDir)
+{
+    // ------------------------------------------------------------------
+    // 1. Buffers, palettes and [3DF Parameters] via Terra's own pipeline.
+    // ------------------------------------------------------------------
+    vMap.save3Buf();
+
+    // hardness.bin is optional: refresh it only when the world already has one,
+    // so "Save" never adds files the author did not ask for.
+    if (files.exists(WorldFiles::HardnessFile)) {
+        vMap.saveHardness();
+    }
+
+    // ------------------------------------------------------------------
+    // 1b. Edited palettes (T4.1): inGeo.act/inDam.act via Terra, plus the
+    // geoPal.xml color table — in _TX3D_LIBRARY_ builds the game reloads the
+    // geo palette from the XML, not from inGeo.act, so saving only the .act
+    // files would silently drop the edits on the next load.
+    // ------------------------------------------------------------------
+    if (paletteModified_) {
+        vMap.saveGeoDamPal();
+        if (!files.writeGeoPalXml(PaletteOps::geoPalXml(vMap.GeoPal))) {
+            fprintf(stderr, "EditorSession::saveWorld: geoPal.xml sync failed.\n");
+            return false;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 2. world.ini — size, zero-layer height and storage version.
+    // ------------------------------------------------------------------
+    // Map Power is authoritative for the map size the game allocates.
+    files.writeMapPower(static_cast<int>(vMap.H_SIZE_POWER),
+                        static_cast<int>(vMap.V_SIZE_POWER));
+    files.writeHZeroPlast(static_cast<int>(vMap.hZeroPlast));
+    if (const auto version = files.readStorageVersion()) {
+        files.writeStorageVersion(*version); // keep the existing version
+    } else {
+        files.writeStorageVersion("1.4");
+    }
+
+    // ------------------------------------------------------------------
+    // 2b. T5.1 — output.vmp compression: save3Buf() always writes S2T0,
+    // so the session target (from the World Settings dialog, initialised
+    // from the file header on load) is re-applied here.
+    // ------------------------------------------------------------------
+    files.writeStorageCompressedFormat(vmpCompressionTarget_);
+    if (vmpCompressionTarget_ != 0 &&
+        !convertVmpCompression(worldDir / WorldFiles::OutputVmpFile,
+                               vmpCompressionTarget_)) {
+        fprintf(stderr, "EditorSession::saveWorld: output.vmp compression failed.\n");
+        return false;
+    }
+
+    // ------------------------------------------------------------------
+    // 3. Images the game and its shell read. (Already on the BASE terrain
+    // via the caller's runWithBaseTerrain: the shell's map-selection screen
+    // shows the base world's map.tga and never applies .gmp data.)
+    // ------------------------------------------------------------------
+    if (!WorldImages::generateCacheTga(worldDir)) {
+        fprintf(stderr, "EditorSession::saveWorld: cache.tga generation failed.\n");
+        return false;
+    }
+    if (!WorldImages::generateMapTga(worldDir)) {
+        fprintf(stderr, "EditorSession::saveWorld: map.tga generation failed.\n");
+        return false;
+    }
     return true;
 }
 
@@ -790,6 +814,318 @@ void EditorSession::regRenderWithShadowTrail(int lowX, int lowY, int hiX, int hi
     }
 
     vMap.regRender(trailX, lowY, hiX, hiY);
+
+    // Difference mode: every world edit/restore funnels through this hook —
+    // re-sync the difference model over the touched rect so the .gmp data
+    // always mirrors the effective terrain.
+    if (diffMode_) {
+        const int mapW = static_cast<int>(vMap.H_SIZE);
+        const int mapH = static_cast<int>(vMap.V_SIZE);
+        resyncDiffRect(std::max(0, std::min(lowX, trailX)),
+                       std::max(0, std::min(lowY, mapH - 1)),
+                       std::min(mapW, std::max(hiX, 0)),
+                       std::min(mapH, std::max(hiY, 0)));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Difference mode (.gmp)
+// ---------------------------------------------------------------------------
+
+void EditorSession::resyncDiffRect(int x0, int y0, int x1, int y1)
+{
+    if (!isWorldLoaded() || !diffMode_ || baseGeo_.empty()) {
+        return;
+    }
+    const int gw = static_cast<int>(vMap.H_SIZE) >> kmGridChA;
+    const int gh = static_cast<int>(vMap.V_SIZE) >> kmGridChA;
+    const int ax0 = std::max(0, x0 >> kmGridChA);
+    const int ay0 = std::max(0, y0 >> kmGridChA);
+    const int ax1 = std::min(gw - 1, (std::max(x0, x1 - 1)) >> kmGridChA);
+    const int ay1 = std::min(gh - 1, (std::max(y0, y1 - 1)) >> kmGridChA);
+    const int stride = static_cast<int>(vMap.H_SIZE);
+    const unsigned char* bases[4] = {baseGeo_.data(), baseDam_.data(),
+                                     baseAtr_.data(), baseSur_.data()};
+    const unsigned char* live[4] = {vMap.VxGBuf, vMap.VxDBuf, vMap.AtrBuf,
+                                    vMap.SurBuf};
+    for (int ay = ay0; ay <= ay1; ++ay) {
+        for (int ax = ax0; ax <= ax1; ++ax) {
+            const int area = ay * gw + ax;
+            const int baseOff = (ay << kmGridChA) * stride + (ax << kmGridChA);
+            bool differs = false;
+            for (int b = 0; b < 4 && !differs; ++b) {
+                for (int k = 0; k < sizeCellGridCA && !differs; ++k) {
+                    const int row = baseOff + k * stride;
+                    for (int m = 0; m < sizeCellGridCA; ++m) {
+                        if (live[b][row + m] != bases[b][row + m]) {
+                            differs = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!differs) {
+                if (diffAreas_.erase(area) > 0) {
+                    diffModified_ = true;
+                }
+                continue;
+            }
+            DiffArea entry;
+            for (int b = 0; b < 4; ++b) {
+                entry.buf[static_cast<std::size_t>(b)].resize(
+                    sizeCellGridCA * sizeCellGridCA);
+                for (int k = 0; k < sizeCellGridCA; ++k) {
+                    const int row = baseOff + k * stride;
+                    std::memcpy(entry.buf[static_cast<std::size_t>(b)].data() +
+                                    k * sizeCellGridCA,
+                                live[b] + row, sizeCellGridCA);
+                }
+            }
+            diffAreas_[area] = std::move(entry);
+            diffModified_ = true;
+        }
+    }
+}
+
+void EditorSession::applyDiffToBuffers()
+{
+    const std::size_t cells =
+        static_cast<std::size_t>(vMap.H_SIZE) * vMap.V_SIZE;
+    std::memcpy(vMap.VxGBuf, baseGeo_.data(), cells);
+    std::memcpy(vMap.VxDBuf, baseDam_.data(), cells);
+    std::memcpy(vMap.AtrBuf, baseAtr_.data(), cells);
+    std::memcpy(vMap.SurBuf, baseSur_.data(), cells);
+    const int gw = static_cast<int>(vMap.H_SIZE) >> kmGridChA;
+    const int stride = static_cast<int>(vMap.H_SIZE);
+    for (const auto& [area, entry] : diffAreas_) {
+        const int ax = area % gw;
+        const int ay = area / gw;
+        const int baseOff = (ay << kmGridChA) * stride + (ax << kmGridChA);
+        for (int b = 0; b < 4; ++b) {
+            const unsigned char* src = entry.buf[static_cast<std::size_t>(b)].data();
+            unsigned char* dst[4] = {vMap.VxGBuf, vMap.VxDBuf, vMap.AtrBuf,
+                                     vMap.SurBuf};
+            for (int k = 0; k < sizeCellGridCA; ++k) {
+                std::memcpy(dst[b] + baseOff + k * stride,
+                            src + k * sizeCellGridCA, sizeCellGridCA);
+            }
+        }
+    }
+    // Full re-render: every cell may have changed.
+    vMap.regRender(0, 0, static_cast<int>(vMap.H_SIZE),
+                   static_cast<int>(vMap.V_SIZE));
+}
+
+void EditorSession::clearDiffState()
+{
+    diffAreas_.clear();
+    diffModified_ = false;
+    baseGeo_.clear();
+    baseDam_.clear();
+    baseAtr_.clear();
+    baseSur_.clear();
+    diffMode_ = false;
+}
+
+void EditorSession::runWithBaseTerrain(const std::function<void()>& fn)
+{
+    if (!diffMode_) {
+        fn();
+        return;
+    }
+    const std::size_t cells =
+        static_cast<std::size_t>(vMap.H_SIZE) * vMap.V_SIZE;
+    std::vector<unsigned char> effG(vMap.VxGBuf, vMap.VxGBuf + cells);
+    std::vector<unsigned char> effD(vMap.VxDBuf, vMap.VxDBuf + cells);
+    std::vector<unsigned char> effA(vMap.AtrBuf, vMap.AtrBuf + cells);
+    std::vector<unsigned char> effS(vMap.SurBuf, vMap.SurBuf + cells);
+    std::memcpy(vMap.VxGBuf, baseGeo_.data(), cells);
+    std::memcpy(vMap.VxDBuf, baseDam_.data(), cells);
+    std::memcpy(vMap.AtrBuf, baseAtr_.data(), cells);
+    std::memcpy(vMap.SurBuf, baseSur_.data(), cells);
+    fn();
+    std::memcpy(vMap.VxGBuf, effG.data(), cells);
+    std::memcpy(vMap.VxDBuf, effD.data(), cells);
+    std::memcpy(vMap.AtrBuf, effA.data(), cells);
+    std::memcpy(vMap.SurBuf, effS.data(), cells);
+    // The effective content is back: repaint everything.
+    vMap.regRender(0, 0, static_cast<int>(vMap.H_SIZE),
+                   static_cast<int>(vMap.V_SIZE));
+}
+
+bool EditorSession::exportTopView(const std::string& path)
+{
+    if (!isWorldLoaded()) {
+        return false;
+    }
+    bool ok = false;
+    runWithBaseTerrain([&] {
+        ok = WorldImages::exportTopViewTga(fs::u8path(path));
+    });
+    return ok;
+}
+
+bool EditorSession::regenerateWorldImages()
+{
+    const std::optional<WorldFiles> files = currentWorldFiles();
+    if (!isWorldLoaded() || !files) {
+        return false;
+    }
+    bool ok = false;
+    runWithBaseTerrain([&] {
+        ok = WorldImages::generateCacheTga(files->worldDir()) &&
+             WorldImages::generateMapTga(files->worldDir());
+    });
+    return ok;
+}
+
+bool EditorSession::setDiffMode(bool on)
+{
+    if (!isWorldLoaded()) {
+        return false;
+    }
+    if (on == diffMode_) {
+        return true;
+    }
+    const std::size_t cells =
+        static_cast<std::size_t>(vMap.H_SIZE) * vMap.V_SIZE;
+    if (on) {
+        // Snapshot the base terrain, then overlay the difference model.
+        baseGeo_.assign(vMap.VxGBuf, vMap.VxGBuf + cells);
+        baseDam_.assign(vMap.VxDBuf, vMap.VxDBuf + cells);
+        baseAtr_.assign(vMap.AtrBuf, vMap.AtrBuf + cells);
+        baseSur_.assign(vMap.SurBuf, vMap.SurBuf + cells);
+        diffMode_ = true;
+        applyDiffToBuffers();
+    } else {
+        // Buffers still hold BASE+DIFF: capture the difference, then restore
+        // the base terrain for display/editing.
+        resyncDiffRect(0, 0, static_cast<int>(vMap.H_SIZE),
+                       static_cast<int>(vMap.V_SIZE));
+        std::memcpy(vMap.VxGBuf, baseGeo_.data(), cells);
+        std::memcpy(vMap.VxDBuf, baseDam_.data(), cells);
+        std::memcpy(vMap.AtrBuf, baseAtr_.data(), cells);
+        std::memcpy(vMap.SurBuf, baseSur_.data(), cells);
+        baseGeo_.clear();
+        baseDam_.clear();
+        baseAtr_.clear();
+        baseSur_.clear();
+        diffMode_ = false;
+        vMap.regRender(0, 0, static_cast<int>(vMap.H_SIZE),
+                       static_cast<int>(vMap.V_SIZE));
+    }
+    // Snapshots recorded in the other buffer state would corrupt the
+    // display — the mode switch is a hard reset of the history.
+    clearUndoHistory();
+    // Terra sets vMap.worldChanged on every stamp (RenderPrepare1) — with
+    // the mode OFF the flag must reflect the editor's world-modified state.
+    vMap.worldChanged = modified_;
+    return true;
+}
+
+bool EditorSession::saveDiffToGmp(const std::string& path)
+{
+    if (!isWorldLoaded()) {
+        return false;
+    }
+    const int gw = static_cast<int>(vMap.H_SIZE) >> kmGridChA;
+    const int gh = static_cast<int>(vMap.V_SIZE) >> kmGridChA;
+    std::ofstream out(fs::u8path(path), std::ios::binary | std::ios::trunc);
+    if (!out) {
+        fprintf(stderr, "EditorSession::saveDiffToGmp: cannot open '%s'.\n",
+                path.c_str());
+        return false;
+    }
+    // The game's legacy format (loadGameMap, VMAP.cpp:952): world index,
+    // the coarse changed-area flags, then per flagged area the four absolute
+    // buffer blocks (geo, dam, atr, sur).
+    int worldIndex = vMap.cWorld;
+    out.write(reinterpret_cast<const char*>(&worldIndex), sizeof(worldIndex));
+    std::vector<unsigned char> flags(static_cast<std::size_t>(gw) * gh, 0);
+    for (const auto& [area, entry] : diffAreas_) {
+        if (area >= 0 && area < gw * gh &&
+            entry.buf[0].size() ==
+                static_cast<std::size_t>(sizeCellGridCA) * sizeCellGridCA) {
+            flags[static_cast<std::size_t>(area)] = 1;
+        }
+    }
+    out.write(reinterpret_cast<const char*>(flags.data()),
+              static_cast<std::streamsize>(flags.size()));
+    for (int area = 0; area < gw * gh; ++area) {
+        const auto it = diffAreas_.find(area);
+        if (it == diffAreas_.end()) {
+            continue;
+        }
+        for (int b = 0; b < 4; ++b) {
+            out.write(reinterpret_cast<const char*>(
+                          it->second.buf[static_cast<std::size_t>(b)].data()),
+                      sizeCellGridCA * sizeCellGridCA);
+        }
+    }
+    if (!out.good()) {
+        fprintf(stderr, "EditorSession::saveDiffToGmp: write failed '%s'.\n",
+                path.c_str());
+        return false;
+    }
+    diffModified_ = false; // the difference data is saved
+    return true;
+}
+
+bool EditorSession::loadDiffFromGmp(const std::string& path)
+{
+    if (!isWorldLoaded()) {
+        return false;
+    }
+    const int gw = static_cast<int>(vMap.H_SIZE) >> kmGridChA;
+    const int gh = static_cast<int>(vMap.V_SIZE) >> kmGridChA;
+    std::ifstream in(fs::u8path(path), std::ios::binary);
+    if (!in) {
+        fprintf(stderr, "EditorSession::loadDiffFromGmp: cannot open '%s'.\n",
+                path.c_str());
+        return false;
+    }
+    int worldIndex = 0;
+    in.read(reinterpret_cast<char*>(&worldIndex), sizeof(worldIndex));
+    std::vector<unsigned char> flags(static_cast<std::size_t>(gw) * gh, 0);
+    in.read(reinterpret_cast<char*>(flags.data()),
+            static_cast<std::streamsize>(flags.size()));
+    if (!in) {
+        fprintf(stderr, "EditorSession::loadDiffFromGmp: truncated header in "
+                "'%s'.\n", path.c_str());
+        return false;
+    }
+    std::map<int, DiffArea> loaded;
+    const std::streamsize block = sizeCellGridCA * sizeCellGridCA;
+    for (int area = 0; area < gw * gh; ++area) {
+        if (flags[static_cast<std::size_t>(area)] != 1) {
+            continue;
+        }
+        DiffArea entry;
+        bool ok = true;
+        for (int b = 0; b < 4 && ok; ++b) {
+            entry.buf[static_cast<std::size_t>(b)].resize(
+                static_cast<std::size_t>(block));
+            in.read(reinterpret_cast<char*>(
+                        entry.buf[static_cast<std::size_t>(b)].data()),
+                    block);
+            ok = static_cast<bool>(in);
+        }
+        if (!ok) {
+            fprintf(stderr, "EditorSession::loadDiffFromGmp: truncated area "
+                    "data in '%s'.\n", path.c_str());
+            return false;
+        }
+        loaded[area] = std::move(entry);
+    }
+    diffAreas_ = std::move(loaded);
+    diffModified_ = false; // freshly loaded == the saved state
+    clearUndoHistory();
+    if (diffMode_) {
+        applyDiffToBuffers();
+    }
+    printf("EditorSession: loaded difference data from '%s' (%zu area(s)).\n",
+           path.c_str(), diffAreas_.size());
+    return true;
 }
 
 void EditorSession::recordUndoArea(int x, int y, int width, int height)
@@ -854,7 +1190,13 @@ void EditorSession::recordUndoArea(int x, int y, int width, int height)
             undoGroup_.push_back(std::move(snapshot));
         }
         lastUndoActionTime_ = now;
-        setModified(true);
+        // In difference mode the world file stays untouched — the edit
+        // belongs to the difference data.
+        if (diffMode_) {
+            diffModified_ = true;
+        } else {
+            setModified(true);
+        }
         return;
     }
 
@@ -878,8 +1220,14 @@ void EditorSession::recordUndoArea(int x, int y, int width, int height)
 
     // A recorded area happens right before an edit, so the world counts as
     // modified from this point on. undo()/redo() re-derive the flag
-    // exactly against the last saved position afterwards.
-    setModified(true);
+    // exactly against the last saved position afterwards. In difference
+    // mode the world file stays untouched — the edit belongs to the
+    // difference data.
+    if (diffMode_) {
+        diffModified_ = true;
+    } else {
+        setModified(true);
+    }
 }
 
 void EditorSession::beginUndoGroup()
@@ -1140,6 +1488,12 @@ bool EditorSession::canRedo() const
 
 void EditorSession::markModifiedAgainstSavedState()
 {
+    if (diffMode_) {
+        // In difference mode the undo history belongs to the DIFFERENCE
+        // data — undo/redo must not flag the world file as modified.
+        diffModified_ = true;
+        return;
+    }
     // The world matches the last checkpoint exactly when the undo position
     // equals the position it had at save time.
     modified_ = !hasSavedUndoPos_ || undoPos_ != savedUndoPos_;
