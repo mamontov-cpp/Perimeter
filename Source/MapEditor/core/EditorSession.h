@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -37,6 +38,13 @@ struct WorldInfo
 {
     std::string name;   // folder name inside RESOURCE/Worlds/
     std::string dirKey; // key used by Terra's wTable (full content-path)
+    /// Non-empty when the world comes from a mod (Mods/<modName>/...).
+    std::string modName;
+    /// "Mod / World" for mod worlds, plain name for base game worlds.
+    std::string displayName() const
+    {
+        return modName.empty() ? name : modName + " / " + name;
+    }
 };
 
 /// Snapshot of the four voxel buffers (VxG, VxD, Atr, Sur) over one rectangle.
@@ -407,6 +415,15 @@ private:
     /// tables), so the editor calls it once and rebuilds wTable itself
     /// afterwards — including when the game directory changes.
     void refreshWorldTable();
+
+    /// Enumerates the world folders of the base game PLUS every mod
+    /// (Mods/<Mod>/RESOURCE/Worlds/<World>); `fn(name, dirKey, modName)` runs
+    /// per world (modName empty for base worlds). The content map already
+    /// holds the mod folders under "mods/..." keys after the "./" scan, so
+    /// dirKey is the exact key Terra resolves the world's files through.
+    void forEachWorldFolder(
+        const std::function<void(const std::string&, const std::string&,
+                                 const std::string&)>& fn) const;
 
     std::string gameDir_;
     std::vector<WorldInfo> worldList_;

@@ -28,12 +28,19 @@
 (`set_content_root_path` + `scan_resource_paths("./")`).
 
 **Скан миров.** `scanWorlds()` перечисляет каталоги `RESOURCE/Worlds` через
-`get_content_entries_directory` — та же логика, что в `vrtMap::prepare`.
+`get_content_entries_directory` — та же логика, что в `vrtMap::prepare`, —
+ПЛЮС миры модов: `Mods/<ModName>/RESOURCE/Worlds/<World>` (папка `Mods` может
+отсутствовать; `Mods/Publish` — служебная, пропускается). Мод-миру
+`WorldInfo.modName` непуст, `displayName()` = `Mod / World`. Перечисление
+модов идёт через тот же content-map: скан `"./"` уже положил `mods/<mod>/
+resource/worlds/...` под ключи (XTool принимает ключи с `mods`), поэтому
+`dirKey` мода — точный ключ, через который Terra резолвит файлы мира.
 
 **Загрузка.** `loadWorld(index)`:
 1. `fs::current_path(gameDir_)` + `init_content_root()`;
-2. `refreshWorldTable()` — наполняет `vMap.wTable`;
-3. резолв мира по имени (`vMap.getWorldID`);
+2. `refreshWorldTable()` — наполняет `vMap.wTable` (базовые миры + моды);
+3. резолв мира ПО КОНТЕНТ-КЛЮЧУ (`wTable[i].dir == dirKey`; `getWorldID` по
+   имени — фолбэк: у мода и базы может быть одноимённый мир);
 4. `vMap.selectUsedWorld(terraIdx)` (analyzeINI + worldPrepare + данные) +
    `vMap.fullLoad()`;
 5. `vMap.WorldRender()` — инициализация освещения `RnrBuf`/`At_SHADOW`, ровно
@@ -42,6 +49,10 @@
    неинициализированным (его цикл `RenderStr` закомментирован в
    `VMAP.cpp:924`), и любой `getColor32()` — вьюпорт, `cache.tga` — читал бы
    мусор (см. `docs/context.md`).
+
+`loadWorldByName` при совпадении имён отдаёт предпочтение базовому миру.
+Сохранение мода идёт в его папку: `worldFilesFor` строит путь как
+`gameDir / dirKey`. Боевые карты из модов не сканируются (миры только).
 
 **Выгрузка.** `unloadWorld()` освобождает именно буферы мира:
 
@@ -1085,6 +1096,7 @@ Headless-тесты `map_editor_tests` (`tests/`), по файлу на моду
 | 94 | `Shape3DTests` | на мире: Set с Shape Height 0 выравнивает отпечаток до базы; Raise строит конус от базы (центр = база+амплитуда, стена линейна), повторный штамп готовой формы — refused no-op; undo/redo байт-в-байт; Lower с 0 стирает форму до базы; основание пирамиды = полигональной маске (клетка вне треугольника не тронута); Geo отказан |
 | 95 | `ModelBrushTests` | ascii и binary_little_endian PLY дают один растр (макс-z на ячейку, нормировка, цвет верхней вершины, дырки = высота 0 + средний цвет); текстура из `comment ... texture <tga>` сэмплится по UV; ошибки (файл/магик/x-y-z/big-endian/нет текстуры) — с описанием |
 | 96 | `ModelBrushTests` | на мире: place ставит высоты рампы и красит квантованный индекс там, где дamba есть (колонка ниже рельефа — гео без дамбы); undo/redo байт-в-байт; add/subtract от средней по прямоугольнику (глубокий subtract снимает дамбу); scale 0.5 сужает штамп; Geo отказан |
+| 97 | `ModWorldsTests` | мир под `Mods/TestMod/RESOURCE/Worlds` сканируется как `TestMod / <мир>`; одноимённый мод/база грузят СВОИ копии (key-matched wTable, различие по hZeroPlast); `loadWorldByName` предпочитает базу |
 
 Тесты пишут только во временный content-root (`%TEMP%/map_editor_roundtrip`),
 исходный мир не изменяется. `SaveWorldTests` строит изолированный content-root

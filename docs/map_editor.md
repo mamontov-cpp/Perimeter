@@ -28,7 +28,9 @@ cmake --build build --config Release --target map_editor -- -m
 ## Запуск и первый шаг
 
 1. `File → Select Game Directory...` — папка игры (содержит `RESOURCE/`).
-2. `File → Load World...` — мир из `RESOURCE/Worlds/*`.
+2. `File → Load World...` — мир из `RESOURCE/Worlds/*`; если в папке игры
+   есть `Mods/<ModName>/RESOURCE/Worlds/`, миры модов попадают в тот же
+   список в виде `<ModName> / <World>` и редактируются прямо в папке мода.
 
 Все правки рельефа/цвета делаются кистями (панель Brush на тулбаре);
 Undo `Ctrl+Z` / Redo `Ctrl+R`/`Ctrl+Y`. Правки, следующие друг за другом с

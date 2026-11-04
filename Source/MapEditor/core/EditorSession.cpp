@@ -9,6 +9,7 @@
 #include "WorldParams.h"
 
 #include <algorithm>
+#include <cctype>
 #include <climits>
 #include <cstdio>
 #include <cstring>
@@ -124,22 +125,25 @@ bool EditorSession::scanWorlds()
     fs::current_path(fs::u8path(gameDir_));
     init_content_root();
 
-    // Use Terra's content-entry API to enumerate directories under RESOURCE/Worlds.
-    // This matches the logic in vrtMap::prepare("RESOURCE/Worlds").
-    for (const auto& entry : get_content_entries_directory("RESOURCE/Worlds")) {
-        if (!entry->is_directory) {
-            continue;
-        }
+    // Base worlds plus mod worlds (Mods/<Mod>/RESOURCE/Worlds/<World>).
+    // Uses Terra's content-entry API like vrtMap::prepare("RESOURCE/Worlds").
+    forEachWorldFolder([this](const std::string& name, const std::string& key,
+                              const std::string& modName) {
         WorldInfo wi;
-        const fs::path realPath = fs::u8path(entry->path_content);
-        wi.name = realPath.filename().u8string();
-        wi.dirKey = entry->key;
+        wi.name = name;
+        wi.dirKey = key;
+        wi.modName = modName;
         worldList_.push_back(std::move(wi));
-    }
+    });
 
-    // Sort by name for a stable UI list.
+    // Sort by mod then name for a stable UI list (base worlds first).
     std::sort(worldList_.begin(), worldList_.end(),
-              [](const WorldInfo& a, const WorldInfo& b) { return a.name < b.name; });
+              [](const WorldInfo& a, const WorldInfo& b) {
+                  if (a.modName != b.modName) {
+                      return a.modName < b.modName;
+                  }
+                  return a.name < b.name;
+              });
 
     if (worldList_.empty()) {
         fprintf(stderr, "EditorSession: no worlds found in RESOURCE/Worlds of '%s'\n",
@@ -150,6 +154,53 @@ bool EditorSession::scanWorlds()
     state_ = SessionState::GameReady;
     printf("EditorSession: found %zu world(s)\n", worldList_.size());
     return true;
+}
+
+void EditorSession::forEachWorldFolder(
+    const std::function<void(const std::string&, const std::string&,
+                             const std::string&)>& fn) const
+{
+    // Base game worlds.
+    for (const auto& entry : get_content_entries_directory("RESOURCE/Worlds")) {
+        if (!entry->is_directory) {
+            continue;
+        }
+        fn(fs::u8path(entry->path_content).filename().u8string(), entry->key,
+           std::string());
+    }
+
+    // Mod worlds: Mods/<ModName>/RESOURCE/Worlds/<World>. The Mods folder may
+    // be absent entirely. The content map already indexed it under
+    // "mods/<mod>/resource/worlds/..." keys during the "./" scan, which also
+    // makes the keys resolvable at load time. "Publish" is the game's own
+    // staging folder, not a mod.
+    const fs::path modsRoot = fs::u8path(gameDir_) / "Mods";
+    std::error_code ec;
+    if (!fs::is_directory(modsRoot, ec)) {
+        return;
+    }
+    for (const auto& modIt : fs::directory_iterator(modsRoot, ec)) {
+        std::error_code typeEc;
+        if (!modIt.is_directory(typeEc)) {
+            continue;
+        }
+        const std::string modName = modIt.path().filename().u8string();
+        std::string modLower = modName;
+        std::transform(modLower.begin(), modLower.end(), modLower.begin(),
+                       [](unsigned char c) { return std::tolower(c); });
+        if (modLower == "publish") {
+            continue;
+        }
+        for (const auto& entry :
+             get_content_entries_directory("mods/" + modLower +
+                                           "/resource/worlds")) {
+            if (!entry->is_directory) {
+                continue;
+            }
+            fn(fs::u8path(entry->path_content).filename().u8string(),
+               entry->key, modName);
+        }
+    }
 }
 
 const std::vector<WorldInfo>& EditorSession::getWorldList() const
@@ -170,22 +221,21 @@ void EditorSession::refreshWorldTable()
 {
     // Terra's prepare() initialises the circular-brush radius tables through
     // landPrepare(), which leaks and accumulates global state (maxRad) and may
-    // therefore run only once per process. Call it the first time, then keep
-    // wTable in sync ourselves.
+    // therefore run only once per process — so it is called at most once,
+    // only for those tables.
     if (!terraLandPrepared()) {
         vMap.prepare("RESOURCE/Worlds");
-        return;
     }
 
-    // Same enumeration vrtMap::prepare() performs, minus landPrepare().
+    // wTable is ALWAYS rebuilt here: prepare() enumerates only the base
+    // RESOURCE/Worlds, while the editor's list also carries mod worlds
+    // (Mods/<Mod>/RESOURCE/Worlds). A mod world loaded as the FIRST world of
+    // the process must resolve just like any other.
     vMap.wTable.clear();
-    for (const auto& entry : get_content_entries_directory("RESOURCE/Worlds")) {
-        if (!entry->is_directory) {
-            continue;
-        }
-        const fs::path path = fs::u8path(entry->path_content);
-        vMap.wTable.emplace_back(path.filename().u8string(), entry->key);
-    }
+    forEachWorldFolder([](const std::string& name, const std::string& key,
+                          const std::string&) {
+        vMap.wTable.emplace_back(name, key);
+    });
     vMap.maxWorld = vMap.wTable.size();
 }
 
@@ -220,15 +270,26 @@ bool EditorSession::loadWorld(size_t worldIndex)
         return false;
     }
 
-    // Find the Terra index for our world by name (case-insensitive comparison
-    // matches Terra's own getWorldID logic).
+    // Find the Terra index for our world. Match by the content key first —
+    // a mod world may share its folder name with a base world, so the
+    // name-based getWorldID is only a fallback.
     const std::string& wantedName = worldList_[worldIndex].name;
-    int terraIdx = vMap.getWorldID(wantedName.c_str());
-    editorTrace("EditorSession: loadWorld getWorldID('%s')=%d", wantedName.c_str(), terraIdx);
+    const std::string& wantedKey = worldList_[worldIndex].dirKey;
+    int terraIdx = -1;
+    for (int i = 0; i < vMap.maxWorld; ++i) {
+        if (vMap.wTable[static_cast<std::size_t>(i)].dir == wantedKey) {
+            terraIdx = i;
+            break;
+        }
+    }
+    if (terraIdx < 0) {
+        terraIdx = vMap.getWorldID(wantedName.c_str());
+    }
+    editorTrace("EditorSession: loadWorld lookup('%s')=%d", wantedName.c_str(), terraIdx);
     if (terraIdx < 0) {
         fprintf(stderr, "EditorSession: world '%s' not found in Terra wTable.\n",
                 wantedName.c_str());
-        editorTrace("EditorSession: loadWorld FAILED — getWorldID returned -1");
+        editorTrace("EditorSession: loadWorld FAILED — lookup returned -1");
         return false;
     }
 
@@ -284,9 +345,13 @@ bool EditorSession::loadWorld(size_t worldIndex)
 
 bool EditorSession::loadWorldByName(const std::string& worldName)
 {
-    for (size_t i = 0; i < worldList_.size(); ++i) {
-        if (worldList_[i].name == worldName) {
-            return loadWorld(i);
+    // Prefer the base game world on a name clash with a mod world.
+    for (int pass = 0; pass < 2; ++pass) {
+        for (size_t i = 0; i < worldList_.size(); ++i) {
+            if (worldList_[i].name == worldName &&
+                (pass == 1 || worldList_[i].modName.empty())) {
+                return loadWorld(i);
+            }
         }
     }
     fprintf(stderr, "EditorSession: world '%s' not in scanned list.\n", worldName.c_str());

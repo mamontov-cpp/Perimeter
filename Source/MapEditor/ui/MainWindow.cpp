@@ -4039,7 +4039,9 @@ void MainWindow::showWorldListDialog()
 
     auto *listWidget = new QListWidget(&dialog);
     for (const auto &w : worlds) {
-        listWidget->addItem(QString::fromStdString(w.name));
+        // Mod worlds are shown as "<Mod> / <World>" to tell them apart from
+        // base game worlds (and from a same-named base world).
+        listWidget->addItem(QString::fromStdString(w.displayName()));
     }
 
     const int curIdx = session_->currentWorldIndex();
