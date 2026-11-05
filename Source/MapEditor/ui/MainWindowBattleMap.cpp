@@ -573,6 +573,9 @@ void MainWindow::onActionOpenBattleMap()
         return;
     }
     battleMapPath_ = path;
+    // Warn if the file name (without extension) differs from the world name
+    // inside the .spg — the game expects them to match.
+    checkBattleMapNameMatchesWorld(path, battleMap_.worldName());
     if (!ensureWorldForBattleMap()) {
         // The user cancelled the world switch or the world is missing — the
         // map stays loaded (spawn moves need its world though).
@@ -906,6 +909,13 @@ void MainWindow::onActionLoadDiff()
     if (path.isEmpty()) {
         return;
     }
+    // Warn if the file name (without extension) differs from the world name.
+    {
+        const std::string worldName = battleMap_.loaded()
+            ? battleMap_.worldName()
+            : session_->currentWorldName();
+        checkBattleMapNameMatchesWorld(path, worldName);
+    }
     if (!session_->loadDiffFromGmp(path.toStdString())) {
         QMessageBox::warning(
             this, tr("Load Difference"),
@@ -921,4 +931,30 @@ void MainWindow::onActionLoadDiff()
                      ? QString()
                      : tr(" — switch Difference Mode on (F2) to see it")),
         6000);
+}
+
+// ---------------------------------------------------------------------------
+// Helper: warn when the file name (without extension) differs from the world
+// name.  The game expects battle maps and difference data to share the name
+// of the world they belong to (e.g. FORTOP.spg for the "FORTOP" world).
+// ---------------------------------------------------------------------------
+
+void MainWindow::checkBattleMapNameMatchesWorld(
+    const QString &filePath, const std::string &worldName)
+{
+    if (worldName.empty()) {
+        return;
+    }
+    const QFileInfo fi(filePath);
+    QString fileName = fi.completeBaseName();
+    if (fileName.toStdString() == worldName) {
+        return;
+    }
+    QMessageBox::warning(
+        this, tr("File name mismatch"),
+        tr("Battle map or difference data file name (%1) differs from "
+           "the world name (%2).\n"
+           "The game expects them to match; a mismatch may cause the game "
+           "to break.")
+            .arg(fileName, QString::fromStdString(worldName)));
 }

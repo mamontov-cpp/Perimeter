@@ -238,6 +238,10 @@ private:
     QString askBattleMapSaveName(bool &toWorldsFolder) const;
     /// *.spg file names in RESOURCE/Battle of the current game dir.
     QStringList battleMapTemplates() const;
+    /// Warn the user when the file name (without extension/path) does not
+    /// match the world name — the game expects them to be identical.
+    void checkBattleMapNameMatchesWorld(const QString &filePath,
+                                        const std::string &worldName);
 
     // T3.2 — create the brush type (effect), the brush mode (Geo/Dam) and
     // the editor interaction mode (View/Brush/Eyedropper) actions. Called
