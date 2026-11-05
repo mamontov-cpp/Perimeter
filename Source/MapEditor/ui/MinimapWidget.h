@@ -93,6 +93,10 @@ public:
     /// the outline.
     void setViewPolygon(const QPolygonF &poly);
     QPolygonF viewPolygon() const { return viewPolygon_; }
+    /// Pre-placed battle-map buildings (map-cell coordinates) — drawn as
+    /// white dots like the game's radar.
+    void setBuildingPoints(const QVector<QPointF> &buildings);
+    QVector<QPointF> buildingPoints() const { return buildings_; }
 
     /// Axis-aligned convenience for the 2D view — forwards to
     /// setViewPolygon(). An empty/invalid rect hides the outline.
@@ -146,6 +150,7 @@ private:
     QImage minimapImage_; ///< map.tga pixels (or the live terrain render).
     QSize mapSize_;       ///< world size in map cells.
     QPolygonF viewPolygon_; ///< viewport's current view, in map cells.
+    QVector<QPointF> buildings_; ///< pre-placed buildings, in map cells.
 
     QRectF mapArea_;      ///< letter-boxed map rectangle inside the widget.
 

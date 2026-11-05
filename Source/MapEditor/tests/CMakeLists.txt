@@ -32,6 +32,8 @@ ADD_EXECUTABLE(map_editor_tests
         SpgEncodingTests.cpp
         SpgSpawnHeightTests.cpp
         SpgPlayerMoveUndoTests.cpp
+        BuildingsTests.cpp
+        UnitModelCatalogTests.cpp
         ScriptedBrushTests.cpp
         SculptBrushTests.cpp
         BrushHeightGateTests.cpp

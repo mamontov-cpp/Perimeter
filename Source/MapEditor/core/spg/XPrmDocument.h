@@ -74,6 +74,15 @@ public:
     Field& setScalar(const std::string& name, const std::string& rawValue);
     /// Add an entry (object or scalar) at the end; gaps gain an empty slot.
     Field& addField(Field field);
+
+    /// Append an element to an array object (anonymous elements separated by
+    /// ','): the previous last element gains a ',' separator (regenerated so
+    /// the separator is actually emitted — its raw slice has none), and the
+    /// newcomer becomes the last element with NO terminator — the game's
+    /// XPrm reader treats a trailing separator before '}' as another
+    /// element and aborts. Freshly built fields must have edited=true (or a
+    /// hasEdits() object); deep-copied fields keep their raw slice.
+    Field& appendElement(Field field);
     /// Remove the named field (no-op when absent).
     void removeField(const std::string& name);
 

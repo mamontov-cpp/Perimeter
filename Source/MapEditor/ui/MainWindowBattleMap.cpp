@@ -10,7 +10,10 @@
 #include "MainWindow.h"
 
 #include "BattleMapPanel.h"
+#include "BuildingsPanel.h"
+#include "BuildingCatalog.h"
 #include "EditorSession.h"
+#include "MinimapWidget.h"
 #include "ViewportWidget.h"
 
 #include <algorithm>
@@ -94,6 +97,261 @@ void MainWindow::buildBattleMapDock()
 
     // Template combo: the battle maps of the current game directory.
     battleMapPanel_->setTemplates(battleMapTemplates());
+
+    buildBuildingsDock();
+}
+
+void MainWindow::buildBuildingsDock()
+{
+    buildingsPanel_ = new MapEditor::BuildingsPanel(this);
+
+    buildingsDock_ = new QDockWidget(tr("Buildings"), this);
+    buildingsDock_->setObjectName(QStringLiteral("BuildingsDock"));
+    buildingsDock_->setWidget(buildingsPanel_);
+    buildingsDock_->setAllowedAreas(Qt::LeftDockWidgetArea |
+                                    Qt::RightDockWidgetArea);
+    addDockWidget(Qt::RightDockWidgetArea, buildingsDock_);
+    // Share the space with the battle map panel instead of stacking the
+    // right edge with docks.
+    tabifyDockWidget(battleMapDock_, buildingsDock_);
+    buildingsDock_->hide();
+
+    // The three tools + the building choice + the rotation/HP edits.
+    connect(buildingsPanel_, &MapEditor::BuildingsPanel::toolChosen, this,
+            [this](int tool) {
+                if (!viewport_) {
+                    return;
+                }
+                using VT = MapEditor::ViewportWidget::BuildingTool;
+                viewport_->setBuildingTool(tool == 0 ? VT::Place
+                                          : tool == 1 ? VT::Select
+                                                      : VT::Delete);
+                if (tool != 0) {
+                    viewport_->setBuildingPreview(-1, 0, true);
+                }
+            });
+    connect(buildingsPanel_, &MapEditor::BuildingsPanel::buildingChosen, this,
+            [this](int) {
+                // Refresh the placement footprint for the current cursor.
+                if (viewport_ && viewport_->cursorCell().x() >= 0) {
+                    onBuildingCursorMoved(viewport_->cursorCell().x(),
+                                          viewport_->cursorCell().y());
+                }
+            });
+    connect(buildingsPanel_, &MapEditor::BuildingsPanel::rotationEdited, this,
+            [this](double deg) {
+                if (selectedBuildingRow_ < 0 ||
+                    selectedBuildingRow_ >=
+                        static_cast<int>(placedBuildings_.size())) {
+                    return;
+                }
+                const MapEditor::SpgFile::PlacedBuilding& b =
+                    placedBuildings_[static_cast<std::size_t>(selectedBuildingRow_)];
+                if (battleMap_.setBuildingPose(
+                        b.index, b.x, b.y, deg)) {
+                    reloadPlacedBuildings();
+                    statusBar()->showMessage(
+                        tr("Building rotation set to %1°.").arg(deg), 3000);
+                }
+            });
+    connect(buildingsPanel_, &MapEditor::BuildingsPanel::hpEdited, this,
+            [this](int hp) {
+                if (selectedBuildingRow_ < 0 ||
+                    selectedBuildingRow_ >=
+                        static_cast<int>(placedBuildings_.size())) {
+                    return;
+                }
+                const MapEditor::SpgFile::PlacedBuilding& b =
+                    placedBuildings_[static_cast<std::size_t>(selectedBuildingRow_)];
+                if (battleMap_.setBuildingHp(b.index, hp)) {
+                    reloadPlacedBuildings();
+                    statusBar()->showMessage(
+                        tr("Building HP set to %1%.").arg(hp), 3000);
+                }
+            });
+
+    // Viewport tool clicks + cursor tracking for the placement preview.
+    connect(viewport_, &MapEditor::ViewportWidget::buildingPlaceRequested,
+            this, &MainWindow::onBuildingPlace);
+    connect(viewport_, &MapEditor::ViewportWidget::buildingSelectRequested,
+            this, &MainWindow::onBuildingSelect);
+    connect(viewport_, &MapEditor::ViewportWidget::buildingDeleteRequested,
+            this, &MainWindow::onBuildingDelete);
+    connect(viewport_, &MapEditor::ViewportWidget::cursorMapPosition, this,
+            &MainWindow::onBuildingCursorMoved);
+}
+
+void MainWindow::reloadPlacedBuildings()
+{
+    placedBuildings_ = battleMap_.loaded() ? battleMap_.buildings()
+                                           : std::vector<MapEditor::SpgFile::PlacedBuilding>();
+    if (selectedBuildingRow_ >=
+        static_cast<int>(placedBuildings_.size())) {
+        selectedBuildingRow_ = -1;
+    }
+    syncBuildingsOverlay();
+}
+
+void MainWindow::syncBuildingsOverlay()
+{
+    std::vector<MapEditor::BuildingPoint> points;
+    QVector<QPointF> minimap;
+    if (battleMap_.loaded()) {
+        points.reserve(placedBuildings_.size());
+        minimap.reserve(static_cast<int>(placedBuildings_.size()));
+        for (int i = 0; i < static_cast<int>(placedBuildings_.size()); ++i) {
+            const MapEditor::SpgFile::PlacedBuilding& b =
+                placedBuildings_[static_cast<std::size_t>(i)];
+            const MapEditor::BuildingInfo* info =
+                MapEditor::buildingInfo(b.attributeId);
+            MapEditor::BuildingPoint p;
+            p.attributeId = b.attributeId;
+            p.mapX = b.x;
+            p.mapY = b.y;
+            p.angleDeg = b.angleDeg;
+            p.hp = b.hp;
+            p.radiusCells = info ? info->radius : 10.0;
+            p.selected = i == selectedBuildingRow_;
+            points.push_back(p);
+            minimap << QPointF(b.x, b.y);
+        }
+    }
+    if (viewport_) {
+        viewport_->setBuildingPoints(points);
+    }
+    if (minimap_) {
+        minimap_->setBuildingPoints(minimap);
+    }
+}
+
+bool MainWindow::buildingPlacementBlocked(double mapX, double mapY,
+                                          double radius) const
+{
+    for (const MapEditor::SpgFile::PlacedBuilding& b : placedBuildings_) {
+        const MapEditor::BuildingInfo* info =
+            MapEditor::buildingInfo(b.attributeId);
+        const double other = info ? info->radius : 10.0;
+        if (std::hypot(b.x - mapX, b.y - mapY) < radius + other) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void MainWindow::onBuildingCursorMoved(int mapX, int mapY)
+{
+    if (!viewport_ || !buildingsPanel_ || buildingsPanel_->tool() != 0 ||
+        !battleMap_.loaded()) {
+        return;
+    }
+    const int attr = buildingsPanel_->selectedBuilding();
+    if (attr < 0) {
+        viewport_->setBuildingPreview(-1, 0, true);
+        return;
+    }
+    const MapEditor::BuildingInfo* info = MapEditor::buildingInfo(attr);
+    if (!info) {
+        return;
+    }
+    viewport_->setBuildingPreview(
+        attr, info->radius,
+        !buildingPlacementBlocked(mapX + 0.5, mapY + 0.5, info->radius));
+}
+
+void MainWindow::onBuildingPlace(double mapX, double mapY)
+{
+    if (!battleMap_.loaded()) {
+        return;
+    }
+    const int attr = buildingsPanel_ ? buildingsPanel_->selectedBuilding() : -1;
+    const MapEditor::BuildingInfo* info = MapEditor::buildingInfo(attr);
+    if (!info) {
+        statusBar()->showMessage(
+            tr("Pick a building in the Buildings panel first."), 4000);
+        return;
+    }
+    if (!session_ || !session_->isWorldLoaded()) {
+        statusBar()->showMessage(
+            tr("Load the battle map's world first."), 4000);
+        return;
+    }
+    if (buildingPlacementBlocked(mapX, mapY, info->radius)) {
+        viewport_->setBuildingPreview(attr, info->radius, false);
+        statusBar()->showMessage(
+            tr("The placement intersects another building."), 4000);
+        return;
+    }
+    MapEditor::SpgFile::PlacedBuilding b;
+    b.unitId = battleMap_.maxUnitId() + 1;
+    b.attributeId = attr;
+    b.x = mapX;
+    b.y = mapY;
+    // Saved buildings stand on the zero layer: z = hZeroPlast - boxMin().z
+    // (terBuilding::setPose), i.e. zero layer + the catalog offset.
+    b.z = session_->zeroLayerHeight() + info->zOffset;
+    b.angleDeg = buildingsPanel_->rotationDeg();
+    b.hp = buildingsPanel_->hp();
+    if (!battleMap_.addBuilding(b)) {
+        statusBar()->showMessage(tr("Failed to place the building."), 4000);
+        return;
+    }
+    selectedBuildingRow_ = -1;
+    reloadPlacedBuildings();
+    if (buildingsPanel_) {
+        buildingsPanel_->setSelectionInfo(
+            tr("Placed %1 at (%2, %3) — saved into nobodysBuildings.")
+                .arg(QString::fromLatin1(info->name))
+                .arg(mapX)
+                .arg(mapY));
+    }
+}
+
+void MainWindow::onBuildingSelect(double mapX, double mapY)
+{
+    if (!viewport_ || !battleMap_.loaded()) {
+        return;
+    }
+    const int row = viewport_->buildingIndexAtCell(mapX, mapY);
+    selectedBuildingRow_ = row;
+    if (row >= 0 && row < static_cast<int>(placedBuildings_.size()) &&
+        buildingsPanel_) {
+        const MapEditor::SpgFile::PlacedBuilding& b =
+            placedBuildings_[static_cast<std::size_t>(row)];
+        const MapEditor::BuildingInfo* info =
+            MapEditor::buildingInfo(b.attributeId);
+        buildingsPanel_->setSelectionInfo(
+            tr("Selected: %1 at (%2, %3)")
+                .arg(QString::fromLatin1(info ? info->name : "?"))
+                .arg(b.x)
+                .arg(b.y));
+        buildingsPanel_->showSelectionParams(b.angleDeg, b.hp);
+    } else if (buildingsPanel_) {
+        buildingsPanel_->setSelectionInfo(
+            tr("Click a building to select it."));
+    }
+    syncBuildingsOverlay();
+}
+
+void MainWindow::onBuildingDelete(double mapX, double mapY)
+{
+    if (!viewport_ || !battleMap_.loaded()) {
+        return;
+    }
+    const int row = viewport_->buildingIndexAtCell(mapX, mapY);
+    if (row < 0 || row >= static_cast<int>(placedBuildings_.size())) {
+        return;
+    }
+    if (!battleMap_.removeBuilding(
+            placedBuildings_[static_cast<std::size_t>(row)].index)) {
+        statusBar()->showMessage(tr("Failed to remove the building."), 4000);
+        return;
+    }
+    selectedBuildingRow_ = -1;
+    reloadPlacedBuildings();
+    if (buildingsPanel_) {
+        buildingsPanel_->setSelectionInfo(
+            tr("Building removed — save the battle map to persist."));
+    }
 }
 
 QStringList MainWindow::battleMapTemplates() const
@@ -235,10 +493,59 @@ void MainWindow::onSpawnPlacementRequested(int mapX, int mapY)
     updateActionStates();
 }
 
+void MainWindow::bakeBuildingIconsIfPossible()
+{
+    if (buildingIconsBaked_ || !viewport_ || !buildingsPanel_) {
+        return;
+    }
+    bool any = false;
+    for (std::size_t i = 0; i < MapEditor::kPlaceableBuildingCount; ++i) {
+        const int id = MapEditor::kPlaceableBuildings[i].id;
+        QIcon icon = viewport_->bakeBuildingIcon(id);
+        if (!icon.isNull()) {
+            buildingsPanel_->setBuildingIcon(id, icon);
+            any = true;
+        }
+    }
+    // Latch only on success — without the GPU viewport every bake fails and
+    // a later refresh retries.
+    buildingIconsBaked_ = any;
+}
+
 void MainWindow::refreshBattleMapUI()
 {
     battleMapPanel_->refresh();
     syncSpawnOverlay();
+    // The pre-placed buildings panel follows the battle map lifecycle.
+    const bool active = battleMap_.loaded();
+    if (active) {
+        reloadPlacedBuildings();
+    } else {
+        placedBuildings_.clear();
+        selectedBuildingRow_ = -1;
+        syncBuildingsOverlay();
+        if (viewport_) {
+            viewport_->setBuildingTool(
+                MapEditor::ViewportWidget::BuildingTool::None);
+            viewport_->setBuildingPreview(-1, 0, true);
+        }
+    }
+    if (buildingsPanel_) {
+        buildingsPanel_->setActive(active);
+        if (active) {
+            buildingsPanel_->setSelectionInfo(
+                tr("%1 building(s) on the map.")
+                    .arg(placedBuildings_.size()));
+        }
+    }
+    if (buildingsDock_) {
+        buildingsDock_->setVisible(active);
+    }
+    if (active) {
+        // Bake the building-button icons from the game M3D models on first
+        // use (needs the GPU viewport; retries while it stays unavailable).
+        bakeBuildingIconsIfPossible();
+    }
     // The one place that maps session/battle-map state onto every action
     // (Save/Save As, Open, Validate, autofixes).
     updateActionStates();

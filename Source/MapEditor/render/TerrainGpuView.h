@@ -27,12 +27,16 @@
 #pragma once
 
 #include <cstdint>
+#include <vector>
+
+#include "BuildingModels.h"
 
 class cInterfaceRenderDevice;
 class cVisGeneric;
 class cScene;
 class cCamera;
 class cTileMap;
+class cUnkLight;
 // Global scope on purpose (the game's TerraInterface) — a `class TerraInterface`
 // inside namespace MapEditor would shadow it.
 class TerraInterface;
@@ -165,6 +169,27 @@ public:
 
     bool isNearestFiltering() const { return nearestFiltering_; }
 
+    /// Placed battle-map buildings rendered as real game models (M3D) —
+    /// the BuildingModels layer attached to this scene. The list is
+    /// index-aligned with the UI overlay list; poses are map cells/world
+    /// units. No-op when the layer is inactive.
+    void syncBuildingModels(const std::vector<BuildingModelPose>& poses);
+    /// Placement-preview model instance (Place tool cursor).
+    void setBuildingModelPreview(bool valid, const BuildingModelPose& pose);
+    /// Whether the model layer rendered an instance for overlay index —
+    /// the UI keeps the ghost-disc fallback for slots without one.
+    bool hasBuildingModel(int index) const { return buildingModels_.hasInstance(index); }
+    bool hasBuildingPreviewModel() const { return buildingModels_.hasPreviewInstance(); }
+
+    /// Bake one building model (UnitModelCatalog attributeId) into the
+    /// given GL framebuffer as a centered, slightly top-down view — the
+    /// BuildingsPanel button icons. The framebuffer (a
+    /// QOpenGLFramebufferObject on the UI side) must be complete with a
+    /// depth attachment; the GL context must be current. Returns false when
+    /// the model cannot be loaded (missing game folder file etc.).
+    bool renderModelIcon(uint32_t framebuffer, int width, int height,
+                         int attributeId);
+
 private:
     /// (Re)create scene/camera/tilemap around the current device.
     bool buildScene();
@@ -182,6 +207,16 @@ private:
     /// Owned between buildScene() calls — the tilemap takes the reference
     /// over (dtor Releases it), the pointer is only for recreating.
     ::TerraInterface* terra_ = nullptr;
+
+    /// Placed-building model instances + the scene light.
+    BuildingModels buildingModels_;
+
+    /// Icon-baking scene stack (lazy) — separate from the terrain scene so
+    /// baking never disturbs the viewport state; same device.
+    cScene* iconScene_ = nullptr;
+    cCamera* iconCamera_ = nullptr;
+    cUnkLight* iconLight_ = nullptr;
+    void destroyIconScene();
 
     ViewportRenderer* colors_ = nullptr;
     CameraState cameraState_;

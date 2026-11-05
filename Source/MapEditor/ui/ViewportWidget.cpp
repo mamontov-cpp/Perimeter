@@ -15,6 +15,13 @@
 // missing): the GPU oblique path is disabled and the CPU voxel renderer
 // (T2.3) stays authoritative. The stub keeps the widget code identical.
 namespace MapEditor {
+struct BuildingModelPose
+{
+    int attributeId = -1;
+    float x = 0.f;
+    float y = 0.f;
+    float angleDeg = 0.f;
+};
 class TerrainGpuView
 {
 public:
@@ -56,11 +63,17 @@ public:
     float zeroplastZ() const { return 0.0f; }
     float nearPlaneZ() const { return 1.0f; }
     int projectGroundContour(const double*, int, double*, double*) const { return 0; }
+    void syncBuildingModels(const std::vector<BuildingModelPose> &) {}
+    void setBuildingModelPreview(bool, const BuildingModelPose &) {}
+    bool hasBuildingModel(int) const { return false; }
+    bool hasBuildingPreviewModel() const { return false; }
+    bool renderModelIcon(unsigned, int, int, int) { return false; }
 };
 } // namespace MapEditor
 #endif
 
 #include <QOpenGLContext>
+#include <QOpenGLFramebufferObject>
 #include <QOpenGLFunctions>
 #include <QOpenGLTextureBlitter>
 #include <QPainter>
@@ -857,6 +870,57 @@ void ViewportWidget::setSpawnPoints(const std::vector<SpawnPoint> &spawns)
     update();
 }
 
+void ViewportWidget::setBuildingPoints(const std::vector<BuildingPoint> &buildings)
+{
+    buildings_ = buildings;
+    update();
+}
+
+void ViewportWidget::setBuildingPreview(int attributeId, double radiusCells,
+                                        bool valid)
+{
+    buildingPreviewAttr_ = attributeId;
+    buildingPreviewRadius_ = radiusCells;
+    buildingPreviewValid_ = valid;
+    update();
+}
+
+int ViewportWidget::buildingIndexAtCell(double mapX, double mapY) const
+{
+    int best = -1;
+    double bestDist = 1e18;
+    for (std::size_t i = 0; i < buildings_.size(); ++i) {
+        const BuildingPoint& b = buildings_[i];
+        const double reach = std::max(b.radiusCells, 8.0);
+        const double d = std::hypot(b.mapX - mapX, b.mapY - mapY);
+        if (d <= reach && d < bestDist) {
+            bestDist = d;
+            best = static_cast<int>(i);
+        }
+    }
+    return best;
+}
+
+QIcon ViewportWidget::bakeBuildingIcon(int attributeId, int size)
+{
+    if (!gpuActive() || !gpuView_) {
+        return QIcon();
+    }
+    makeCurrent();
+    QOpenGLFramebufferObject fbo(size, size,
+                                 QOpenGLFramebufferObject::Depth);
+    if (!fbo.isValid()) {
+        return QIcon();
+    }
+    if (!gpuView_->renderModelIcon(static_cast<uint32_t>(fbo.handle()),
+                                   size, size, attributeId)) {
+        return QIcon();
+    }
+    // GL readback is bottom-up; QImage is top-down.
+    QImage img = fbo.toImage().mirrored(false, true);
+    return QIcon(QPixmap::fromImage(img));
+}
+
 // ---------------------------------------------------------------------------
 // Coordinate conversion
 // ---------------------------------------------------------------------------
@@ -1190,6 +1254,27 @@ void ViewportWidget::paintGL()
                 editorTrace("ViewportWidget: GPU frame %d (%dx%d)", ++gpuFrameLog,
                             fboW, fboH);
             }
+            // Placed buildings ride the same scene draw — sync the M3D model
+            // instances with the overlay list before rendering. Ghost discs
+            // in drawBuildingPoints3D cover slots whose model failed to load.
+            std::vector<BuildingModelPose> modelPoses;
+            modelPoses.reserve(buildings_.size());
+            for (const BuildingPoint &b : buildings_) {
+                modelPoses.push_back({b.attributeId,
+                                      static_cast<float>(b.mapX),
+                                      static_cast<float>(b.mapY),
+                                      static_cast<float>(b.angleDeg)});
+            }
+            gpuView_->syncBuildingModels(modelPoses);
+            const bool buildingPreviewOn =
+                buildingTool_ == BuildingTool::Place && buildingPreviewAttr_ >= 0 &&
+                cursorCell_.x() >= 0 && cursorCell_.y() >= 0;
+            gpuView_->setBuildingModelPreview(
+                buildingPreviewOn,
+                {buildingPreviewAttr_,
+                 static_cast<float>(cursorCell_.x() + 0.5),
+                 static_cast<float>(cursorCell_.y() + 0.5), 0.f});
+
             gpuView_->setNearestFiltering(renderStyle_ == RenderStyle::Chunky);
             gpuView_->renderFrame(context()->defaultFramebufferObject(),
                                   fboW, fboH);
@@ -1232,6 +1317,7 @@ void ViewportWidget::paintGL()
         // pending line stroke are drawn in screen space at the cursor.
         if (gridVisible_) drawGrid3D(painter);
         drawSpawnPoints3D(painter);
+        drawBuildingPoints3D(painter);
         if (brushPreviewVisible_) drawBrushPreview(painter);
         drawHud(painter);
         emitViewRectIfChanged();
@@ -1242,6 +1328,7 @@ void ViewportWidget::paintGL()
     if (gridVisible_) drawGrid(painter);
     if (brushPreviewVisible_) drawBrushPreview(painter);
     drawSpawnPoints(painter);
+    drawBuildingPoints(painter);
     drawHud(painter);
 
     // --- Announce the view rectangle for the minimap (T2.4) ---
@@ -1811,6 +1898,132 @@ void ViewportWidget::drawSpawnPoints3D(QPainter &painter)
     }
 }
 
+// ---------------------------------------------------------------------------
+// Pre-placed battle-map buildings
+// ---------------------------------------------------------------------------
+
+void ViewportWidget::drawBuildingPoints(QPainter &painter)
+{
+    if (!renderer_ || !renderer_->isBound()) return;
+
+    painter.setRenderHint(QPainter::Antialiasing);
+    for (const BuildingPoint &b : buildings_) {
+        const QPointF pos = mapToScreen(b.mapX, b.mapY);
+        // The game's radar draws neutral buildings as plain white dots.
+        painter.setPen(QPen(QColor(30, 30, 30, 200), 1));
+        painter.setBrush(b.hp > 0 ? QColor(255, 255, 255)
+                                  : QColor(160, 160, 160));
+        painter.drawEllipse(pos, 3.0, 3.0);
+        if (b.selected) {
+            painter.setBrush(Qt::NoBrush);
+            painter.setPen(QPen(QColor(255, 170, 0), 2));
+            painter.drawEllipse(pos, 8.0, 8.0);
+        }
+    }
+
+    // Placement footprint preview — the green/red ghost like the in-game
+    // placement cursor.
+    if (buildingPreviewAttr_ >= 0 && cursorCell_.x() >= 0 &&
+            cursorCell_.y() >= 0) {
+        const QPointF c = mapToScreen(cursorCell_.x() + 0.5,
+                                      cursorCell_.y() + 0.5);
+        const double r = qMax(3.0, buildingPreviewRadius_ * zoom_);
+        const QColor fill = buildingPreviewValid_
+            ? QColor(80, 220, 80, 70) : QColor(230, 60, 60, 70);
+        const QColor line = buildingPreviewValid_
+            ? QColor(40, 180, 40) : QColor(200, 40, 40);
+        painter.setBrush(fill);
+        painter.setPen(QPen(line, 2, Qt::DashLine));
+        painter.drawEllipse(c, r, r);
+    }
+}
+
+void ViewportWidget::drawBuildingPoints3D(QPainter &painter)
+{
+    if (buildings_.empty() || !renderer_->isBound()) return;
+
+    painter.setRenderHint(QPainter::Antialiasing);
+    auto project = [&](const BuildingPoint &b, QPointF &pos) {
+        bool visible = false;
+        if (gpuActive()) {
+            double z = 0.0;
+            if (session_) {
+                const int terrain =
+                    session_->terrainHeightAt(qRound(b.mapX), qRound(b.mapY));
+                if (terrain > 0) {
+                    z = terrain;
+                }
+            }
+            double camZ = 0.0;
+            double sx = 0.0;
+            double sy = 0.0;
+            const qreal dpr = devicePixelRatioF();
+            visible = gpuView_->projectToScreenZ(
+                          b.mapX + 0.5, b.mapY + 0.5, z, camZ, sx, sy) &&
+                      camZ > gpuView_->nearPlaneZ();
+            pos = QPointF(sx / dpr, sy / dpr);
+        } else {
+            pos = obliqueMapToWidgetF(QPointF(b.mapX + 0.5, b.mapY + 0.5));
+            visible = QRectF(rect()).contains(pos);
+        }
+        return visible;
+    };
+
+    for (std::size_t i = 0; i < buildings_.size(); ++i) {
+        const BuildingPoint &b = buildings_[i];
+        QPointF pos;
+        if (!project(b, pos)) {
+            continue;
+        }
+        if (gpuActive() && gpuView_->hasBuildingModel(static_cast<int>(i))) {
+            // The M3D model renders in the scene instead — only the
+            // selection ring stays (drawn at the terrain surface).
+            if (b.selected) {
+                painter.setRenderHint(QPainter::Antialiasing);
+                painter.setBrush(Qt::NoBrush);
+                painter.setPen(QPen(QColor(255, 170, 0), 2));
+                painter.drawEllipse(pos, 10.0, 10.0);
+            }
+            continue;
+        }
+        // Ghost disc at the terrain surface (no GPU model — software
+        // fallback or the M3D failed to load).
+        painter.setPen(QPen(QColor(20, 20, 20, 190), 1));
+        painter.setBrush(b.hp > 0 ? QColor(255, 255, 255, 235)
+                                  : QColor(160, 160, 160, 200));
+        painter.drawEllipse(pos, 6.0, 6.0);
+        if (b.selected) {
+            painter.setBrush(Qt::NoBrush);
+            painter.setPen(QPen(QColor(255, 170, 0), 2));
+            painter.drawEllipse(pos, 10.0, 10.0);
+        }
+    }
+
+    if (buildingPreviewAttr_ >= 0 && cursorCell_.x() >= 0 &&
+            cursorCell_.y() >= 0) {
+        // The footprint ellipse stays even when the M3D preview model is
+        // shown — it carries the valid/invalid placement feedback.
+        BuildingPoint ghost;
+        ghost.mapX = cursorCell_.x();
+        ghost.mapY = cursorCell_.y();
+        QPointF pos;
+        if (project(ghost, pos)) {
+            const double cellsPerPx =
+                obliqueCellsPerWidgetPx(); // approximation both paths
+            const double r = qMax(
+                5.0, buildingPreviewRadius_ /
+                         qMax(1e-6, cellsPerPx * devicePixelRatioF()));
+            const QColor fill = buildingPreviewValid_
+                ? QColor(80, 220, 80, 70) : QColor(230, 60, 60, 70);
+            const QColor line = buildingPreviewValid_
+                ? QColor(40, 180, 40) : QColor(200, 40, 40);
+            painter.setBrush(fill);
+            painter.setPen(QPen(line, 2, Qt::DashLine));
+            painter.drawEllipse(pos, r, r);
+        }
+    }
+}
+
 QPointF ViewportWidget::obliqueMapToWidgetF(const QPointF &mapPos) const
 {
     const QSize buffer = obliqueBufferSize();
@@ -1964,6 +2177,28 @@ void ViewportWidget::mousePressEvent(QMouseEvent *event)
             cursorCell_ = cell;
             setCursor(Qt::CrossCursor);
             emit spawnPlacementRequested(cell.x(), cell.y());
+        }
+        event->accept();
+        return;
+    }
+
+    // Buildings-panel tools take the left click while active (place/select/
+    // delete) — same press-only semantics as Place Spawn.
+    if (event->button() == Qt::LeftButton
+            && buildingTool_ != BuildingTool::None) {
+        const QPoint pos = event->position().toPoint();
+        const QPoint cell = onMapCellAtWidgetPos(pos);
+        if (cell.x() >= 0 && cell.y() >= 0) {
+            cursorWidgetPos_ = pos;
+            cursorCell_ = cell;
+            setCursor(Qt::CrossCursor);
+            if (buildingTool_ == BuildingTool::Place) {
+                emit buildingPlaceRequested(cell.x(), cell.y());
+            } else if (buildingTool_ == BuildingTool::Select) {
+                emit buildingSelectRequested(cell.x(), cell.y());
+            } else {
+                emit buildingDeleteRequested(cell.x(), cell.y());
+            }
         }
         event->accept();
         return;

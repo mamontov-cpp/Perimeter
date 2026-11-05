@@ -627,9 +627,11 @@ bool SpgFile::setPlayerCount(int count)
         if (!array || array->fields.empty()) {
             return;
         }
-        // Deep-clone the last element until the count matches.
+        // Deep-clone the last element until the count matches. The clone
+        // takes over the separator-less tail position; the element it
+        // displaces is regenerated with a ',' (see appendElement).
         while (array->elementCount() < static_cast<std::size_t>(count)) {
-            array->addField(array->fields.back().deepCopy());
+            array->appendElement(array->fields.back().deepCopy());
         }
         while (array->elementCount() > static_cast<std::size_t>(count)) {
             array->fields.pop_back();
@@ -658,6 +660,419 @@ bool SpgFile::setPlayerCount(int count)
     }
     setShufflingIndices(identity);
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Pre-placed world buildings (SavePrm.nobodysBuildings)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// Format a number the way the game's XPrm writer does: integral values get
+/// a trailing dot ("2709."), fractional ones keep up to 6 significant
+/// digits with a dot ("40.6221").
+std::string formatXPrmNumber(double v)
+{
+    char buf[64];
+    if (std::floor(v) == v && std::abs(v) < 1e15) {
+        snprintf(buf, sizeof(buf), "%lld.",
+                 static_cast<long long>(v));
+        return buf;
+    }
+    snprintf(buf, sizeof(buf), "%.6g", v);
+    std::string s = buf;
+    if (s.find('.') == std::string::npos &&
+        s.find('e') == std::string::npos &&
+        s.find("inf") == std::string::npos &&
+        s.find("nan") == std::string::npos) {
+        s += '.';
+    }
+    return s;
+}
+
+XPrmObject::Field namedScalar(const std::string& name, const std::string& raw)
+{
+    XPrmObject::Field f;
+    f.name = name;
+    f.scalar = raw;
+    f.terminator = ';';
+    f.edited = true;
+    return f;
+}
+
+XPrmObject::Field anonScalar(const std::string& raw, char terminator)
+{
+    XPrmObject::Field f;
+    f.scalar = raw;
+    f.terminator = terminator;
+    f.edited = true;
+    return f;
+}
+
+/// Fresh object with single-space gaps: `{ x = 1.; y = 2.; }`.
+std::shared_ptr<XPrmObject> freshObject(std::vector<XPrmObject::Field> fields)
+{
+    auto obj = std::make_shared<XPrmObject>();
+    obj->fields = std::move(fields);
+    obj->gaps.assign(obj->fields.size() + 1, " ");
+    return obj;
+}
+
+std::shared_ptr<XPrmObject> vectorObject(double x, double y, double z)
+{
+    return freshObject({namedScalar("x", formatXPrmNumber(x)),
+                        namedScalar("y", formatXPrmNumber(y)),
+                        namedScalar("z", formatXPrmNumber(z))});
+}
+
+/// Rotation around Z as a quaternion (the only rotation the game uses for
+/// placed buildings).
+std::shared_ptr<XPrmObject> quaternionZObject(double angleDeg)
+{
+    const double half = angleDeg * 3.14159265358979323846 / 360.0;
+    return freshObject(
+        {namedScalar("s", formatXPrmNumber(std::cos(half))),
+         namedScalar("x", "0."), namedScalar("y", "0."),
+         namedScalar("z", formatXPrmNumber(std::sin(half)))});
+}
+
+/// damageMolecula for the given HP percent: dead[i] scales with the
+/// building's max element counts (UnitAttribute.prm damageMolecula).
+std::shared_ptr<XPrmObject> damageObject(int hp,
+                                         const BuildingInfo& info)
+{
+    const int clamped = std::clamp(hp, 0, 100);
+    auto elements = std::make_shared<XPrmObject>();
+    elements->fields.push_back(anonScalar("5", ';'));
+    for (int i = 0; i < 5; ++i) {
+        int dead = 0;
+        if (clamped == 0) {
+            dead = info.molecula[static_cast<std::size_t>(i)];
+        } else if (clamped < 100) {
+            dead = static_cast<int>(std::llround(
+                (100 - clamped) / 100.0 *
+                info.molecula[static_cast<std::size_t>(i)]));
+        }
+        elements->fields.push_back(
+            anonScalar(std::to_string(dead), i == 4 ? '\0' : ','));
+        // The last element carries NO terminator — the game's reader
+        // expects '}' right after it (a ';' there aborts the parse).
+    }
+    elements->gaps.assign(elements->fields.size() + 1, " ");
+
+    return freshObject(
+        {namedScalar("isAlive", clamped > 0 ? "true" : "false"),
+         XPrmObject::Field{/*name*/ "elementsDead",
+                           /*typeTag*/ "",
+                           /*hasObject*/ true,
+                           /*scalar*/ "",
+                           /*object*/ elements,
+                           /*raw*/ "",
+                           /*terminator*/ ';',
+                           /*edited*/ true}});
+}
+
+/// A full "struct SaveUnit*Data" object for a constructed, plugged-in
+/// building — the same defaults the shipped mission maps carry.
+std::shared_ptr<XPrmObject> buildingEntryObject(const SpgFile::PlacedBuilding& b,
+                                                const BuildingInfo& info)
+{
+    std::vector<XPrmObject::Field> fields;
+    fields.push_back(namedScalar("unitID", std::to_string(b.unitId)));
+    fields.push_back(namedScalar("attributeID", info.identifier));
+    fields.push_back(XPrmObject::Field{"position", "", true, "", vectorObject(b.x, b.y, b.z), "", ';', true});
+    fields.push_back(XPrmObject::Field{"orientaion", "", true, "", quaternionZObject(b.angleDeg), "", ';', true});
+    fields.push_back(namedScalar("radius", "0."));
+    fields.push_back(namedScalar("label", "\"\""));
+    fields.push_back(XPrmObject::Field{"damageMolecula", "", true, "", damageObject(b.hp, info), "", ';', true});
+    fields.push_back(namedScalar("basementInstalled", "true"));
+    fields.push_back(namedScalar("accumulatedEnergy", "0."));
+    fields.push_back(namedScalar("zeroLayerCounter", "0"));
+    fields.push_back(namedScalar("weaponChargeLevel", "1."));
+    fields.push_back(XPrmObject::Field{"wayPoints", "", true, "", freshObject({anonScalar("0", ';')}), "", ';', true});
+    fields.push_back(namedScalar("weapon", "0"));
+    if (info.kind == BuildingKind::Protector) {
+        // The shipped saves carry a constructed but not-enabled Core.
+        fields.push_back(namedScalar(
+            "buildingStatusBV",
+            "BUILDING_STATUS_CONSTRUCTED | BUILDING_STATUS_PLUGGED_IN"));
+    } else {
+        fields.push_back(namedScalar(
+            "buildingStatusBV",
+            "BUILDING_STATUS_CONSTRUCTED | BUILDING_STATUS_PLUGGED_IN | "
+            "BUILDING_STATUS_ENABLED | BUILDING_STATUS_POWERED"));
+    }
+    fields.push_back(namedScalar("fireCount", "0"));
+    fields.push_back(namedScalar("visible", "true"));
+    if (info.kind == BuildingKind::CommandCenter) {
+        fields.push_back(namedScalar("squad", "0"));
+    } else if (info.kind == BuildingKind::Protector) {
+        fields.push_back(namedScalar("monksNumber", "0"));
+        fields.push_back(namedScalar("fieldState", "1"));
+        fields.push_back(namedScalar("enableCharge", "true"));
+        fields.push_back(namedScalar("startWhenCharged", "false"));
+    }
+    return freshObject(std::move(fields));
+}
+
+/// The nobodysBuildings.objects array (created when absent so a fresh
+/// battle map can take buildings too).
+XPrmObject* buildingsArray(XPrmObject* save, bool create)
+{
+    if (!save) {
+        return nullptr;
+    }
+    XPrmObject* holder = save->object("nobodysBuildings");
+    if (!holder && create) {
+        auto objects = std::make_shared<XPrmObject>();
+        objects->fields.push_back(anonScalar("0", ';'));
+        objects->gaps.assign(2, " ");
+        auto block = std::make_shared<XPrmObject>();
+        block->fields.push_back(XPrmObject::Field{"objects", "", true, "", objects, "", ';', true});
+        block->gaps.assign(2, " ");
+        XPrmObject::Field entry;
+        entry.name = "nobodysBuildings";
+        entry.hasObject = true;
+        entry.object = block;
+        entry.terminator = ';';
+        entry.edited = true;
+        save->addField(std::move(entry));
+        holder = save->object("nobodysBuildings");
+    }
+    return holder ? holder->object("objects") : nullptr;
+}
+
+double scalarDouble(const XPrmObject* obj, const char* name)
+{
+    if (!obj) {
+        return 0.0;
+    }
+    return std::strtod(obj->scalar(name).c_str(), nullptr);
+}
+
+int scalarInt(const XPrmObject* obj, const char* name)
+{
+    if (!obj) {
+        return 0;
+    }
+    return std::atoi(obj->scalar(name).c_str());
+}
+
+/// Recursively collects the largest unitID under `obj`.
+void collectMaxUnitId(const XPrmObject* obj, int& maxId)
+{
+    if (!obj) {
+        return;
+    }
+    for (const XPrmObject::Field& f : obj->fields) {
+        if (f.name == "unitID" && f.isScalar()) {
+            maxId = std::max(maxId, std::atoi(f.scalar.c_str()));
+        }
+        if (f.hasObject && f.object) {
+            collectMaxUnitId(f.object.get(), maxId);
+        }
+    }
+}
+
+} // namespace
+
+std::vector<SpgFile::PlacedBuilding> SpgFile::buildings() const
+{
+    std::vector<PlacedBuilding> out;
+    if (!loaded()) {
+        return out;
+    }
+    XPrmObject* array = buildingsArray(save_, false);
+    if (!array) {
+        return out;
+    }
+    for (std::size_t i = 1; i < array->fields.size(); ++i) {
+        const XPrmObject::Field& entry = array->fields[i];
+        if (!entry.hasObject || !entry.object) {
+            continue;
+        }
+        const XPrmObject* obj = entry.object.get();
+        const std::string attrText = obj->scalar("attributeID");
+        int attributeId = -1;
+        for (std::size_t k = 0; k < kPlaceableBuildingCount; ++k) {
+            if (attrText == kPlaceableBuildings[k].identifier) {
+                attributeId = kPlaceableBuildings[k].id;
+                break;
+            }
+        }
+        if (attributeId < 0) {
+            continue; // not a placeable building — left untouched
+        }
+        const BuildingInfo* info = buildingInfo(attributeId);
+        PlacedBuilding b;
+        b.index = i - 1;
+        b.unitId = scalarInt(obj, "unitID");
+        b.attributeId = attributeId;
+        b.x = scalarDouble(obj->object("position"), "x");
+        b.y = scalarDouble(obj->object("position"), "y");
+        b.z = scalarDouble(obj->object("position"), "z");
+        const XPrmObject* quat = obj->object("orientaion");
+        const double qs = scalarDouble(quat, "s");
+        const double qz = scalarDouble(quat, "z");
+        double angle = 2.0 * std::atan2(qz, qs) * 180.0 /
+                       3.14159265358979323846;
+        // Normalize into (-180, 180].
+        while (angle > 180.0) angle -= 360.0;
+        while (angle <= -180.0) angle += 360.0;
+        b.angleDeg = angle;
+        int hp = 100;
+        const XPrmObject* damage = obj->object("damageMolecula");
+        if (damage) {
+            const XPrmObject* elements = damage->object("elementsDead");
+            int deadSum = 0;
+            int maxSum = 0;
+            for (std::size_t k = 0; k < 5; ++k) {
+                maxSum += info->molecula[k];
+            }
+            if (elements && elements->fields.size() >= 6) {
+                for (std::size_t k = 1; k <= 5; ++k) {
+                    deadSum += std::atoi(elements->fields[k].scalar.c_str());
+                }
+            }
+            if (damage->scalar("isAlive") == "false") {
+                hp = 0;
+            } else if (maxSum > 0) {
+                hp = std::clamp(static_cast<int>(std::llround(
+                     100.0 * (1.0 - static_cast<double>(deadSum) / maxSum))),
+                     0, 100);
+            }
+        }
+        b.hp = hp;
+        out.push_back(b);
+    }
+    return out;
+}
+
+bool SpgFile::addBuilding(const PlacedBuilding& building)
+{
+    if (!loaded()) {
+        return false;
+    }
+    const BuildingInfo* info = buildingInfo(building.attributeId);
+    XPrmObject* array = buildingsArray(save_, true);
+    if (!info || !array) {
+        return false;
+    }
+    if (!array->fields.empty() && array->fields.back().terminator == 0) {
+        // The previous last element gains a separator before the newcomer.
+        array->fields.back().terminator = ',';
+        array->fields.back().edited = true;
+    }
+    XPrmObject::Field entry;
+    entry.typeTag =
+        info->kind == BuildingKind::Protector
+            ? "struct SaveUnitProtectorData"
+            : info->kind == BuildingKind::CommandCenter
+                  ? "struct SaveUnitCommandCenterData"
+                  : "struct SaveUnitBuildingData";
+    entry.hasObject = true;
+    entry.object = buildingEntryObject(building, *info);
+    entry.edited = true; // fresh object — never render the (empty) raw slice
+    array->appendElement(std::move(entry));
+    if (!array->fields.empty()) {
+        array->fields[0].scalar = std::to_string(array->elementCount());
+        array->fields[0].edited = true;
+    }
+    return true;
+}
+
+bool SpgFile::setBuildingPose(std::size_t index, double x, double y,
+                              double angleDeg)
+{
+    if (!loaded()) {
+        return false;
+    }
+    XPrmObject* array = buildingsArray(save_, false);
+    if (!array || index + 1 >= array->fields.size() ||
+        !array->fields[index + 1].object) {
+        return false;
+    }
+    XPrmObject* obj = array->fields[index + 1].object.get();
+    XPrmObject* position = obj->object("position");
+    if (!position) {
+        return false;
+    }
+    position->setScalar("x", formatXPrmNumber(x));
+    position->setScalar("y", formatXPrmNumber(y));
+    position->setScalar("z",
+                        formatXPrmNumber(scalarDouble(position, "z")));
+    // Replace the whole quaternion object.
+    XPrmObject::Field* quatField = obj->field("orientaion");
+    if (!quatField) {
+        return false;
+    }
+    quatField->hasObject = true;
+    quatField->object = quaternionZObject(angleDeg);
+    quatField->edited = true;
+    return true;
+}
+
+bool SpgFile::setBuildingHp(std::size_t index, int hp)
+{
+    if (!loaded()) {
+        return false;
+    }
+    XPrmObject* array = buildingsArray(save_, false);
+    if (!array || index + 1 >= array->fields.size() ||
+        !array->fields[index + 1].object) {
+        return false;
+    }
+    XPrmObject* obj = array->fields[index + 1].object.get();
+    const std::string attrText = obj->scalar("attributeID");
+    int attributeId = -1;
+    for (std::size_t k = 0; k < kPlaceableBuildingCount; ++k) {
+        if (attrText == kPlaceableBuildings[k].identifier) {
+            attributeId = kPlaceableBuildings[k].id;
+            break;
+        }
+    }
+    const BuildingInfo* info = buildingInfo(attributeId);
+    XPrmObject::Field* damageField = obj->field("damageMolecula");
+    if (!info || !damageField) {
+        return false;
+    }
+    damageField->hasObject = true;
+    damageField->object = damageObject(hp, *info);
+    damageField->edited = true;
+    return true;
+}
+
+bool SpgFile::removeBuilding(std::size_t index)
+{
+    if (!loaded()) {
+        return false;
+    }
+    XPrmObject* array = buildingsArray(save_, false);
+    if (!array || index + 1 >= array->fields.size()) {
+        return false;
+    }
+    array->fields.erase(array->fields.begin() +
+                        static_cast<long>(index) + 1);
+    array->gaps.erase(array->gaps.begin() + static_cast<long>(index) + 1);
+    if (!array->fields.empty()) {
+        // The new last element must not carry a separator before '}' —
+        // regenerate it without (its raw slice may still hold ','). When no
+        // elements remain fields.back() IS the count scalar — leave its ';'.
+        if (array->fields.size() > 1) {
+            array->fields.back().terminator = 0;
+            array->fields.back().edited = true;
+        }
+        array->fields[0].scalar = std::to_string(array->elementCount());
+        array->fields[0].edited = true;
+    }
+    return true;
+}
+
+int SpgFile::maxUnitId() const
+{
+    int maxId = 0;
+    collectMaxUnitId(save_, maxId);
+    return maxId;
 }
 
 } // namespace MapEditor

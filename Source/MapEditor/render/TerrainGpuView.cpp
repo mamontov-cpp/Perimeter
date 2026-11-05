@@ -19,7 +19,12 @@
 
 #include "Scene.h"
 #include "VisGeneric.h"
+#include "ObjNode.h"
+#include "UnkLight.h"
+#include "../inc/VisGenericDefine.h"
 #include "../tilemap/TileMap.h"
+
+#include "UnitModelCatalog.h"
 
 // World state (vMap / hZeroPlast / H_SIZE ...)
 #include "terra.h"
@@ -153,11 +158,18 @@ bool TerrainGpuView::buildScene() {
         destroyScene();
         return false;
     }
+
+    // Placed-building models ride the same scene->Draw.
+    buildingModels_.init(scene_);
     return true;
 }
 
 void TerrainGpuView::destroyScene() {
     editorTrace("TerrainGpuView::destroyScene start");
+    // Building model instances and the icon stack reference the scene and
+    // device — tear them down first.
+    buildingModels_.shutdown();
+    destroyIconScene();
     // Order matters: the tilemap feeds through the camera/scene and holds the
     // device reference (dtor calls gb_RenderDevice->DeleteTilemap), the
     // camera/scene own per-frame node lists. All while the device is alive.
@@ -375,6 +387,134 @@ void TerrainGpuView::renderFrame(uint32_t framebuffer, int width, int height) {
     scene_->Draw(camera_);   // PreDrawScene + TileMap->PreDraw + DrawScene
     device_->EndScene();     // renders the pass into the FBO
     device_->Flush(false);   // sg_commit, no swap (Qt composites)
+}
+
+void TerrainGpuView::syncBuildingModels(const std::vector<BuildingModelPose>& poses) {
+    if (!scene_) {
+        return;
+    }
+    buildingModels_.sync(poses, zeroplastZ());
+}
+
+void TerrainGpuView::setBuildingModelPreview(bool valid, const BuildingModelPose& pose) {
+    if (!scene_) {
+        return;
+    }
+    buildingModels_.setPreview(valid, pose, zeroplastZ());
+}
+
+void TerrainGpuView::destroyIconScene() {
+    if (iconCamera_) {
+        iconCamera_->Release();
+        iconCamera_ = nullptr;
+    }
+    if (iconLight_) {
+        iconLight_->Release();
+        iconLight_ = nullptr;
+    }
+    if (iconScene_) {
+        iconScene_->Release();
+        iconScene_ = nullptr;
+    }
+}
+
+bool TerrainGpuView::renderModelIcon(uint32_t framebuffer, int width, int height,
+                                     int attributeId) {
+    if (!device_ || !visGeneric_ || framebuffer == 0 || width <= 0 || height <= 0) {
+        return false;
+    }
+    const UnitModelInfo* info = unitModelInfo(attributeId);
+    if (!info) {
+        return false;
+    }
+
+    // Icon scene stack — same recipe as the viewport scene but standalone so
+    // baking never touches the terrain state.
+    if (!iconScene_) {
+        iconScene_ = visGeneric_->CreateScene();
+        if (!iconScene_) {
+            return false;
+        }
+        iconCamera_ = iconScene_->CreateCamera();
+        iconCamera_->SetAttr(ATTRCAMERA_PERSPECTIVE);
+        iconLight_ = iconScene_->CreateLight(ATTRLIGHT_DIRECTION);
+        if (iconLight_) {
+            iconLight_->SetPosition(MatXf(Mat3f::ID, Vect3f(0.f, 0.f, 0.f)));
+            sColor4f ambient(0.3f, 0.3f, 0.32f, 1.f);
+            sColor4f diffuse(1.f, 1.f, 1.f, 1.f);
+            iconLight_->SetColor(&ambient, &diffuse);
+            Vect3f dir(-234.f, 0.f, -180.f);
+            dir.normalize();
+            iconLight_->SetDirection(dir);
+        }
+    }
+
+    cObjectNodeRoot* node = iconScene_->CreateObject(
+        info->modelFile, "Resource\\Models\\Main\\EXODUS\\");
+    if (!node) {
+        editorTrace("TerrainGpuView: icon model load failed (%s)", info->modelFile);
+        return false;
+    }
+
+    // Scale and center the bbox at the origin (game scale formula — see
+    // BuildingModels::poseInstance).
+    sBox6f bound;
+    node->GetBoundBox(bound);
+    const float nativeRadius = bound.GetRadius();
+    float scale = static_cast<float>(info->boundScale);
+    if (info->boundRadius > 0.0 && nativeRadius > 1e-6f) {
+        scale = static_cast<float>(info->boundRadius) / nativeRadius;
+    }
+    node->SetScale(Vect3f(scale, scale, scale));
+    const Vect3f center = (bound.min + bound.max) * 0.5f * scale;
+    const float radius = nativeRadius * scale;
+    node->SetPosition(MatXf(Mat3f::ID, -center));
+    node->Update();
+
+    // Camera: spherical position (BGScene recipe, Source/UserInterface/
+    // BGScene.cpp), pulled back far enough to fit the bounds with margin.
+    // Frustum focus f gives a visible height of dist/f at the target plane.
+    const float theta = static_cast<float>(50.0 * kDegToRad);  // from +Z (nadir)
+    const float psi = static_cast<float>(-35.0 * kDegToRad);   // azimuth
+    const float dist = radius * 3.4f + 1e-3f;
+    Vect3f position;
+    position.setSpherical(psi, theta, dist);
+
+    MatXf matrix = MatXf::ID;
+    matrix.rot() = Mat3f(theta, X_AXIS) * Mat3f(static_cast<float>(kPi / 2.0) - psi, Z_AXIS);
+    matrix *= MatXf(Mat3f::ID, -position);
+    MatXf ml = MatXf::ID;
+    MatXf mr = MatXf::ID;
+    ml.rot()[2][2] = -1;
+    mr.rot()[1][1] = -1;
+    iconCamera_->SetPosition(mr * ml * matrix);
+
+    const float focus = dist / (radius * 2.6f + 1e-3f);
+    Vect2f camCenter(0.5f, 0.5f);
+    sRectangle4f clip(-0.5f, -0.5f, 0.5f, 0.5f);
+    Vect2f focusV(focus, focus);
+    Vect2f zplane(dist - radius * 2.f > 1.f ? dist - radius * 2.f : 1.f,
+                  dist + radius * 4.f);
+    iconCamera_->SetFrustum(&camCenter, &clip, &focusV, &zplane);
+    device_->SetDrawTransform(iconCamera_);
+
+    // Same frame flow as renderFrame, into the caller's FBO, transparent
+    // background. The next renderFrame retargets the device at the widget
+    // FBO automatically.
+    resetDeviceStateCache(device_);
+    if (width != device_->GetSizeX() || height != device_->GetSizeY()) {
+        device_->ChangeSize(width, height, RENDERDEVICE_MODE_WINDOW);
+    }
+    setDeviceTarget(device_, framebuffer, static_cast<unsigned>(width),
+                    static_cast<unsigned>(height));
+    device_->Fill(0, 0, 0, 0);
+    device_->BeginScene();
+    iconScene_->Draw(iconCamera_);
+    device_->EndScene();
+    device_->Flush(false);
+
+    node->Release();
+    return true;
 }
 
 bool TerrainGpuView::pickCell(double sxPx, double syPx, int& cellX, int& cellY) const {

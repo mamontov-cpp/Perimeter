@@ -248,6 +248,15 @@ void MinimapWidget::setViewPolygon(const QPolygonF &poly)
     update();
 }
 
+void MinimapWidget::setBuildingPoints(const QVector<QPointF> &buildings)
+{
+    if (buildings_ == buildings) {
+        return;
+    }
+    buildings_ = buildings;
+    update();
+}
+
 // ---------------------------------------------------------------------------
 // Geometry / coordinate conversion
 // ---------------------------------------------------------------------------
@@ -418,6 +427,18 @@ void MinimapWidget::paintGL()
         painter.setPen(QPen(QColor(255, 255, 0), 2));
         painter.setBrush(QColor(255, 255, 0, 36));
         painter.drawPolygon(widgetPoly);
+        painter.setClipping(false);
+    }
+
+    // Pre-placed battle-map buildings — white dots like the game's radar.
+    if (!buildings_.isEmpty() && !mapSize_.isEmpty()) {
+        painter.setClipRect(mapArea_);
+        for (const QPointF &b : buildings_) {
+            const QPointF p = mapCellToWidget(b.x(), b.y());
+            painter.setPen(QPen(QColor(40, 40, 40, 180), 1));
+            painter.setBrush(QColor(255, 255, 255));
+            painter.drawEllipse(p, 2.0, 2.0);
+        }
         painter.setClipping(false);
     }
 }

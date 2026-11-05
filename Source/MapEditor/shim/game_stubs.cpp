@@ -87,70 +87,18 @@ struct HWND__;
 HWND__* hWndVisGeneric = nullptr;
 
 // ---------------------------------------------------------------------------
-// PluginMAX mesh storage — cMeshFile/cMeshScene/sSubTexmap symbols referenced
-// by ObjLibrary::LoadM3D. The editor never loads 3D models, so the PluginMAX
-// link unit is not pulled in and these entry points are stubbed out.
-// Only the symbols ObjLibrary references are declared, with the same public
-// access/signatures so the mangled names match; the stubs never touch
-// members (the real objects only exist in ObjLibrary.cpp dead code) and the
-// parse entry points just report an error.
+// PluginMAX mesh storage — M3D loading is real in the editor now: the
+// PluginMAX sources (cMeshFile/cMeshScene and the object model) are compiled
+// into MapEditorRender (see MapEditor CMakeLists, MAP_EDITOR_PLUGINMAX_SRCS).
+// What stays stubbed here is only the zip layer underneath ResourceFileRead:
+// ZIPIsOpen always reports "no zip mounted", so the editor's ZIPStream reads
+// plain files from the content root. MESHFILE_ERROR was the historical stub
+// constant; nothing references it anymore.
 // ---------------------------------------------------------------------------
-
-// From PluginMAX/Inc/meshfile.h (not included: its BaseClass.h chain needs
-// more game context than the stub TU provides). Stable format constant.
-#ifndef MESHFILE_ERROR
-#define MESHFILE_ERROR 0x00000005
-#endif
-
-class cMeshFile;
-
-struct sSubTexmap
-{
-    void Release();
-};
-
-class cMeshScene
-{
-public:
-    int Read(cMeshFile& f);
-};
-
-class cMeshFile
-{
-public:
-    cMeshFile();
-    ~cMeshFile();
-    int OpenRead(void* buf, int size);
-    void Close();
-    int ReadHeaderFile();
-};
 
 bool ZIPIsOpen()
 {
     return false;
-}
-
-cMeshFile::cMeshFile() {}
-
-cMeshFile::~cMeshFile() {}
-
-int cMeshFile::OpenRead(void* /*buf*/, int /*size*/)
-{
-    return MESHFILE_ERROR;
-}
-
-void cMeshFile::Close() {}
-
-int cMeshFile::ReadHeaderFile()
-{
-    return MESHFILE_ERROR;
-}
-
-void sSubTexmap::Release() {}
-
-int cMeshScene::Read(cMeshFile& /*f*/)
-{
-    return MESHFILE_ERROR;
 }
 
 // global_time — SyncroTimer. Editor doesn't use timers; return zero.

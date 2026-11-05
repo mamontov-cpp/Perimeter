@@ -29,6 +29,7 @@ class ViewportWidget;
 class MinimapWidget;
 class PalettePanel;
 class BattleMapPanel;
+class BuildingsPanel;
 class BrushTool;
 struct View3DCamera;
 }
@@ -216,6 +217,20 @@ private:
     void refreshBattleMapUI();
     bool ensureWorldForBattleMap();
     void syncSpawnOverlay();
+    /// Pre-placed buildings (SavePrm.nobodysBuildings): the dock panel, the
+    /// viewport/minimap overlays, and the three panel tools (place/select/
+    /// delete) wired to the SpgFile mutation API.
+    void buildBuildingsDock();
+    /// Bake the BuildingsPanel button icons from the game M3D models through
+    /// the viewport's GPU scene (once; retries while the GPU view is absent).
+    void bakeBuildingIconsIfPossible();    void reloadPlacedBuildings();
+    void syncBuildingsOverlay();
+    void onBuildingPlace(double mapX, double mapY);
+    void onBuildingSelect(double mapX, double mapY);
+    void onBuildingDelete(double mapX, double mapY);
+    void onBuildingCursorMoved(int mapX, int mapY);
+    /// True when a building of `radius` at (x, y) intersects an existing one.
+    bool buildingPlacementBlocked(double mapX, double mapY, double radius) const;
     /// Bring spawn groups resting above the world's zero layer down to it
     /// (SpgFile::restPlayersOnZeroLayer) so the frames start landed in the
     /// game. No-op unless the map's world is loaded.
@@ -527,6 +542,12 @@ private:
     QString battleMapPath_;
     QDockWidget *battleMapDock_ = nullptr;
     MapEditor::BattleMapPanel *battleMapPanel_ = nullptr;
+    /// Pre-placed buildings panel + state (mirror of SpgFile::buildings()).
+    QDockWidget *buildingsDock_ = nullptr;
+    MapEditor::BuildingsPanel *buildingsPanel_ = nullptr;
+    bool buildingIconsBaked_ = false;
+    std::vector<MapEditor::SpgFile::PlacedBuilding> placedBuildings_;
+    int selectedBuildingRow_ = -1;
     QAction *actOpenBattleMap_ = nullptr;
     QAction *actSaveBattleMap_ = nullptr;
     QAction *actSaveBattleMapAs_ = nullptr;

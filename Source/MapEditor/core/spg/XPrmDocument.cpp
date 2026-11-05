@@ -345,6 +345,18 @@ XPrmObject::Field& XPrmObject::addField(Field field)
     return fields.back();
 }
 
+XPrmObject::Field& XPrmObject::appendElement(Field field)
+{
+    if (!fields.empty() && fields.back().terminator == 0) {
+        fields.back().terminator = ',';
+        fields.back().edited = true; // raw has no separator — regenerate
+    }
+    field.terminator = 0; // the newcomer is the last element
+    Field& added = addField(std::move(field));
+    added.terminator = 0; // addField would default an anonymous field to ','
+    return added;
+}
+
 void XPrmObject::removeField(const std::string& name)
 {
     for (std::size_t i = 0; i < fields.size(); ++i) {

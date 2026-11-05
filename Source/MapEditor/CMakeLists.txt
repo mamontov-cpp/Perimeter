@@ -196,8 +196,34 @@ IF(OPTION_SOKOL)
     )
     LIST(TRANSFORM MAP_EDITOR_RENDER_GAME_SRCS PREPEND "${PROJECT_SOURCE_DIR}/Source/Render/")
 
+    # PluginMAX — the real M3D mesh-file parser (cMeshFile/cMeshScene and the
+    # object model LoadM3D builds). Same list as the PluginMAX target minus
+    # ZIPStream.cpp/zip_resource.cpp: no Src file touches ZIP, and the
+    # editor's file-based ZIPStream stub (shim/game_stubs.cpp) stays the
+    # provider for ResourceFileRead's plain-file reads.
+    SET(MAP_EDITOR_PLUGINMAX_SRCS
+            "${PROJECT_SOURCE_DIR}/Source/PluginMAX/SceneMesh.cpp"
+            "${PROJECT_SOURCE_DIR}/Source/PluginMAX/Src/AnimLight.cpp"
+            "${PROJECT_SOURCE_DIR}/Source/PluginMAX/Src/AnimationMaterial.cpp"
+            "${PROJECT_SOURCE_DIR}/Source/PluginMAX/Src/AnimationMesh.cpp"
+            "${PROJECT_SOURCE_DIR}/Source/PluginMAX/Src/ChannelAnimation.cpp"
+            "${PROJECT_SOURCE_DIR}/Source/PluginMAX/Src/ChannelMapping.cpp"
+            "${PROJECT_SOURCE_DIR}/Source/PluginMAX/Src/DefMeshFile.cpp"
+            "${PROJECT_SOURCE_DIR}/Source/PluginMAX/Src/HelperObject.cpp"
+            "${PROJECT_SOURCE_DIR}/Source/PluginMAX/Src/LodObject.cpp"
+            "${PROJECT_SOURCE_DIR}/Source/PluginMAX/Src/MaterialObject.cpp"
+            "${PROJECT_SOURCE_DIR}/Source/PluginMAX/Src/MeshFile.cpp"
+            "${PROJECT_SOURCE_DIR}/Source/PluginMAX/Src/NodeObject.cpp"
+            "${PROJECT_SOURCE_DIR}/Source/PluginMAX/Src/ObjectCamera.cpp"
+            "${PROJECT_SOURCE_DIR}/Source/PluginMAX/Src/ObjectLight.cpp"
+            "${PROJECT_SOURCE_DIR}/Source/PluginMAX/Src/ObjectMesh.cpp"
+            "${PROJECT_SOURCE_DIR}/Source/PluginMAX/Src/SceneLogic.cpp"
+            "${PROJECT_SOURCE_DIR}/Source/PluginMAX/Src/StreamBuffer.cpp"
+    )
+
     ADD_LIBRARY(MapEditorRender STATIC
             ${MAP_EDITOR_RENDER_GAME_SRCS}
+            ${MAP_EDITOR_PLUGINMAX_SRCS}
             "${MAP_EDITOR_IMGUI_SRC}/imgui.cpp"
             "${MAP_EDITOR_IMGUI_SRC}/imgui_draw.cpp"
             "${MAP_EDITOR_IMGUI_SRC}/imgui_tables.cpp"
@@ -206,6 +232,7 @@ IF(OPTION_SOKOL)
             render/EditorSokolDevice.cpp
             render/EditorTerraInterface.cpp
             render/TerrainGpuView.cpp
+            render/BuildingModels.cpp
     )
 
     IF(MSVC)
@@ -231,9 +258,10 @@ IF(OPTION_SOKOL)
             "${PROJECT_SOURCE_DIR}/Source/Render/tracker"
             "${PROJECT_SOURCE_DIR}/Source/Render/tilemap"
             "${PROJECT_SOURCE_DIR}/Source/Render/sokol"
-            "${PROJECT_SOURCE_DIR}/Source/Util"
-            "${PROJECT_SOURCE_DIR}/Source/PluginMAX/Inc"
             "${PROJECT_SOURCE_DIR}/Source/PluginMAX"
+            "${PROJECT_SOURCE_DIR}/Source/PluginMAX/Inc"
+            "${PROJECT_SOURCE_DIR}/Source/PluginMAX/Src"
+            "${PROJECT_SOURCE_DIR}/Source/Util"
             "${PROJECT_SOURCE_DIR}/Source/XTool"
             "${PROJECT_SOURCE_DIR}/Source/Terra"
             "${CMAKE_CURRENT_SOURCE_DIR}/../Terra"
@@ -314,6 +342,8 @@ SET(MAP_EDITOR_APP_SRCS
         ui/WorldSettingsDialog.h
         ui/NewWorldWizard.cpp
         ui/NewWorldWizard.h
+        ui/BuildingsPanel.cpp
+        ui/BuildingsPanel.h
         ui/ScriptEditorDialog.cpp
         ui/ScriptEditorDialog.h
         ui/RunScriptDialog.cpp

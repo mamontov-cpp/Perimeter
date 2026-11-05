@@ -3,6 +3,8 @@
 #include "SpgTextCoding.h"
 #include "XPrmDocument.h"
 
+#include "BuildingCatalog.h"
+
 #include <functional>
 #include <string>
 #include <vector>
@@ -167,6 +169,49 @@ public:
 
     /// manualData.cameras (nullptr when absent) — used by validation.
     XPrmObject* camerasArray();
+
+    // -----------------------------------------------------------------------
+    // Pre-placed world buildings — SavePrm.nobodysBuildings (the "neutral
+    // buildings" the game loads via terPlayer::loadUnit, Source/Game/
+    // Player.cpp:998). Serialized as typed "struct SaveUnitBuildingData" /
+    // "struct SaveUnitCommandCenterData" (Command Center) /
+    // "struct SaveUnitProtectorData" (Core) array elements — see the shipped
+    // mission maps (e.g. Missions/02PYRAMIDA.spg). The panel edits only the
+    // geometry (position, rotation), the HP (damageMolecula) and the
+    // building set; every other field of a placed building is written with
+    // the game's own defaults for a constructed building.
+    // -----------------------------------------------------------------------
+
+    struct PlacedBuilding
+    {
+        std::size_t index = 0; ///< element index in nobodysBuildings.objects.
+        int unitId = 0;
+        int attributeId = -1;  ///< terUnitAttributeID (see BuildingCatalog).
+        double x = 0;
+        double y = 0;
+        double z = 0;
+        double angleDeg = 0;   ///< rotation around Z.
+        int hp = 100;          ///< percent (damageMolecula).
+    };
+
+    /// Current buildings in file order (skipped: entries whose attributeID
+    /// is not in the placeable catalog — they are preserved untouched).
+    std::vector<PlacedBuilding> buildings() const;
+
+    /// Appends a building entry. `unitId` must be unique in the document
+    /// (see maxUnitId()). z is stored as given (the caller adds the
+    /// building's catalog zOffset to the zero layer height).
+    bool addBuilding(const PlacedBuilding& building);
+    /// Moves/rotates an existing building.
+    bool setBuildingPose(std::size_t index, double x, double y,
+                         double angleDeg);
+    /// Rewrites the damageMolecula for an existing building.
+    bool setBuildingHp(std::size_t index, int hp);
+    /// Removes an existing building.
+    bool removeBuilding(std::size_t index);
+    /// Maximum unitID anywhere under SavePrm (frames, squads, slots,
+    /// buildings) — new units take maxUnitId() + 1.
+    int maxUnitId() const;
 
 private:
     XPrmObject* playersDataArray();

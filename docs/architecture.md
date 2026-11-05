@@ -1083,6 +1083,8 @@ Headless-тесты `map_editor_tests` (`tests/`), по файлу на моду
 | 97 | `ModWorldsTests` | мир под `Mods/TestMod/RESOURCE/Worlds` сканируется как `TestMod / <мир>`; одноимённый мод/база грузят СВОИ копии (key-matched wTable, различие по hZeroPlast); `loadWorldByName` предпочитает базу; сейв мода идёт в папку мода |
 | 98 | `GmpDiffTests` | тоггл режима различий (база vs база+diff, захват штампа, модель переживает OFF); .gmp по игровому формату (заголовок/флаги/абсолютные блока); загрузка рукотворного .gmp в обоих порядках тоггла; undo стирает модель; round-trip |
 | 99 | `ScriptedBrushTests` | setGeoPalette/setDamPalette пишут Geo/Dam-палитры из JS (байты vMap.GeoPal/DamPal + paletteRgb + хук перерисовки UI), валидация индекса 0..255 и объекта {r,g,b}; ошибки compile/pcall несут локацию (brush.js:LINE) через describeError (name/message/fileName/lineNumber); runEditorScript (окно Tools → Run Script) — тот же API, getCurrentPos = переданный центр, один шаг Undo; штамп scripted brush разделяет API |
+| 100 | `BuildingsTests` | предустановленные здания (nobodysBuildings): разбор штатного 02PYRAMIDA.spg (11 зданий: атрибут/позиция/угол/HP), байт-точность нетронутого round-trip, add (typed-структура, разделитель прежнего хвоста, count, уникальный unitID) → pose/HP-edit → remove через save→re-parse; грамматика игрового читателя в сыром тексте сохранения (хвост массива без разделителя, elementsDead без «;» перед «}», count) |
+| 101 | `UnitModelCatalogTests` | каталог M3D-моделей зданий: у 43 размещаемых зданий есть строка с совпадающим id, путь в `RESOURCE\MODELS\MAIN\`, файл существует в game dir, масштабы (boundRadius/boundScale) валидны |
 
 Тесты пишут только во временный content-root (`%TEMP%/map_editor_roundtrip`),
 исходный мир не изменяется. `SaveWorldTests` строит изолированный content-root
@@ -1509,3 +1511,111 @@ undo/redo байт-в-байт, Lower с 0 стирает форму до баз
 штампа; байтовая сверка сохранённого .gmp с игровым форматом; загрузка
 рукотворного .gmp с абсолютными значениями (в обоих порядках тоггла);
 undo стирает модель (пустой .gmp = заголовок + флаги); round-trip.
+
+## 5.29. Предустановленные здания боевых карт — nobodysBuildings
+
+Панель **Buildings** (док, табом к панели Battle Map; активна только при
+загруженной/созданной боевой карте) правит нейтральные здания мира —
+`SavePrm.nobodysBuildings` («Нейтральные здания», грузит `terPlayer::
+loadUnit`, Player.cpp:998). Место размещения: террейн не трогается, здания
+читаются/пишутся из `.spg`.
+
+- **Каталог** (`core/BuildingCatalog.h`) — 43 размещаемых здания: ID 0..42
+  (`UNIT_ATTRIBUTE_CORE`..`UNIT_ATTRIBUTE_GUN_FILTH_NAVIGATOR`); FRAME (49),
+  SCUM_SPOT* (43..46 вне диапазона? нет — споты 43..46, BLACK_HOLE 47)
+  исключены по ТЗ. Табличные данные игры, недоступные без M3D: `zOffset`
+  (сейв-z = zeroLayer + offset, измерено по штатным миссиям: игра при
+  загрузке всё равно пересаживает z = hZeroPlast − boxMin().z,
+  `terBuilding::setPose`), `radius` (аппроксимация следа для правила
+  «без пересечений») и `molecula` (максимум элементов повреждений из
+  UnitAttribute.prm — для маппинга HP%).
+- **SpgFile API**: `buildings()` (парсинг typed-структур
+  `SaveUnitBuildingData` / `SaveUnitCommandCenterData` (Command Center) /
+  `SaveUnitProtectorData` (Core); HP% из damageMolecula, угол из
+  кватерниона вокруг Z), `addBuilding()` (unitID = maxUnitId()+1 по всему
+  SavePrm; полный набор полей конструированного здания со статусами
+  CONSTRUCTED|PLUGGED_IN(|ENABLED|POWERED); предыдущий последний элемент
+  массива получает разделитель «,», count обновляется), `setBuildingPose`,
+  `setBuildingHp`, `removeBuilding`. Нетронутые байты — байт-в-байт.
+  Разделители — по грамматике читателя игры (`XPrmIArchive`,
+  Source/Util/XPrmArchive.h): элементы массива идут через «,», ПОСЛЕДНИЙ
+  элемент — без разделителя (висячая «,»/«;» перед «}» читается как ещё
+  один элемент → abort); добавление — только через
+  `XPrmObject::appendElement` (сам ставит «,» прежнему хвосту и голый хвост
+  новичку), удаление хвоста обнуляет разделитель нового хвоста. Баг этого
+  правила в первой реализации ловили по краху Skirmish при загрузке
+  сохранённого редактора .spg.
+- **Инструменты** (три, тоглы панели; клик во вьюпорте, press-only): Place
+  (клик → здание на zeroLayer+zOffset под углом/HP спинов; отказ при
+  пересечении следов; превью-ghost зелёный/красный по cursorMapPosition),
+  Select (клик → ближайшее здание в радиусе следа; спины панели правят
+  угол/HP выбранного), Delete (клик → удаление). Undo истории здания не
+  касаются (как и спавны).
+- **Рендер**: 2D и миникарта — белые точки как радар игры; 3D — настоящие
+  M3D-модели через BuildingModels (§5.30), диски-призраки остаются фолбэком
+  (CPU-рендер и слоты, чья модель не загрузилась).
+- **Иконки**: кнопки панели — с запечёнными иконками самих моделей зданий
+  (§5.30), текст — до первой successful bake / без GPU-вьюпорта.
+
+**Проверка.** Тест 100 (`BuildingsTests`): разбор штатного 02PYRAMIDA.spg
+(11 зданий, позиции/угол/HP), байт-точность нетронутого round-trip, add →
+pose/HP-edit → remove через save→re-parse.
+
+## 5.30. M3D-пайплайн зданий — BuildingModels + UnitModelCatalog
+
+Реальный рендер M3D-моделей игры во вьюпорте редактора и панельные иконки
+кнопок зданий. Ключевой момент: весь стек моделей уже скомпилирован в
+MapEditorRender (§5.23 компилит `ObjLibrary/MeshBank/ObjNode/TexLibrary/
+FileImage` как в игре), а сцена вьюпорта — настоящая `cVisGeneric`+`cScene`,
+поэтому `cScene::CreateObject(name, texturePath)` (тот же вызов, что в игре
+через `createObject` → `terScene->CreateObject`, UnitAttribute.cpp:392)
+загружает M3D и аттачит его — существующий `scene_->Draw(camera_)` рендерит
+модель с текстурами и светом без единой правки игрового кода.
+
+- **PluginMAX** — реальный парсер M3D (cMeshFile/cMeshScene + объектная
+  модель) скомпилирован в MapEditorRender тем же списком, что и либа
+  PluginMAX, минус ZIPStream.cpp/zip_resource.cpp (ни один Src-файл ZIP не
+  трогает; `ResourceFileRead` ObjLibrary читает через файловый стаб ZIPStream
+  из shim/game_stubs.cpp, `ZIPIsOpen` всегда false). Исторические стабы
+  cMeshFile/cMeshScene/sSubTexmap в game_stubs.cpp удалены — без них LoadM3D
+  падал в VisError («Cannot read file» → abort) при первой попытке создания
+  модели.
+- **UnitModelCatalog** (`core/UnitModelCatalog.h`) — сгенерированная из
+  `Source/Scripts/UnitAttribute.prm` таблица «атрибут → ModelNameArray[0]
+  (построенная модель), BoundRadius, BoundScale». Игра компилирует атрибуты
+  в exe (`scripts_export::unitAttributeDataTable`) и не читает .prm ниоткуда,
+  поэтому редактор тоже берёт их статической таблицей (для всех модов
+  одинаково). Масштаб повторяет `GeometryAttribute::initGeometryAttribute`:
+  `BoundRadius > 0 ? BoundRadius / nativeBoundRadius : BoundScale`
+  (debuScales — чит-дебаг, по умолчанию 1).
+- **BuildingModels** (`render/BuildingModels.{h,cpp}`) — слой на сцене
+  вьюпорта: directional light по рецепту игры (`Runtime.cpp`: направление
+  (-234,0,-180), ambient приподнят до 0.3 — иначе теневые грани чёрные),
+  пул инстансов `cObjectNodeRoot` (index-aligned со списком оверлея; рост —
+  CreateObject, уменьшение — `Release()`, как в игре), превью-инстанс Place
+  (скрытие через `ATTRUNKOBJ_IGNORE`). Поза: `z = hZeroPlast − boxMin.z·scale`
+  (`terBuilding::setPose`; `boxMin` из `GlobalBound`, считается при загрузке
+  в `cObjLibrary::LoadM3D` → `CalcBorder`, масштаб применяется через
+  `SetScale`+`SetPosition`+`Update`), x/y — как есть (1 клетка == 1 мировая
+  единица). Текстуры — фракционный путь по умолчанию
+  `Resource\Models\Main\EXODUS\` (`GetBelligerentTexturePath`, дефолтная
+  фракция), здания ничьи.
+- **TerrainGpuView**: `syncBuildingModels()`/`setBuildingModelPreview()`
+  (zeroplast из vMap.hZeroPlast), `renderModelIcon(fbo, w, h, attrId)` —
+  запекание иконки в чужой FBO: ленивая отдельная icon-сцена (свой light +
+  камера по рецепту BGScene: сферическая позиция, фрустум с focus =
+  dist/2.6r), рендер через тот же device (`setDeviceTarget` на FBO,
+  прозрачный фон). Qt-сторона (`ViewportWidget::bakeBuildingIcon`) даёт
+  `QOpenGLFramebufferObject`, делает контекст current и заворачивает readback
+  в `QIcon` (флаг латчится по первому успеху, до GPU-вьюпорта кнопки
+  текстовые и запекаются позже).
+- **ViewportWidget**: синхронизация поз перед `renderFrame` (оба списка —
+  overlay и модели — index-aligned); ghost-диски в `drawBuildingPoints3D`
+  рисуются только для слотов без модели (CPU-фолбэк/незагрузившийся M3D),
+  превью-круг валидности остаётся всегда. 2D и миникарта без изменений
+  (белые точки — как радар игры).
+
+**Проверка.** Тест 101 (`UnitModelCatalogTests`): у всех 43 зданий есть
+строка каталога с совпадающим id, путь в `RESOURCE\MODELS\MAIN\`, файл
+модели существует в game dir, масштабы положительные. Сам рендер GL-зависим
+и тестируется вручную.

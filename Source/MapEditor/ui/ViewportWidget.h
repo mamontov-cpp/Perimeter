@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QColor>
+#include <QIcon>
 #include <QOpenGLWidget>
 #include <QPoint>
 #include <QPointF>
@@ -106,6 +107,20 @@ struct SpawnPoint
     int mapX = 0;
     int mapY = 0;
     QColor color{Qt::red};
+};
+
+/// A pre-placed neutral building from SavePrm.nobodysBuildings (the panel
+/// owns the data; the widget only renders it — white dots like the game's
+/// radar in 2D, terrain-conforming ghosts in 3D).
+struct BuildingPoint
+{
+    int attributeId = -1;
+    double mapX = 0; ///< world units == map cells.
+    double mapY = 0;
+    double angleDeg = 0;
+    int hp = 100;
+    double radiusCells = 10; ///< footprint approximation (intersection test).
+    bool selected = false;
 };
 
 /// Shape of the brush stamp drawn under the cursor.
@@ -370,6 +385,37 @@ public:
     void setSpawnPoints(const std::vector<SpawnPoint> &spawns);
     const std::vector<SpawnPoint> &spawnPoints() const { return spawns_; }
 
+    /// Pre-placed battle-map buildings overlay (2D white dots / 3D ghosts).
+    void setBuildingPoints(const std::vector<BuildingPoint> &buildings);
+    const std::vector<BuildingPoint> &buildingPoints() const
+    {
+        return buildings_;
+    }
+    /// The buildings panel tool active in the viewport (None restores the
+    /// normal brush/pick routing).
+    enum class BuildingTool
+    {
+        None,
+        Place,  ///< click emits buildingPlaceRequested(x, y).
+        Select, ///< click emits buildingSelectRequested(x, y).
+        Delete, ///< click emits buildingDeleteRequested(x, y).
+    };
+    void setBuildingTool(BuildingTool tool) { buildingTool_ = tool; }
+    BuildingTool buildingTool() const { return buildingTool_; }
+    /// Placement preview footprint at the cursor: attributeId - 1 hides it,
+    /// `valid` paints it green/red like the in-game placement ghost.
+    void setBuildingPreview(int attributeId, double radiusCells,
+                            bool valid);
+    /// Index of the building under the map cell (-1 when none) — the select
+    /// and delete tools use it for click targeting.
+    int buildingIndexAtCell(double mapX, double mapY) const;
+
+    /// Bake a building model (UnitModelCatalog attributeId) into an icon
+    /// through the GPU view's offscreen scene. Returns a null icon when the
+    /// GPU view is inactive or the model cannot be loaded — callers keep
+    /// the text button then. Makes the GL context current itself.
+    QIcon bakeBuildingIcon(int attributeId, int size = 64);
+
     /// Map cell under the cursor (-1,-1 when outside the map).
     QPoint cursorCell() const { return cursorCell_; }
 
@@ -435,6 +481,10 @@ signals:
     /// MainWindow performs the move (terrain z-correction, undo recording);
     /// the viewport itself never edits the world or the .spg in this mode.
     void spawnPlacementRequested(int mapX, int mapY);
+    /// The buildings-panel tools clicked a map cell (world units == cells).
+    void buildingPlaceRequested(double mapX, double mapY);
+    void buildingSelectRequested(double mapX, double mapY);
+    void buildingDeleteRequested(double mapX, double mapY);
     /// Emitted once after the first successful GPU terrain view init (or
     /// after a reload that drops it back to the CPU path). MainWindow
     /// hides the freeze-dam action (which only makes sense for the CPU path)
@@ -505,6 +555,10 @@ private:
     /// cells (GPU: through the real camera at the terrain height; CPU
     /// fallback: the affine viewV2D basis around the look-at centre).
     void drawSpawnPoints3D(QPainter &painter);
+    /// Pre-placed battle-map buildings: white dots (2D, like the game's
+    /// radar) / ghost discs (3D), plus the placement footprint preview.
+    void drawBuildingPoints(QPainter &painter);
+    void drawBuildingPoints3D(QPainter &painter);
     void drawHud(QPainter &painter);
     QRect visibleCellRange() const;
 
@@ -707,6 +761,13 @@ private:
     QPolygonF lastEmittedViewPolygon_;
 
     std::vector<SpawnPoint> spawns_;
+    /// Pre-placed battle-map buildings (2D white dots / 3D ghosts).
+    std::vector<BuildingPoint> buildings_;
+    /// Buildings-panel tool + placement preview state.
+    BuildingTool buildingTool_ = BuildingTool::None;
+    int buildingPreviewAttr_ = -1;
+    double buildingPreviewRadius_ = 0;
+    bool buildingPreviewValid_ = true;
 
     /// Default grid step in map cells: 1 << kmGrid (VMAP.h:89).
     static constexpr int kFineGridCell = 4;
