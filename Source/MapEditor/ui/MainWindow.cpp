@@ -2133,7 +2133,9 @@ void MainWindow::buildViewToolbar()
     };
     connect(gridStepWSpin_, &QSpinBox::valueChanged, this, pushGridStep);
     connect(gridStepHSpin_, &QSpinBox::valueChanged, this, pushGridStep);
+    bar->addWidget(new QLabel(tr("Grid W:"), bar));
     bar->addWidget(gridStepWSpin_);
+    bar->addWidget(new QLabel(tr("Grid H:"), bar));
     bar->addWidget(gridStepHSpin_);
     bar->addAction(actZoomToFit_);
     bar->addSeparator();
@@ -2165,6 +2167,7 @@ void MainWindow::buildViewToolbar()
                     viewport_->setRotationDeg(value);
                 }
             });
+    bar->addWidget(new QLabel(tr("Turn:"), bar));
     bar->addWidget(camRotationSpin_);
     bar->addAction(actTiltUp_);
     bar->addAction(actTiltDown_);
@@ -2235,6 +2238,7 @@ void MainWindow::buildSculptToolbar()
                 params.sculptEffect = value;
                 brushTool_->setParams(params);
             });
+    bar->addWidget(new QLabel(tr("Fraction:"), bar));
     bar->addWidget(sculptEffectSpin_);
 
     // The Gaussian-blur convolution radius: strictly less than the stamp
@@ -2255,6 +2259,7 @@ void MainWindow::buildSculptToolbar()
         brushTool_->setParams(params);
         syncBrushControls();
     });
+    bar->addWidget(new QLabel(tr("Blur:"), bar));
     bar->addWidget(blurRadiusSpin_);
 
     // --- 3D shape brushes --------------------------------------------------
@@ -2285,6 +2290,7 @@ void MainWindow::buildSculptToolbar()
         brushTool_->setParams(params);
         syncBrushControls();
     });
+    bar->addWidget(new QLabel(tr("Height:"), bar));
     bar->addWidget(shapeHeightSpin_);
 
     // Upper part offset: the top circle/polygon centre shift (cells) — tilts
@@ -2306,6 +2312,7 @@ void MainWindow::buildSculptToolbar()
                 brushTool_->setParams(params);
                 syncBrushControls();
             });
+    bar->addWidget(new QLabel(tr("Top X:"), bar));
     bar->addWidget(shapeTopOffsetXSpin_);
 
     shapeTopOffsetYSpin_ = new QSpinBox(bar);
@@ -2324,6 +2331,7 @@ void MainWindow::buildSculptToolbar()
                 brushTool_->setParams(params);
                 syncBrushControls();
             });
+    bar->addWidget(new QLabel(tr("Top Y:"), bar));
     bar->addWidget(shapeTopOffsetYSpin_);
 
     // Upper part radius: the truncated cone's top radius, or the torus'
@@ -2343,6 +2351,7 @@ void MainWindow::buildSculptToolbar()
                 brushTool_->setParams(params);
                 syncBrushControls();
             });
+    bar->addWidget(new QLabel(tr("Top R:"), bar));
     bar->addWidget(shapeTopRadiusSpin_);
 
     // Upper part side length: the truncated pyramid's top edge length (the
@@ -2362,6 +2371,7 @@ void MainWindow::buildSculptToolbar()
                 brushTool_->setParams(params);
                 syncBrushControls();
             });
+    bar->addWidget(new QLabel(tr("Top side:"), bar));
     bar->addWidget(shapeTopSideSpin_);
 
     // Type buttons are created in createBrushActions() — mirror the rest of
@@ -2413,6 +2423,7 @@ void MainWindow::buildModifierToolbar()
             gateHeightMenuSpin_->blockSignals(false);
         }
     });
+    bar->addWidget(new QLabel(tr("Gate:"), bar));
     bar->addWidget(gateHeightSpin_);
 
     updateActionStates();
@@ -2545,6 +2556,7 @@ void MainWindow::buildModelToolbar()
         brushTool_->setParams(params);
         syncBrushControls();
     });
+    bar->addWidget(new QLabel(tr("Height:"), bar));
     bar->addWidget(modelHeightSpin_);
 
     // X/Y scales: the placement rectangle as a fraction of the model size.
@@ -2564,6 +2576,7 @@ void MainWindow::buildModelToolbar()
                 brushTool_->setParams(params);
                 syncBrushControls();
             });
+    bar->addWidget(new QLabel(tr("Scale X:"), bar));
     bar->addWidget(modelScaleXSpin_);
 
     modelScaleYSpin_ = new QDoubleSpinBox(bar);
@@ -2582,6 +2595,7 @@ void MainWindow::buildModelToolbar()
                 brushTool_->setParams(params);
                 syncBrushControls();
             });
+    bar->addWidget(new QLabel(tr("Scale Y:"), bar));
     bar->addWidget(modelScaleYSpin_);
 
     updateActionStates();
@@ -3317,6 +3331,7 @@ void MainWindow::buildBrushToolbar()
         brushTool_->setParams(params);
         syncBrushControls();
     });
+    bar->addWidget(new QLabel(tr("Radius:"), bar));
     bar->addWidget(brushRadiusSpin_);
 
     // Stroke width in cells for the unfilled shapes (CircleOutline,
@@ -3336,6 +3351,7 @@ void MainWindow::buildBrushToolbar()
         brushTool_->setParams(params);
         syncBrushControls();
     });
+    bar->addWidget(new QLabel(tr("Width:"), bar));
     bar->addWidget(brushThicknessSpin_);
 
     // Regular-polygon stamp params (FilledPolygon / PolygonOutline): the
@@ -3356,6 +3372,7 @@ void MainWindow::buildBrushToolbar()
         brushTool_->setParams(params);
         syncBrushControls();
     });
+    bar->addWidget(new QLabel(tr("Sides:"), bar));
     bar->addWidget(polygonSidesSpin_);
 
     polygonAngleSpin_ = new QDoubleSpinBox(bar);
@@ -3376,6 +3393,7 @@ void MainWindow::buildBrushToolbar()
                 brushTool_->setParams(params);
                 syncBrushControls();
             });
+    bar->addWidget(new QLabel(tr("Angle:"), bar));
     bar->addWidget(polygonAngleSpin_);
     bar->addSeparator();
 
@@ -3403,6 +3421,7 @@ void MainWindow::buildBrushToolbar()
         }
         brushTool_->setParams(params);
     });
+    bar->addWidget(new QLabel(tr("Level:"), bar));
     bar->addWidget(brushLevelSpin_);
 
     bar->addSeparator();
@@ -3426,6 +3445,7 @@ void MainWindow::buildBrushToolbar()
         brushTool_->setParams(params);
         syncColorControls();
     });
+    bar->addWidget(new QLabel(tr("Color:"), bar));
     bar->addWidget(brushColorIndexSpin_);
 
     // Color swatch: a label with a colored rectangle showing the current
@@ -3491,6 +3511,7 @@ void MainWindow::buildBrushToolbar()
         }
         syncBrushControls();
     });
+    bar->addWidget(new QLabel(tr("Mask:"), bar));
     bar->addWidget(brushMaskScaleSpin_);
 
     syncBrushControls();
