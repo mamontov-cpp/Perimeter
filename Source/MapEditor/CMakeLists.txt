@@ -343,6 +343,8 @@ SET(MAP_EDITOR_APP_SRCS
         ui/NewWorldWizard.cpp
         ui/NewWorldWizard.h
         ui/BuildingsPanel.cpp
+        ui/ScumSpotsPanel.cpp
+        ui/MainWindowScumSpots.cpp
         ui/BuildingsPanel.h
         ui/ScriptEditorDialog.cpp
         ui/ScriptEditorDialog.h

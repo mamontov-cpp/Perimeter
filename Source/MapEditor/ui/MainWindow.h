@@ -30,6 +30,7 @@ class MinimapWidget;
 class PalettePanel;
 class BattleMapPanel;
 class BuildingsPanel;
+class ScumSpotsPanel;
 class BrushTool;
 struct View3DCamera;
 }
@@ -223,7 +224,21 @@ private:
     void buildBuildingsDock();
     /// Bake the BuildingsPanel button icons from the game M3D models through
     /// the viewport's GPU scene (once; retries while the GPU view is absent).
-    void bakeBuildingIconsIfPossible();    void reloadPlacedBuildings();
+    void bakeBuildingIconsIfPossible();
+    /// Scum nests dock + handlers (MainWindowScumSpots.cpp).
+    void buildScumSpotsDock();
+    void bakeScumIconsIfPossible();
+    void reloadScumSpots();
+    void syncScumOverlay();
+    void onScumPlace(double mapX, double mapY);
+    void onScumSelect(double mapX, double mapY);
+    void onScumDelete(double mapX, double mapY);
+    void onScumCursorMoved(int mapX, int mapY);
+    /// Registers/unregisters the <world>.scr chain in every player's
+    /// TriggerChainNames (before a save).
+    void syncScumTriggerArtifacts();
+    /// Writes/deletes Scripts/Triggers/<world>.scr after a successful save.
+    void flushScumTriggerFile();    void reloadPlacedBuildings();
     void syncBuildingsOverlay();
     void onBuildingPlace(double mapX, double mapY);
     void onBuildingSelect(double mapX, double mapY);
@@ -550,6 +565,20 @@ private:
     QDockWidget *buildingsDock_ = nullptr;
     MapEditor::BuildingsPanel *buildingsPanel_ = nullptr;
     bool buildingIconsBaked_ = false;
+    /// Scum nests panel + state (paired SCUM_SPOT mounds / FILTH_SPOT
+    /// spawners — see docs/architecture.md).
+    QDockWidget *scumSpotsDock_ = nullptr;
+    MapEditor::ScumSpotsPanel *scumSpotsPanel_ = nullptr;
+    std::vector<MapEditor::SpgFile::ScumSpot> placedScumSpots_;
+    int selectedScumRow_ = -1;
+    bool scumIconsBaked_ = false;
+    /// Filth parameters the panel currently holds (stamped on placement,
+    /// applied to the selection on edit).
+    MapEditor::SpgFile::FilthParams pendingFilth_;
+    /// Set by syncScumTriggerArtifacts() before a save, consumed by
+    /// flushScumTriggerFile() after it: the chain file to write or delete.
+    QString pendingScumChainFile_;
+    bool pendingScumChainWrite_ = false;
     std::vector<MapEditor::SpgFile::PlacedBuilding> placedBuildings_;
     int selectedBuildingRow_ = -1;
     QAction *actOpenBattleMap_ = nullptr;

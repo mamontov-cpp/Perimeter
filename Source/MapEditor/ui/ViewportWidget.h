@@ -410,6 +410,29 @@ public:
     /// and delete tools use it for click targeting.
     int buildingIndexAtCell(double mapX, double mapY) const;
 
+    /// Scum nests (SCUM_SPOT mounds) — same point shape as buildings, but a
+    /// separate overlay: the caller keeps them OFF the minimap and the
+    /// exported top-down preview.
+    void setScumPoints(const std::vector<BuildingPoint> &spots);
+    const std::vector<BuildingPoint> &scumPoints() const
+    {
+        return scumSpots_;
+    }
+    /// The scum-panel tool active in the viewport.
+    enum class ScumTool
+    {
+        None,
+        Place,  ///< click emits scumPlaceRequested(x, y).
+        Select, ///< click emits scumSelectRequested(x, y).
+        Delete, ///< click emits scumDeleteRequested(x, y).
+    };
+    void setScumTool(ScumTool tool) { scumTool_ = tool; }
+    ScumTool scumTool() const { return scumTool_; }
+    /// Placement preview footprint at the cursor (green/red).
+    void setScumPreview(int attributeId, double radiusCells, bool valid);
+    /// Index of the nest under the map cell (-1 when none).
+    int scumIndexAtCell(double mapX, double mapY) const;
+
     /// Bake a building model (UnitModelCatalog attributeId) into an icon
     /// through the GPU view's offscreen scene. Returns a null icon when the
     /// GPU view is inactive or the model cannot be loaded — callers keep
@@ -485,6 +508,10 @@ signals:
     void buildingPlaceRequested(double mapX, double mapY);
     void buildingSelectRequested(double mapX, double mapY);
     void buildingDeleteRequested(double mapX, double mapY);
+    /// The scum-panel tools clicked a map cell.
+    void scumPlaceRequested(double mapX, double mapY);
+    void scumSelectRequested(double mapX, double mapY);
+    void scumDeleteRequested(double mapX, double mapY);
     /// Emitted once after the first successful GPU terrain view init (or
     /// after a reload that drops it back to the CPU path). MainWindow
     /// hides the freeze-dam action (which only makes sense for the CPU path)
@@ -559,6 +586,10 @@ private:
     /// radar) / ghost discs (3D), plus the placement footprint preview.
     void drawBuildingPoints(QPainter &painter);
     void drawBuildingPoints3D(QPainter &painter);
+    /// Scum nests: white dots (2D) / models (3D) + the placement ghost.
+    /// Deliberately NOT drawn on the minimap or the exported top-down view.
+    void drawScumPoints(QPainter &painter);
+    void drawScumPoints3D(QPainter &painter);
     void drawHud(QPainter &painter);
     QRect visibleCellRange() const;
 
@@ -768,6 +799,12 @@ private:
     int buildingPreviewAttr_ = -1;
     double buildingPreviewRadius_ = 0;
     bool buildingPreviewValid_ = true;
+    /// Scum nests (SCUM_SPOT mounds) — same overlay, separate list.
+    std::vector<BuildingPoint> scumSpots_;
+    ScumTool scumTool_ = ScumTool::None;
+    int scumPreviewAttr_ = -1;
+    double scumPreviewRadius_ = 0;
+    bool scumPreviewValid_ = true;
 
     /// Default grid step in map cells: 1 << kmGrid (VMAP.h:89).
     static constexpr int kFineGridCell = 4;

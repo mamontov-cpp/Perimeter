@@ -31,7 +31,10 @@ struct UnitModelInfo
     double boundScale;      ///< Relative scale when boundRadius is 0.
 };
 
-/// Model table for the 43 placeable buildings (BuildingCatalog order, ids 0..42).
+/// Model table for the placeable buildings (BuildingCatalog order, ids 0..42)
+/// PLUS the scum nest mounds (ids 43..46, ScumSpotCatalog) — the latter are
+/// rendered by the same BuildingModels pipeline but placed through the
+/// Scum Nests panel, not the Buildings panel.
 inline constexpr UnitModelInfo kUnitModels[] = {
     {0, "RESOURCE\\MODELS\\MAIN\\coreup.m3d", 0.0, 1.0},
     {1, "RESOURCE\\MODELS\\MAIN\\transmiter.m3d", 0.0, 1.0},
@@ -76,6 +79,10 @@ inline constexpr UnitModelInfo kUnitModels[] = {
     {40, "RESOURCE\\MODELS\\MAIN\\scum_disruptor.m3d", 0.0, 1.5},
     {41, "RESOURCE\\MODELS\\MAIN\\ballistic.m3d", 0.0, 1.0},
     {42, "RESOURCE\\MODELS\\MAIN\\filth_navigator.m3d", 0.0, 1.5},
+    {43, "RESOURCE\\MODELS\\MAIN\\filth_spot.m3d", 0.0, 1.0},
+    {44, "RESOURCE\\MODELS\\MAIN\\filth_spot2.m3d", 0.0, 1.0},
+    {45, "RESOURCE\\MODELS\\MAIN\\filth_spot3.m3d", 0.0, 1.0},
+    {46, "RESOURCE\\MODELS\\MAIN\\filth_spot4.m3d", 0.0, 1.0},
 };
 inline constexpr std::size_t kUnitModelCount =
     sizeof(kUnitModels) / sizeof(kUnitModels[0]);

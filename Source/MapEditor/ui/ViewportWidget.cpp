@@ -921,6 +921,37 @@ QIcon ViewportWidget::bakeBuildingIcon(int attributeId, int size)
     return QIcon(QPixmap::fromImage(img));
 }
 
+void ViewportWidget::setScumPoints(const std::vector<BuildingPoint> &spots)
+{
+    scumSpots_ = spots;
+    update();
+}
+
+void ViewportWidget::setScumPreview(int attributeId, double radiusCells,
+                                    bool valid)
+{
+    scumPreviewAttr_ = attributeId;
+    scumPreviewRadius_ = radiusCells;
+    scumPreviewValid_ = valid;
+    update();
+}
+
+int ViewportWidget::scumIndexAtCell(double mapX, double mapY) const
+{
+    int best = -1;
+    double bestDist = 1e18;
+    for (std::size_t i = 0; i < scumSpots_.size(); ++i) {
+        const BuildingPoint& b = scumSpots_[i];
+        const double reach = std::max(b.radiusCells, 8.0);
+        const double d = std::hypot(b.mapX - mapX, b.mapY - mapY);
+        if (d <= reach && d < bestDist) {
+            bestDist = d;
+            best = static_cast<int>(i);
+        }
+    }
+    return best;
+}
+
 // ---------------------------------------------------------------------------
 // Coordinate conversion
 // ---------------------------------------------------------------------------
@@ -1254,12 +1285,18 @@ void ViewportWidget::paintGL()
                 editorTrace("ViewportWidget: GPU frame %d (%dx%d)", ++gpuFrameLog,
                             fboW, fboH);
             }
-            // Placed buildings ride the same scene draw — sync the M3D model
-            // instances with the overlay list before rendering. Ghost discs
-            // in drawBuildingPoints3D cover slots whose model failed to load.
+            // Placed buildings + scum nests ride the same scene draw — sync
+            // the M3D model instances with both overlay lists before
+            // rendering (scum nests follow the buildings in the pose list).
             std::vector<BuildingModelPose> modelPoses;
-            modelPoses.reserve(buildings_.size());
+            modelPoses.reserve(buildings_.size() + scumSpots_.size());
             for (const BuildingPoint &b : buildings_) {
+                modelPoses.push_back({b.attributeId,
+                                      static_cast<float>(b.mapX),
+                                      static_cast<float>(b.mapY),
+                                      static_cast<float>(b.angleDeg)});
+            }
+            for (const BuildingPoint &b : scumSpots_) {
                 modelPoses.push_back({b.attributeId,
                                       static_cast<float>(b.mapX),
                                       static_cast<float>(b.mapY),
@@ -1269,11 +1306,24 @@ void ViewportWidget::paintGL()
             const bool buildingPreviewOn =
                 buildingTool_ == BuildingTool::Place && buildingPreviewAttr_ >= 0 &&
                 cursorCell_.x() >= 0 && cursorCell_.y() >= 0;
-            gpuView_->setBuildingModelPreview(
-                buildingPreviewOn,
-                {buildingPreviewAttr_,
-                 static_cast<float>(cursorCell_.x() + 0.5),
-                 static_cast<float>(cursorCell_.y() + 0.5), 0.f});
+            const bool scumPreviewOn =
+                scumTool_ == ScumTool::Place && scumPreviewAttr_ >= 0 &&
+                cursorCell_.x() >= 0 && cursorCell_.y() >= 0;
+            if (buildingPreviewOn) {
+                gpuView_->setBuildingModelPreview(
+                    true,
+                    {buildingPreviewAttr_,
+                     static_cast<float>(cursorCell_.x() + 0.5),
+                     static_cast<float>(cursorCell_.y() + 0.5), 0.f});
+            } else if (scumPreviewOn) {
+                gpuView_->setBuildingModelPreview(
+                    true,
+                    {scumPreviewAttr_,
+                     static_cast<float>(cursorCell_.x() + 0.5),
+                     static_cast<float>(cursorCell_.y() + 0.5), 0.f});
+            } else {
+                gpuView_->setBuildingModelPreview(false, {});
+            }
 
             gpuView_->setNearestFiltering(renderStyle_ == RenderStyle::Chunky);
             gpuView_->renderFrame(context()->defaultFramebufferObject(),
@@ -1318,6 +1368,7 @@ void ViewportWidget::paintGL()
         if (gridVisible_) drawGrid3D(painter);
         drawSpawnPoints3D(painter);
         drawBuildingPoints3D(painter);
+        drawScumPoints3D(painter);
         if (brushPreviewVisible_) drawBrushPreview(painter);
         drawHud(painter);
         emitViewRectIfChanged();
@@ -1329,6 +1380,7 @@ void ViewportWidget::paintGL()
     if (brushPreviewVisible_) drawBrushPreview(painter);
     drawSpawnPoints(painter);
     drawBuildingPoints(painter);
+    drawScumPoints(painter);
     drawHud(painter);
 
     // --- Announce the view rectangle for the minimap (T2.4) ---
@@ -2047,6 +2099,100 @@ QPointF ViewportWidget::obliqueMapToWidgetF(const QPointF &mapPos) const
     return QPointF(width() / 2.0 + dx, height() / 2.0 + dy);
 }
 
+void ViewportWidget::drawScumPoints(QPainter &painter)
+{
+    if (!renderer_ || !renderer_->isBound()) return;
+
+    painter.setRenderHint(QPainter::Antialiasing);
+    for (const BuildingPoint &b : scumSpots_) {
+        const QPointF pos = mapToScreen(b.mapX, b.mapY);
+        // Same white-dot radar look as the buildings; the spec keeps these
+        // off the minimap and the exported top-down preview only.
+        painter.setPen(QPen(QColor(30, 30, 30, 200), 1));
+        painter.setBrush(b.hp > 0 ? QColor(255, 255, 255)
+                                  : QColor(160, 160, 160));
+        painter.drawEllipse(pos, 4.0, 4.0);
+        if (b.selected) {
+            painter.setBrush(Qt::NoBrush);
+            painter.setPen(QPen(QColor(255, 170, 0), 2));
+            painter.drawEllipse(pos, 9.0, 9.0);
+        }
+    }
+
+    // Placement ghost — minimum nest spacing ring (kMinScumSpotDistance).
+    if (scumPreviewAttr_ >= 0 && cursorCell_.x() >= 0 &&
+            cursorCell_.y() >= 0) {
+        const QPointF c = mapToScreen(cursorCell_.x() + 0.5,
+                                      cursorCell_.y() + 0.5);
+        const double r = qMax(3.0, scumPreviewRadius_ * zoom_);
+        const QColor fill = scumPreviewValid_
+            ? QColor(150, 80, 220, 60) : QColor(230, 60, 60, 70);
+        const QColor line = scumPreviewValid_
+            ? QColor(140, 60, 200) : QColor(200, 40, 40);
+        painter.setBrush(fill);
+        painter.setPen(QPen(line, 2, Qt::DashLine));
+        painter.drawEllipse(c, r, r);
+    }
+}
+
+void ViewportWidget::drawScumPoints3D(QPainter &painter)
+{
+    if (scumSpots_.empty() || !renderer_->isBound()) return;
+
+    const std::size_t modelOffset = buildings_.size();
+    painter.setRenderHint(QPainter::Antialiasing);
+    auto project = [&](const BuildingPoint &b, QPointF &pos) {
+        bool visible = false;
+        if (gpuActive()) {
+            double z = 0.0;
+            if (session_) {
+                const int terrain =
+                    session_->terrainHeightAt(qRound(b.mapX), qRound(b.mapY));
+                if (terrain > 0) {
+                    z = terrain;
+                }
+            }
+            double camZ = 0.0;
+            double sx = 0.0;
+            double sy = 0.0;
+            const qreal dpr = devicePixelRatioF();
+            visible = gpuView_->projectToScreenZ(
+                          b.mapX + 0.5, b.mapY + 0.5, z, camZ, sx, sy) &&
+                      camZ > gpuView_->nearPlaneZ();
+            pos = QPointF(sx / dpr, sy / dpr);
+        } else {
+            pos = obliqueMapToWidgetF(QPointF(b.mapX + 0.5, b.mapY + 0.5));
+            visible = QRectF(rect()).contains(pos);
+        }
+        return visible;
+    };
+
+    for (std::size_t i = 0; i < scumSpots_.size(); ++i) {
+        const BuildingPoint &b = scumSpots_[i];
+        QPointF pos;
+        if (!project(b, pos)) {
+            continue;
+        }
+        if (gpuActive() && gpuView_->hasBuildingModel(static_cast<int>(modelOffset + i))) {
+            if (b.selected) {
+                painter.setBrush(Qt::NoBrush);
+                painter.setPen(QPen(QColor(255, 170, 0), 2));
+                painter.drawEllipse(pos, 10.0, 10.0);
+            }
+            continue;
+        }
+        painter.setPen(QPen(QColor(20, 20, 20, 190), 1));
+        painter.setBrush(b.hp > 0 ? QColor(255, 255, 255, 235)
+                                  : QColor(160, 160, 160, 200));
+        painter.drawEllipse(pos, 6.0, 6.0);
+        if (b.selected) {
+            painter.setBrush(Qt::NoBrush);
+            painter.setPen(QPen(QColor(255, 170, 0), 2));
+            painter.drawEllipse(pos, 10.0, 10.0);
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // HUD — cursor cell + zoom readout
 // ---------------------------------------------------------------------------
@@ -2198,6 +2344,28 @@ void ViewportWidget::mousePressEvent(QMouseEvent *event)
                 emit buildingSelectRequested(cell.x(), cell.y());
             } else {
                 emit buildingDeleteRequested(cell.x(), cell.y());
+            }
+        }
+        event->accept();
+        return;
+    }
+
+    // Scum-panel tools take the left click while active — same press-only
+    // semantics as the buildings.
+    if (event->button() == Qt::LeftButton
+            && scumTool_ != ScumTool::None) {
+        const QPoint pos = event->position().toPoint();
+        const QPoint cell = onMapCellAtWidgetPos(pos);
+        if (cell.x() >= 0 && cell.y() >= 0) {
+            cursorWidgetPos_ = pos;
+            cursorCell_ = cell;
+            setCursor(Qt::CrossCursor);
+            if (scumTool_ == ScumTool::Place) {
+                emit scumPlaceRequested(cell.x(), cell.y());
+            } else if (scumTool_ == ScumTool::Select) {
+                emit scumSelectRequested(cell.x(), cell.y());
+            } else {
+                emit scumDeleteRequested(cell.x(), cell.y());
             }
         }
         event->accept();

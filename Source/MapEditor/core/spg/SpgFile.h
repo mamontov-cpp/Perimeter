@@ -213,11 +213,101 @@ public:
     /// buildings) — new units take maxUnitId() + 1.
     int maxUnitId() const;
 
+    // -----------------------------------------------------------------------
+    // Scum nests — paired SCUM_SPOT mounds (SavePrm.nobodysBuildings,
+    // attributes 43..46) + FILTH_SPOT spawners (SavePrm.filth.objects,
+    // "struct SaveUnitFilthData"), wired together by a generated
+    // Scripts/Triggers/<world>.scr chain registered in every player's
+    // manualData TriggerChainNames. See ScumSpotCatalog.h and
+    // docs/architecture.md.
+    // -----------------------------------------------------------------------
+
+    /// Editable filth spawner parameters (SaveUnitFilthData). Enum values are
+    /// stored as ordinals; filthType names go through kFilthTypeNames.
+    struct FilthParams
+    {
+        int filthType = 1;          ///< terFilthSpotID (1 = ANTS).
+        float attackWidth = -1.f;
+        float attackDirection = 0.f;
+        bool sleep = false;
+        float firstSleepTime = 0.f;
+        float sleepPeriod = 20.f;
+        float deltaSleepPeriod = 0.f;
+        float attackPeriond = 20.f;   ///< [sic] — the game's field name.
+        float deltaAttackPeriond = 0.f;
+        int creatureNum = 10;
+        int activatingUnit = 0;       ///< terUnitAttributeID (0 = NONE).
+        float activatingDistance = 100.f;
+        int attackPlayer = 0;         ///< terFilthAttackType (0 = ALL).
+        bool initialGeoprocess = true;
+        bool createFirst = true;
+    };
+
+    struct ScumSpot
+    {
+        std::size_t index = 0;   ///< row in scumSpots() (not a file offset).
+        int buildingIndex = -1;  ///< element index in nobodysBuildings.objects.
+        int filthIndex = -1;     ///< element index in filth.objects (-1 = none).
+        int attributeId = 43;
+        int unitId = 0;
+        double x = 0, y = 0, z = 0;
+        double angleDeg = 0;
+        int hp = 100;
+        bool paired = false;     ///< a FILTH_SPOT spawner exists beneath.
+        std::string label;       ///< the nest's identity label (see below).
+        bool moundLabeled = false; ///< the MOUND carries `label` (trigger-
+                                   ///  capable; foreign maps may pair mounds
+                                   ///  with no label of their own).
+        FilthParams filth;
+    };
+
+    /// Mounds of the four SCUM_SPOT types in nobodysBuildings, each paired
+    /// with the nearest FILTH_SPOT spawner within kPairDistance (editor
+    /// placements coincide exactly). Mounds without a nearby spawner are
+    /// listed unpaired (paired = false, filthIndex = -1).
+    std::vector<ScumSpot> scumSpots() const;
+
+    /// Appends the mound + its spawner. Fills unitId (mound and spawner get
+    /// maxUnitId()+1 / +2), label ("scum_spot_<unitId>") and the file rows.
+    /// `spot.z` must already include the catalog zOffset.
+    bool addScumSpot(ScumSpot& spot);
+    /// Moves/rotates the mound AND its paired spawner together.
+    bool setScumSpotPose(std::size_t index, double x, double y,
+                         double angleDeg);
+    bool setScumSpotHp(std::size_t index, int hp);
+    /// Rewrites the paired spawner's parameters (unpaired spots: false).
+    bool setScumSpotFilth(std::size_t index, const FilthParams& filth);
+    /// Removes the mound and its paired spawner.
+    bool removeScumSpot(std::size_t index);
+
+    /// Migrates the pre-fix label scheme (label on the spawner only) to the
+    /// current one: the label moves to the MOUND (watched by the kill
+    /// condition) and the spawner gets "<label>_gen" (the action target).
+    /// Idempotent; runs before saving. Returns true when anything changed.
+    bool normalizeScumNestLabels();
+
+    /// Adds/removes `chainFile` (e.g. "EXTDEMO.scr") in EVERY player's
+    /// TriggerChainNames, and purges it from the legacy lowercase
+    /// triggerChainNames. Add is a no-op when already registered. Call before
+    /// save(); pair with writing/deleting the .scr file itself.
+    bool syncScumTriggerChain(const std::string& chainFile, bool enable);
+
+    /// The generated trigger chain text (TriggerChain XPrm serialization):
+    /// START -> per-pair activate/deactivate triggers watching the mound's
+    /// attribute near the labeled spawner (50 u radius), mirroring the
+    /// shipped 03isoland.scr pattern.
+    std::string buildScumTriggerScript(const std::string& chainName) const;
+
+    /// The terFilthSpotID table for UI combos (ordinal -> identifier).
+    static int filthTypeCount();
+    static const char* filthTypeIdentifier(int ordinal);
+
 private:
     XPrmObject* playersDataArray();
     XPrmObject* playersArray();
     XPrmObject* playerFrame(int playerIndex);
     static XPrmObject* elementObject(XPrmObject* array, int index);
+    XPrmObject* filthArray(bool create);
 
     /// One recorded spawn relocation: the delta passed to movePlayerGroup.
     /// Undo applies the negated delta, redo re-applies it — the values are

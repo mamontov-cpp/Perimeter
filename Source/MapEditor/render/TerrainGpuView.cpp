@@ -122,6 +122,12 @@ bool TerrainGpuView::init(int width, int height) {
     }
     visGeneric_->SetData(device_);
     visGeneric_->SetShadowType(SHADOW_NONE, 0);
+    // Models reference effect libraries through "effect: <lib> <name>" node
+    // names (cObjLibrary::ParseNodeEffect) — without the path VisError
+    // aborts on the first such model (e.g. filth_spot.m3d -> steam.effect).
+    // Same paths the game sets (HTManager::initGraphics, Runtime.cpp).
+    visGeneric_->SetEffectLibraryPath("RESOURCE\\FX",
+                                      "RESOURCE\\FX\\TEXTURES");
 
     if (!buildScene()) {
         editorTrace("TerrainGpuView: buildScene failed");

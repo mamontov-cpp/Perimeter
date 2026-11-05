@@ -1085,6 +1085,7 @@ Headless-тесты `map_editor_tests` (`tests/`), по файлу на моду
 | 99 | `ScriptedBrushTests` | setGeoPalette/setDamPalette пишут Geo/Dam-палитры из JS (байты vMap.GeoPal/DamPal + paletteRgb + хук перерисовки UI), валидация индекса 0..255 и объекта {r,g,b}; ошибки compile/pcall несут локацию (brush.js:LINE) через describeError (name/message/fileName/lineNumber); runEditorScript (окно Tools → Run Script) — тот же API, getCurrentPos = переданный центр, один шаг Undo; штамп scripted brush разделяет API |
 | 100 | `BuildingsTests` | предустановленные здания (nobodysBuildings): разбор штатного 02PYRAMIDA.spg (11 зданий: атрибут/позиция/угол/HP), байт-точность нетронутого round-trip, add (typed-структура, разделитель прежнего хвоста, count, уникальный unitID) → pose/HP-edit → remove через save→re-parse; грамматика игрового читателя в сыром тексте сохранения (хвост массива без разделителя, elementsDead без «;» перед «}», count) |
 | 101 | `UnitModelCatalogTests` | каталог M3D-моделей зданий: у 43 размещаемых зданий есть строка с совпадающим id, путь в `RESOURCE\MODELS\MAIN\`, файл существует в game dir, масштабы (boundRadius/boundScale) валидны |
+| 102 | `ScumSpotsTests` | скверна-гнёзда: разбор изоландских пар курган+спавнер, add (mound + SaveUnitFilthData + label + unitIDs) → pose/HP/filth-edit → remove через save→re-parse, грамматика сырого текста, регистрация `<world>.scr` в TriggerChainNames всех игроков (add/no-dup/remove, legacy-вычистка), структура сгенерированного триггерного скрипта |
 
 Тесты пишут только во временный content-root (`%TEMP%/map_editor_roundtrip`),
 исходный мир не изменяется. `SaveWorldTests` строит изолированный content-root
@@ -1601,8 +1602,11 @@ FileImage` как в игре), а сцена вьюпорта — настоя�
   `Resource\Models\Main\EXODUS\` (`GetBelligerentTexturePath`, дефолтная
   фракция), здания ничьи.
 - **TerrainGpuView**: `syncBuildingModels()`/`setBuildingModelPreview()`
-  (zeroplast из vMap.hZeroPlast), `renderModelIcon(fbo, w, h, attrId)` —
-  запекание иконки в чужой FBO: ленивая отдельная icon-сцена (свой light +
+  (zeroplast из vMap.hZeroPlast),
+  `renderModelIcon(fbo, w, h, attrId)` — с теми же путями effect-библиотек, что в игре
+  (`SetEffectLibraryPath("RESOURCE\FX", "RESOURCE\FX\TEXTURES")` при init —
+  без них ParseNodeEffect падает в VisError на моделях с "effect:"-узлами,
+  например filth_spot.m3d -> steam.effect); запекание иконки в чужой FBO: ленивая отдельная icon-сцена (свой light +
   камера по рецепту BGScene: сферическая позиция, фрустум с focus =
   dist/2.6r), рендер через тот же device (`setDeviceTarget` на FBO,
   прозрачный фон). Qt-сторона (`ViewportWidget::bakeBuildingIcon`) даёт
@@ -1619,3 +1623,73 @@ FileImage` как в игре), а сцена вьюпорта — настоя�
 строка каталога с совпадающим id, путь в `RESOURCE\MODELS\MAIN\`, файл
 модели существует в game dir, масштабы положительные. Сам рендер GL-зависим
 и тестируется вручную.
+
+## 5.31. Скверна-гнёзда — ScumSpotsPanel + пары SCUM_SPOT/FILTH_SPOT + триггерный файл
+
+Панель **Scum Nests** (док-вкладка у Battle Map; активна только при
+загруженной/созданной боевой карте) ставит гнёзда скверны по образу
+Buildings-панели (Place/Select/Delete, угол, HP, иконки из M3D). Гнездо —
+ПАРА объектов, форматы — штатные `Missions/03ISOLAND.spg`:
+
+- **Курган** `SCUM_SPOT/2/3/4` (атрибуты 43..46, `core/ScumSpotCatalog.h` —
+zOffset 4.4335 измерен по 03ISOLAND, molecula 500/200/200/500) — обычный
+`SaveUnitBuildingData` в `nobodysBuildings` (полный статус
+CONSTRUCTED|PLUGGED_IN|ENABLED|POWERED). Правило размещения: расстояние
+между курганами ≥ 150 (`kMinScumSpotDistance`), z = zeroLayer + offset.
+- **Спавнер** `UNIT_ATTRIBUTE_FILTH_SPOT` под курганом (те же x/y, z =
+zeroLayer) — `"struct SaveUnitFilthData"` в `SavePrm.filth.objects`:
+label `scum_spot_<unitId>_gen` (цель триггерных действий; курган
+  носит `scum_spot_<unitId>` — его метку условия), radius 32., и редактируемые
+параметры (filthType из enum terFilthSpotID, creatureNum, sleep/периоды,
+activatingUnit/Distance, attack_player, initial_geoprocess, create_first).
+Панель правит их для ВЫБРАННОГО гнезда; новое гнездо штампует текущие
+значения блока.
+- **SpgFile API**: `scumSpots()` (курганы 43..46 + pairing с ближайшим
+спавнером в радиусе 150 — на чужих картах best-effort: изоландская
+расстановка 1 курган : N спавнеров, редактор строго 1:1),
+`addScumSpot` (unitId = maxUnitId()+1 кургану, +2 спавнеру; создаёт
+`filth` секцию при отсутствии), `setScumSpotPose` (курган+спавнер
+вместе), `setScumSpotHp`, `setScumSpotFilth`, `removeScumSpot` (оба
+элемента), `syncScumTriggerChain` (добавить/убрать имя файла из
+`TriggerChainNames` КАЖДОГО игрока + вычистить legacy
+`triggerChainNames`, чтобы слияние при чтении не дало дубликат),
+`buildScumTriggerScript` — текст цепочки триггеров.
+- **Триггерный файл** `Scripts/Triggers/<world>.scr` (имя — basename
+`worldName` миссии): `TriggerChain` в XPrm-сериализации TriggerExport.h —
+обязательный `START` (always-true ConditionSwitcher) —
+  записывается с `state_ = CHECKING`: `TriggerChain::load → initialize() →
+  buildLinks()` наполняет activeTriggers_ из ХРАНИМОГО состояния
+  (сброс в initializeTriggersAndLinks идёт только в дебаг-редакторе), поэтому
+  SLEEPING-START оставляет всю цепочку мёртвой (живой баг на EXTDEMO);
+  ссылками будит по
+ДВА триггера на пару. СХЕМА СВЯЗКИ (после двух живых багов):
+метка `scum_spot_<id>` живёт на КУРГАНЕ; условия следят за ней:
+`label_on` = ConditionObjectByLabelExists(mound label) →
+ActionActivateObjectByLabel на спавнере (`scum_spot_<id>_gen`);
+`label_off` = ConditionKillObjectByLabel (destroy-евент кургана) →
+ActionDeactivateObjectByLabel на `_gen`. Спавнер носит `_gen`-метку как
+цель действий. Дистанционная развязка (ConditionObjectNearObjectByLabel,
+как в 03isoland) НЕРАБОТОСПОСОБНА для редактора: спавнер и курган
+грузятся в ОДНОЙ точке, а terPlayer::findUnit(id, pos) фильтрует
+distanceMin=0 через `dist > 0` — юнит на дистанции 0 отбрасывается,
+условие вечно ложно и INVERTED-триггер сразу деактивирует спавнер.
+Старт: курганы живы → срабатывают _on → спавнеры активны; курган
+уничтожен → _off → деактивация. `normalizeScumNestLabels()` при Save
+мигрирует до-схему «метка на спавнере» (записи первой версии) на
+текущую. Пишется/удаляется при Save Battle Map
+(`syncScumTriggerArtifacts` до save, `flushScumTriggerFile` после —
+`MainWindowScumSpots.cpp`); при нуле гнёзд имя вычищается из всех
+списков, файл удаляется. Загрузка игрой: `TriggerChain::load` молча
+пропускает отсутствующий файл.
+- **Рендер**: белые точки 2D (путь зданий, `drawScumPoints`) и M3D-модели
+в 3D (те же filth_spot*.m3d через BuildingModels, UnitModelCatalog
+43..46; превью-модель под курсором общая с зданиями). На миникарту и в
+экспортируемый top-down превью НЕ попадают (спека). Иконки кнопок —
+запечённые модели (bakeScumIconsIfPossible).
+- Undo история не затрагивается (как здания).
+
+**Проверка.** Тест 102 (`ScumSpotsTests`): разбор изоландских гнёзд
+(3 кургана 43/44/45 + pairing), add/pose/HP/filth-edit/remove через
+save→re-parse с грамматикой сырого текста, регистрация цепочки (add /
+no-dup / remove по всем игрокам), структура сгенерированного .scr
+(START, счётчик триггеров 1+2N, метки, activate/deactivate).

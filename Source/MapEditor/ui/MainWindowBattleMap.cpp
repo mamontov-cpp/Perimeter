@@ -12,6 +12,7 @@
 #include "BattleMapPanel.h"
 #include "BuildingsPanel.h"
 #include "BuildingCatalog.h"
+#include "ScumSpotsPanel.h"
 #include "EditorSession.h"
 #include "MinimapWidget.h"
 #include "ViewportWidget.h"
@@ -99,6 +100,7 @@ void MainWindow::buildBattleMapDock()
     battleMapPanel_->setTemplates(battleMapTemplates());
 
     buildBuildingsDock();
+    buildScumSpotsDock();
 }
 
 void MainWindow::buildBuildingsDock()
@@ -520,14 +522,20 @@ void MainWindow::refreshBattleMapUI()
     const bool active = battleMap_.loaded();
     if (active) {
         reloadPlacedBuildings();
+        reloadScumSpots();
     } else {
         placedBuildings_.clear();
         selectedBuildingRow_ = -1;
         syncBuildingsOverlay();
+        placedScumSpots_.clear();
+        selectedScumRow_ = -1;
+        syncScumOverlay();
         if (viewport_) {
             viewport_->setBuildingTool(
                 MapEditor::ViewportWidget::BuildingTool::None);
             viewport_->setBuildingPreview(-1, 0, true);
+            viewport_->setScumTool(MapEditor::ViewportWidget::ScumTool::None);
+            viewport_->setScumPreview(-1, 0, true);
         }
     }
     if (buildingsPanel_) {
@@ -545,6 +553,20 @@ void MainWindow::refreshBattleMapUI()
         // Bake the building-button icons from the game M3D models on first
         // use (needs the GPU viewport; retries while it stays unavailable).
         bakeBuildingIconsIfPossible();
+    }
+    if (scumSpotsPanel_) {
+        scumSpotsPanel_->setActive(active);
+        if (active) {
+            scumSpotsPanel_->setSelectionInfo(
+                tr("%1 scum nest(s) on the map.")
+                    .arg(placedScumSpots_.size()));
+        }
+    }
+    if (scumSpotsDock_) {
+        scumSpotsDock_->setVisible(active);
+    }
+    if (active) {
+        bakeScumIconsIfPossible();
     }
     // The one place that maps session/battle-map state onto every action
     // (Save/Save As, Open, Validate, autofixes).
@@ -634,11 +656,13 @@ void MainWindow::onActionSaveBattleMap()
         return;
     }
     normalizeBattleMapSpawnHeights();
+    syncScumTriggerArtifacts();
     if (!battleMap_.save(battleMapPath_.toStdString())) {
         QMessageBox::warning(this, tr("Save Battle Map"),
                              tr("Failed to write the battle map."));
         return;
     }
+    flushScumTriggerFile();
     statusBar()->showMessage(tr("Battle map saved: %1").arg(battleMapPath_),
                              5000);
 }
@@ -667,11 +691,13 @@ void MainWindow::onActionSaveBattleMapAs()
         return;
     }
     normalizeBattleMapSpawnHeights();
+    syncScumTriggerArtifacts();
     if (!battleMap_.save(target.u8string())) {
         QMessageBox::warning(this, tr("Save Battle Map"),
                              tr("Failed to write the battle map."));
         return;
     }
+    flushScumTriggerFile();
     battleMapPath_ = QString::fromStdString(target.u8string());
     refreshBattleMapUI();
     statusBar()->showMessage(tr("Battle map saved: %1").arg(battleMapPath_),

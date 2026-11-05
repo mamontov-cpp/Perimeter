@@ -4,6 +4,8 @@
 
 #include "SpgFile.h"
 
+#include "ScumSpotCatalog.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -739,7 +741,7 @@ std::shared_ptr<XPrmObject> quaternionZObject(double angleDeg)
 /// damageMolecula for the given HP percent: dead[i] scales with the
 /// building's max element counts (UnitAttribute.prm damageMolecula).
 std::shared_ptr<XPrmObject> damageObject(int hp,
-                                         const BuildingInfo& info)
+                                         const std::array<int, 5>& molecula)
 {
     const int clamped = std::clamp(hp, 0, 100);
     auto elements = std::make_shared<XPrmObject>();
@@ -747,11 +749,11 @@ std::shared_ptr<XPrmObject> damageObject(int hp,
     for (int i = 0; i < 5; ++i) {
         int dead = 0;
         if (clamped == 0) {
-            dead = info.molecula[static_cast<std::size_t>(i)];
+            dead = molecula[static_cast<std::size_t>(i)];
         } else if (clamped < 100) {
             dead = static_cast<int>(std::llround(
                 (100 - clamped) / 100.0 *
-                info.molecula[static_cast<std::size_t>(i)]));
+                molecula[static_cast<std::size_t>(i)]));
         }
         elements->fields.push_back(
             anonScalar(std::to_string(dead), i == 4 ? '\0' : ','));
@@ -784,7 +786,7 @@ std::shared_ptr<XPrmObject> buildingEntryObject(const SpgFile::PlacedBuilding& b
     fields.push_back(XPrmObject::Field{"orientaion", "", true, "", quaternionZObject(b.angleDeg), "", ';', true});
     fields.push_back(namedScalar("radius", "0."));
     fields.push_back(namedScalar("label", "\"\""));
-    fields.push_back(XPrmObject::Field{"damageMolecula", "", true, "", damageObject(b.hp, info), "", ';', true});
+    fields.push_back(XPrmObject::Field{"damageMolecula", "", true, "", damageObject(b.hp, info.molecula), "", ';', true});
     fields.push_back(namedScalar("basementInstalled", "true"));
     fields.push_back(namedScalar("accumulatedEnergy", "0."));
     fields.push_back(namedScalar("zeroLayerCounter", "0"));
@@ -874,7 +876,51 @@ void collectMaxUnitId(const XPrmObject* obj, int& maxId)
     }
 }
 
+/// Moves/rotates a building entry (position x/y + yaw quaternion, z kept) —
+/// shared by setBuildingPose and the scum nest pose.
+void poseBuildingObject(XPrmObject* obj, double x, double y, double angleDeg)
+{
+    XPrmObject* position = obj->object("position");
+    if (position) {
+        position->setScalar("x", formatXPrmNumber(x));
+        position->setScalar("y", formatXPrmNumber(y));
+    }
+    XPrmObject::Field* quatField = obj->field("orientaion");
+    if (quatField) {
+        quatField->hasObject = true;
+        quatField->object = quaternionZObject(angleDeg);
+        quatField->edited = true;
+    }
+}
+
+/// Removes element `row` (0-based, excluding the count field) from a
+/// game-grammar array: the new tail loses its separator, the count updates.
+void removeArrayElement(XPrmObject* array, int row)
+{
+    const std::size_t fieldIndex = static_cast<std::size_t>(row) + 1;
+    array->fields.erase(array->fields.begin() +
+                        static_cast<long>(fieldIndex));
+    array->gaps.erase(array->gaps.begin() + static_cast<long>(fieldIndex));
+    if (!array->fields.empty()) {
+        if (array->fields.size() > 1) {
+            array->fields.back().terminator = 0;
+            array->fields.back().edited = true;
+        }
+        array->fields[0].scalar = std::to_string(array->elementCount());
+        array->fields[0].edited = true;
+    }
+}
+
+void appendArrayElement(XPrmObject* array, XPrmObject::Field field)
+{
+    field.edited = true;
+    array->appendElement(std::move(field));
+    array->fields[0].scalar = std::to_string(array->elementCount());
+    array->fields[0].edited = true;
+}
+
 } // namespace
+
 
 std::vector<SpgFile::PlacedBuilding> SpgFile::buildings() const
 {
@@ -993,22 +1039,7 @@ bool SpgFile::setBuildingPose(std::size_t index, double x, double y,
         return false;
     }
     XPrmObject* obj = array->fields[index + 1].object.get();
-    XPrmObject* position = obj->object("position");
-    if (!position) {
-        return false;
-    }
-    position->setScalar("x", formatXPrmNumber(x));
-    position->setScalar("y", formatXPrmNumber(y));
-    position->setScalar("z",
-                        formatXPrmNumber(scalarDouble(position, "z")));
-    // Replace the whole quaternion object.
-    XPrmObject::Field* quatField = obj->field("orientaion");
-    if (!quatField) {
-        return false;
-    }
-    quatField->hasObject = true;
-    quatField->object = quaternionZObject(angleDeg);
-    quatField->edited = true;
+    poseBuildingObject(obj, x, y, angleDeg);
     return true;
 }
 
@@ -1037,7 +1068,7 @@ bool SpgFile::setBuildingHp(std::size_t index, int hp)
         return false;
     }
     damageField->hasObject = true;
-    damageField->object = damageObject(hp, *info);
+    damageField->object = damageObject(hp, info->molecula);
     damageField->edited = true;
     return true;
 }
@@ -1051,20 +1082,7 @@ bool SpgFile::removeBuilding(std::size_t index)
     if (!array || index + 1 >= array->fields.size()) {
         return false;
     }
-    array->fields.erase(array->fields.begin() +
-                        static_cast<long>(index) + 1);
-    array->gaps.erase(array->gaps.begin() + static_cast<long>(index) + 1);
-    if (!array->fields.empty()) {
-        // The new last element must not carry a separator before '}' —
-        // regenerate it without (its raw slice may still hold ','). When no
-        // elements remain fields.back() IS the count scalar — leave its ';'.
-        if (array->fields.size() > 1) {
-            array->fields.back().terminator = 0;
-            array->fields.back().edited = true;
-        }
-        array->fields[0].scalar = std::to_string(array->elementCount());
-        array->fields[0].edited = true;
-    }
+    removeArrayElement(array, static_cast<int>(index));
     return true;
 }
 
@@ -1073,6 +1091,894 @@ int SpgFile::maxUnitId() const
     int maxId = 0;
     collectMaxUnitId(save_, maxId);
     return maxId;
+}
+
+// ---------------------------------------------------------------------------
+// Scum nests — paired SCUM_SPOT mounds + FILTH_SPOT spawners.
+//
+// Format references: shipped Missions/03ISOLAND.spg — the mounds sit in
+// nobodysBuildings as plain SaveUnitBuildingData (full constructed status
+// set, CONSTRUCTED|PLUGGED_IN|ENABLED|POWERED), the spawners in
+// filth.objects as "struct SaveUnitFilthData" (radius 32., z on the zero
+// layer, label = pairing key). The activation wiring mirrors
+// Scripts/Triggers/03isoland.scr (see TriggerExport.h for the serialized
+// field names).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// terFilthSpotID identifiers by ordinal (Source/Scripts/UnitAttribute.inl).
+const char* const kFilthTypeNames[] = {
+    "FILTH_SPOT_ID_NONE",
+    "FILTH_SPOT_ID_ANTS",
+    "FILTH_SPOT_ID_WASP",
+    "FILTH_SPOT_ID_DRAGON",
+    "FILTH_SPOT_ID_GHOST",
+    "FILTH_SPOT_ID_EYE",
+    "FILTH_SPOT_ID_CROW",
+    "FILTH_SPOT_ID_DAEMON",
+    "FILTH_SPOT_ID_RAT",
+    "FILTH_SPOT_ID_WORM",
+    "FILTH_SPOT_ID_SHARK",
+    "FILTH_SPOT_ID_VOLCANO",
+    "FILTH_SPOT_ID_ANTS2",
+    "FILTH_SPOT_ID_SNAKE",
+    "FILTH_SPOT_ID_DRAGON2",
+    "FILTH_SPOT_ID_VOLCANO_SCUM_DISRUPTOR",
+    "FILTH_SPOT_ID_A_ANTS",
+    "FILTH_SPOT_ID_A_CROW",
+    "FILTH_SPOT_ID_A_DAEMON",
+    "FILTH_SPOT_ID_A_DRAGON",
+    "FILTH_SPOT_ID_A_EYE",
+    "FILTH_SPOT_ID_A_RAT",
+    "FILTH_SPOT_ID_A_SPIDER",
+    "FILTH_SPOT_ID_A_WASP",
+    "FILTH_SPOT_ID_A_WORM",
+};
+inline constexpr int kFilthTypeCount =
+    static_cast<int>(sizeof(kFilthTypeNames) / sizeof(kFilthTypeNames[0]));
+
+const char* const kFilthAttackNames[] = {
+    "FILTH_ATTACK_ALL",
+    "FILTH_ATTACK_PLAYER",
+    "FILTH_ATTACK_AI",
+    "FILTH_ATTACK_NOSELF",
+    "FILTH_ATTACK_NOSELF_NOWORLD",
+};
+inline constexpr int kFilthAttackCount = 5;
+
+/// A mound pairs with the nearest spawner at most this far away.
+inline constexpr double kScumPairDistance = 150.0;
+
+const char* filthTypeName(int ordinal)
+{
+    if (ordinal < 0 || ordinal >= kFilthTypeCount) {
+        ordinal = 0;
+    }
+    return kFilthTypeNames[ordinal];
+}
+
+int filthTypeOrdinal(const std::string& identifier)
+{
+    for (int i = 0; i < kFilthTypeCount; ++i) {
+        if (identifier == kFilthTypeNames[i]) {
+            return i;
+        }
+    }
+    return 0;
+}
+
+const char* filthAttackName(int ordinal)
+{
+    if (ordinal < 0 || ordinal >= kFilthAttackCount) {
+        ordinal = 0;
+    }
+    return kFilthAttackNames[ordinal];
+}
+
+int filthAttackOrdinal(const std::string& identifier)
+{
+    for (int i = 0; i < kFilthAttackCount; ++i) {
+        if (identifier == kFilthAttackNames[i]) {
+            return i;
+        }
+    }
+    return 0;
+}
+
+/// The activatingUnit identifiers the panel offers. The game accepts any
+/// terUnitAttributeID; these six cover the meaningful gameplay cases.
+const char* filthActivatingName(int attributeId)
+{
+    switch (attributeId) {
+    case 0: return "UNIT_ATTRIBUTE_NONE";
+    case 1: return "UNIT_ATTRIBUTE_RELAY";
+    case 2: return "UNIT_ATTRIBUTE_COLLECTOR";
+    case 6: return "UNIT_ATTRIBUTE_COMMANDER";
+    case 49: return "UNIT_ATTRIBUTE_FRAME";
+    default: return "UNIT_ATTRIBUTE_NONE";
+    }
+}
+
+int filthActivatingOrdinal(const std::string& identifier)
+{
+    for (int id : {0, 1, 2, 6, 49}) {
+        if (identifier == filthActivatingName(id)) {
+            return id;
+        }
+    }
+    return 0;
+}
+
+std::string quoted(const std::string& raw) { return "\"" + raw + "\""; }
+
+/// Strip the surrounding quotes of a raw scalar string ("mp-1.scr" ->
+/// mp-1.scr).
+std::string unquoted(const std::string& scalar)
+{
+    if (scalar.size() >= 2 && scalar.front() == '"' &&
+        scalar.back() == '"') {
+        return scalar.substr(1, scalar.size() - 2);
+    }
+    return scalar;
+}
+
+/// SavePrm.filth.objects (created on demand — same pattern as
+/// buildingsArray).
+XPrmObject* filthObjectsArray(XPrmObject* save, bool create)
+{
+    if (!save) {
+        return nullptr;
+    }
+    XPrmObject* holder = save->object("filth");
+    if (!holder && create) {
+        auto objects = std::make_shared<XPrmObject>();
+        objects->fields.push_back(anonScalar("0", ';'));
+        objects->gaps.assign(2, " ");
+        auto block = std::make_shared<XPrmObject>();
+        block->fields.push_back(XPrmObject::Field{
+            "objects", "", true, "", objects, "", ';', true});
+        block->gaps.assign(2, " ");
+        XPrmObject::Field entry;
+        entry.name = "filth";
+        entry.hasObject = true;
+        entry.object = block;
+        entry.terminator = ';';
+        entry.edited = true;
+        save->addField(std::move(entry));
+        holder = save->object("filth");
+    }
+    return holder ? holder->object("objects") : nullptr;
+}
+
+bool scalarBool(const XPrmObject* obj, const char* name)
+{
+    return obj && obj->scalar(name) == "true";
+}
+
+float scalarFloat(const XPrmObject* obj, const char* name)
+{
+    if (!obj) {
+        return 0.f;
+    }
+    return static_cast<float>(std::strtod(obj->scalar(name).c_str(), nullptr));
+}
+
+/// The mound entry: a plain SaveUnitBuildingData with the full constructed
+/// status set (the shipped mounds carry all four flags — 03ISOLAND.spg).
+/// `label` is the nest's identity label — the trigger wiring watches the
+/// MOUND by it (see buildScumTriggerScript).
+std::shared_ptr<XPrmObject>
+scumBuildingObject(const SpgFile::ScumSpot& spot, const ScumSpotInfo& info,
+                   const std::string& label)
+{
+    std::vector<XPrmObject::Field> fields;
+    fields.push_back(namedScalar("unitID", std::to_string(spot.unitId)));
+    fields.push_back(namedScalar("attributeID", info.identifier));
+    fields.push_back(XPrmObject::Field{"position", "", true, "",
+                                       vectorObject(spot.x, spot.y, spot.z),
+                                       "", ';', true});
+    fields.push_back(XPrmObject::Field{"orientaion", "", true, "",
+                                       quaternionZObject(spot.angleDeg),
+                                       "", ';', true});
+    fields.push_back(namedScalar("radius", "0."));
+    fields.push_back(namedScalar("label", quoted(label)));
+    fields.push_back(XPrmObject::Field{"damageMolecula", "", true, "",
+                                       damageObject(spot.hp, info.molecula),
+                                       "", ';', true});
+    fields.push_back(namedScalar("basementInstalled", "true"));
+    fields.push_back(namedScalar("accumulatedEnergy", "0."));
+    fields.push_back(namedScalar("zeroLayerCounter", "0"));
+    fields.push_back(namedScalar("weaponChargeLevel", "1."));
+    fields.push_back(XPrmObject::Field{"wayPoints", "", true, "",
+                                       freshObject({anonScalar("0", ';')}),
+                                       "", ';', true});
+    fields.push_back(namedScalar("weapon", "0"));
+    fields.push_back(namedScalar(
+        "buildingStatusBV",
+        "BUILDING_STATUS_CONSTRUCTED | BUILDING_STATUS_PLUGGED_IN | "
+        "BUILDING_STATUS_ENABLED | BUILDING_STATUS_POWERED"));
+    fields.push_back(namedScalar("fireCount", "0"));
+    fields.push_back(namedScalar("visible", "true"));
+    return freshObject(std::move(fields));
+}
+
+/// The paired spawner entry: "struct SaveUnitFilthData" exactly as the
+/// game's writer serializes it (shipped 03ISOLAND.spg). `z` is the zero
+/// layer height (the spawners sit ON the layer).
+std::shared_ptr<XPrmObject> filthEntryObject(int unitId, double x, double y,
+                                             double z,
+                                             const std::string& label,
+                                             const SpgFile::FilthParams& p)
+{
+    std::vector<XPrmObject::Field> fields;
+    fields.push_back(namedScalar("unitID", std::to_string(unitId)));
+    fields.push_back(
+        namedScalar("attributeID", "UNIT_ATTRIBUTE_FILTH_SPOT"));
+    fields.push_back(XPrmObject::Field{
+        "position", "", true, "", vectorObject(x, y, z), "", ';', true});
+    fields.push_back(XPrmObject::Field{
+        "orientaion", "", true, "",
+        freshObject({namedScalar("s", "1."), namedScalar("x", "0."),
+                     namedScalar("y", "0."), namedScalar("z", "0.")}),
+        "", ';', true});
+    fields.push_back(namedScalar("radius", "32."));
+    fields.push_back(namedScalar("label", quoted(label)));
+    fields.push_back(XPrmObject::Field{"damageMolecula", "", true, "",
+                                       damageObject(100, {0, 0, 0, 0, 1}),
+                                       "", ';', true});
+    fields.push_back(namedScalar("filthType", filthTypeName(p.filthType)));
+    fields.push_back(
+        namedScalar("attackWidth", formatXPrmNumber(p.attackWidth)));
+    fields.push_back(namedScalar(
+        "attackDirection", formatXPrmNumber(p.attackDirection)));
+    fields.push_back(namedScalar("sleep", p.sleep ? "true" : "false"));
+    fields.push_back(namedScalar(
+        "firstSleepTime", formatXPrmNumber(p.firstSleepTime)));
+    fields.push_back(
+        namedScalar("sleepPeriod", formatXPrmNumber(p.sleepPeriod)));
+    fields.push_back(namedScalar(
+        "deltaSleepPeriod", formatXPrmNumber(p.deltaSleepPeriod)));
+    fields.push_back(
+        namedScalar("attackPeriond", formatXPrmNumber(p.attackPeriond)));
+    fields.push_back(namedScalar(
+        "deltaAttackPeriond", formatXPrmNumber(p.deltaAttackPeriond)));
+    fields.push_back(
+        namedScalar("creatureNum", std::to_string(p.creatureNum)));
+    fields.push_back(namedScalar("activatingUnit",
+                                 filthActivatingName(p.activatingUnit)));
+    fields.push_back(namedScalar(
+        "activatingDistance", formatXPrmNumber(p.activatingDistance)));
+    fields.push_back(
+        namedScalar("attack_player", filthAttackName(p.attackPlayer)));
+    fields.push_back(namedScalar("initial_geoprocess",
+                                 p.initialGeoprocess ? "true" : "false"));
+    fields.push_back(namedScalar("killTimer", "0"));
+    fields.push_back(namedScalar("sleep_timer", "0"));
+    fields.push_back(
+        namedScalar("create_first", p.createFirst ? "true" : "false"));
+    fields.push_back(XPrmObject::Field{"hole_position", "", true, "",
+                                       freshObject({anonScalar("0", ';')}),
+                                       "", ';', true});
+    fields.push_back(XPrmObject::Field{"hole_position_inited", "", true, "",
+                                       freshObject({anonScalar("0", ';')}),
+                                       "", ';', true});
+    fields.push_back(namedScalar("kill_of_end", "false"));
+    fields.push_back(XPrmObject::Field{"swarmList", "", true, "",
+                                       freshObject({anonScalar("0", ';')}),
+                                       "", ';', true});
+    return freshObject(std::move(fields));
+}
+
+struct ParsedFilth
+{
+    int fieldIndex = -1; ///< element index in filth.objects.
+    int unitId = 0;
+    double x = 0, y = 0;
+    std::string label;
+    SpgFile::FilthParams params;
+};
+
+bool parseFilthEntry(const XPrmObject* array, std::size_t fieldIndex,
+                     ParsedFilth& out)
+{
+    const XPrmObject::Field& entry = array->fields[fieldIndex];
+    if (!entry.hasObject || !entry.object) {
+        return false;
+    }
+    const XPrmObject* obj = entry.object.get();
+    if (obj->scalar("attributeID") != "UNIT_ATTRIBUTE_FILTH_SPOT") {
+        return false;
+    }
+    out.fieldIndex = static_cast<int>(fieldIndex) - 1;
+    out.unitId = scalarInt(obj, "unitID");
+    const XPrmObject* pos = obj->object("position");
+    out.x = scalarDouble(pos, "x");
+    out.y = scalarDouble(pos, "y");
+    out.label = unquoted(obj->scalar("label"));
+    SpgFile::FilthParams& p = out.params;
+    p.filthType = filthTypeOrdinal(obj->scalar("filthType"));
+    p.attackWidth = scalarFloat(obj, "attackWidth");
+    p.attackDirection = scalarFloat(obj, "attackDirection");
+    p.sleep = scalarBool(obj, "sleep");
+    p.firstSleepTime = scalarFloat(obj, "firstSleepTime");
+    p.sleepPeriod = scalarFloat(obj, "sleepPeriod");
+    p.deltaSleepPeriod = scalarFloat(obj, "deltaSleepPeriod");
+    p.attackPeriond = scalarFloat(obj, "attackPeriond");
+    p.deltaAttackPeriond = scalarFloat(obj, "deltaAttackPeriond");
+    p.creatureNum = scalarInt(obj, "creatureNum");
+    p.activatingUnit = filthActivatingOrdinal(obj->scalar("activatingUnit"));
+    p.activatingDistance = scalarFloat(obj, "activatingDistance");
+    p.attackPlayer = filthAttackOrdinal(obj->scalar("attack_player"));
+    p.initialGeoprocess = scalarBool(obj, "initial_geoprocess");
+    p.createFirst = scalarBool(obj, "create_first");
+    return true;
+}
+
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// ScumSpots members
+// ---------------------------------------------------------------------------
+
+std::vector<SpgFile::ScumSpot> SpgFile::scumSpots() const
+{
+    std::vector<ScumSpot> out;
+    if (!loaded()) {
+        return out;
+    }
+    XPrmObject* bArray = buildingsArray(save_, false);
+    XPrmObject* fArray = filthObjectsArray(save_, false);
+
+    std::vector<ParsedFilth> filths;
+    if (fArray) {
+        for (std::size_t i = 1; i < fArray->fields.size(); ++i) {
+            ParsedFilth parsed;
+            if (parseFilthEntry(fArray, i, parsed)) {
+                filths.push_back(std::move(parsed));
+            }
+        }
+    }
+
+    if (!bArray) {
+        return out;
+    }
+    for (std::size_t i = 1; i < bArray->fields.size(); ++i) {
+        const XPrmObject::Field& entry = bArray->fields[i];
+        if (!entry.hasObject || !entry.object) {
+            continue;
+        }
+        const XPrmObject* obj = entry.object.get();
+        const ScumSpotInfo* info = nullptr;
+        const std::string attrText = obj->scalar("attributeID");
+        for (const ScumSpotInfo& candidate : kScumSpots) {
+            if (attrText == candidate.identifier) {
+                info = &candidate;
+                break;
+            }
+        }
+        if (!info) {
+            continue; // not a scum mound — other code's business
+        }
+        ScumSpot s;
+        s.index = out.size();
+        s.buildingIndex = static_cast<int>(i) - 1;
+        s.attributeId = info->id;
+        s.unitId = scalarInt(obj, "unitID");
+        const XPrmObject* pos = obj->object("position");
+        s.x = scalarDouble(pos, "x");
+        s.y = scalarDouble(pos, "y");
+        s.z = scalarDouble(pos, "z");
+        const XPrmObject* quat = obj->object("orientaion");
+        const double qs = scalarDouble(quat, "s");
+        const double qz = scalarDouble(quat, "z");
+        double angle = 2.0 * std::atan2(qz, qs) * 180.0 /
+                       3.14159265358979323846;
+        while (angle > 180.0) angle -= 360.0;
+        while (angle <= -180.0) angle += 360.0;
+        s.angleDeg = angle;
+        int deadSum = 0;
+        int maxSum = 0;
+        for (int k = 0; k < 5; ++k) {
+            maxSum += info->molecula[static_cast<std::size_t>(k)];
+        }
+        const XPrmObject* damage = obj->object("damageMolecula");
+        const XPrmObject* elements =
+            damage ? damage->object("elementsDead") : nullptr;
+        if (damage && damage->scalar("isAlive") == "false") {
+            s.hp = 0;
+        } else if (elements && elements->fields.size() >= 6) {
+            for (std::size_t k = 1; k <= 5; ++k) {
+                deadSum += std::atoi(elements->fields[k].scalar.c_str());
+            }
+            s.hp = maxSum > 0
+                       ? std::clamp(static_cast<int>(std::llround(
+                             100.0 * (1.0 - static_cast<double>(deadSum) /
+                                               maxSum))),
+                                    0, 100)
+                       : 100;
+        }
+        // Pair with the nearest spawner under the mound.
+        double best = kScumPairDistance;
+        int bestIdx = -1;
+        for (std::size_t k = 0; k < filths.size(); ++k) {
+            const double d =
+                std::hypot(filths[k].x - s.x, filths[k].y - s.y);
+            if (d <= best) {
+                best = d;
+                bestIdx = static_cast<int>(k);
+            }
+        }
+        if (bestIdx >= 0) {
+            s.paired = true;
+            s.filthIndex = filths[static_cast<std::size_t>(bestIdx)].fieldIndex;
+            s.filth = filths[static_cast<std::size_t>(bestIdx)].params;
+        }
+        // The nest identity: the MOUND's own label when it carries one
+        // (editor nests — the trigger wiring watches the mound by it);
+        // otherwise fall back to the spawner label for display only.
+        const std::string moundLabel = unquoted(obj->scalar("label"));
+        s.moundLabeled = !moundLabel.empty();
+        if (s.moundLabeled) {
+            s.label = moundLabel;
+        } else if (bestIdx >= 0) {
+            s.label = filths[static_cast<std::size_t>(bestIdx)].label;
+        }
+        out.push_back(std::move(s));
+    }
+    return out;
+}
+
+bool SpgFile::addScumSpot(ScumSpot& spot)
+{
+    if (!loaded()) {
+        return false;
+    }
+    const ScumSpotInfo* info = scumSpotInfo(spot.attributeId);
+    XPrmObject* bArray = buildingsArray(save_, true);
+    XPrmObject* fArray = filthObjectsArray(save_, true);
+    if (!info || !bArray || !fArray) {
+        return false;
+    }
+    const int moundId = maxUnitId() + 1;
+    spot.unitId = moundId;
+    spot.label = "scum_spot_" + std::to_string(moundId);
+    spot.paired = true;
+    spot.moundLabeled = true;
+
+    XPrmObject::Field mound;
+    mound.typeTag = "struct SaveUnitBuildingData";
+    mound.hasObject = true;
+    mound.object = scumBuildingObject(spot, *info, spot.label);
+    mound.edited = true;
+    appendArrayElement(bArray, std::move(mound));
+    spot.buildingIndex = static_cast<int>(bArray->elementCount()) - 1;
+
+    // The spawner sits at the same x/y ON the zero layer (03ISOLAND
+    // pattern: z = zeroLayerHeight). Its label is the nest label + "_gen" —
+    // the trigger ACTIONS target it while the CONDITIONS watch the mound.
+    XPrmObject::Field spawner;
+    spawner.typeTag = "struct SaveUnitFilthData";
+    spawner.hasObject = true;
+    spawner.object = filthEntryObject(moundId + 1, spot.x, spot.y,
+                                      zeroLayerHeight(),
+                                      spot.label + "_gen", spot.filth);
+    spawner.edited = true;
+    appendArrayElement(fArray, std::move(spawner));
+    spot.filthIndex = static_cast<int>(fArray->elementCount()) - 1;
+    return true;
+}
+
+bool SpgFile::setScumSpotPose(std::size_t index, double x, double y,
+                              double angleDeg)
+{
+    if (!loaded()) {
+        return false;
+    }
+    const std::vector<ScumSpot> spots = scumSpots();
+    if (index >= spots.size()) {
+        return false;
+    }
+    const ScumSpot& s = spots[index];
+    XPrmObject* bArray = buildingsArray(save_, false);
+    if (!bArray || s.buildingIndex < 0 ||
+        static_cast<std::size_t>(s.buildingIndex) + 1 >=
+            bArray->fields.size()) {
+        return false;
+    }
+    poseBuildingObject(bArray->fields[static_cast<std::size_t>(s.buildingIndex) + 1]
+                           .object.get(),
+                       x, y, angleDeg);
+    if (s.paired) {
+        XPrmObject* fArray = filthObjectsArray(save_, false);
+        if (fArray && s.filthIndex >= 0 &&
+            static_cast<std::size_t>(s.filthIndex) + 1 <
+                fArray->fields.size()) {
+            XPrmObject* pos =
+                fArray->fields[static_cast<std::size_t>(s.filthIndex) + 1]
+                    .object->object("position");
+            if (pos) {
+                pos->setScalar("x", formatXPrmNumber(x));
+                pos->setScalar("y", formatXPrmNumber(y));
+            }
+        }
+    }
+    return true;
+}
+
+bool SpgFile::setScumSpotHp(std::size_t index, int hp)
+{
+    if (!loaded()) {
+        return false;
+    }
+    const std::vector<ScumSpot> spots = scumSpots();
+    if (index >= spots.size()) {
+        return false;
+    }
+    const ScumSpot& s = spots[index];
+    const ScumSpotInfo* info = scumSpotInfo(s.attributeId);
+    XPrmObject* bArray = buildingsArray(save_, false);
+    if (!info || !bArray || s.buildingIndex < 0 ||
+        static_cast<std::size_t>(s.buildingIndex) + 1 >=
+            bArray->fields.size()) {
+        return false;
+    }
+    XPrmObject* obj =
+        bArray->fields[static_cast<std::size_t>(s.buildingIndex) + 1]
+            .object.get();
+    XPrmObject::Field* damageField = obj->field("damageMolecula");
+    if (!damageField) {
+        return false;
+    }
+    damageField->hasObject = true;
+    damageField->object = damageObject(hp, info->molecula);
+    damageField->edited = true;
+    return true;
+}
+
+bool SpgFile::setScumSpotFilth(std::size_t index, const FilthParams& filth)
+{
+    if (!loaded()) {
+        return false;
+    }
+    const std::vector<ScumSpot> spots = scumSpots();
+    if (index >= spots.size()) {
+        return false;
+    }
+    const ScumSpot& s = spots[index];
+    if (!s.paired || s.filthIndex < 0) {
+        return false;
+    }
+    XPrmObject* fArray = filthObjectsArray(save_, false);
+    if (!fArray || static_cast<std::size_t>(s.filthIndex) + 1 >=
+                        fArray->fields.size()) {
+        return false;
+    }
+    XPrmObject::Field& entry =
+        fArray->fields[static_cast<std::size_t>(s.filthIndex) + 1];
+    XPrmObject* old = entry.object.get();
+    const int unitId = scalarInt(old, "unitID");
+    const XPrmObject* pos = old->object("position");
+    const double z = scalarDouble(pos, "z");
+    const std::string label = unquoted(old->scalar("label"));
+    entry.object = filthEntryObject(unitId, s.x, s.y, z, label, filth);
+    entry.edited = true;
+    return true;
+}
+
+bool SpgFile::removeScumSpot(std::size_t index)
+{
+    if (!loaded()) {
+        return false;
+    }
+    const std::vector<ScumSpot> spots = scumSpots();
+    if (index >= spots.size()) {
+        return false;
+    }
+    const ScumSpot& s = spots[index];
+    XPrmObject* bArray = buildingsArray(save_, false);
+    if (bArray && s.buildingIndex >= 0) {
+        removeArrayElement(bArray, s.buildingIndex);
+    }
+    if (s.paired && s.filthIndex >= 0) {
+        XPrmObject* fArray = filthObjectsArray(save_, false);
+        if (fArray) {
+            removeArrayElement(fArray, s.filthIndex);
+        }
+    }
+    return true;
+}
+
+bool SpgFile::syncScumTriggerChain(const std::string& chainFile, bool enable)
+{
+    if (!loaded()) {
+        return false;
+    }
+    XPrmObject* manual = save_->object("manualData");
+    XPrmObject* players = manual ? manual->object("players") : nullptr;
+    if (!players) {
+        return false;
+    }
+    for (std::size_t i = 1; i < players->fields.size(); ++i) {
+        if (!players->fields[i].hasObject || !players->fields[i].object) {
+            continue;
+        }
+        XPrmObject* player = players->fields[i].object.get();
+
+        // The modern list: TriggerChainNames = { N; { name = "x"; }, ... }.
+        XPrmObject* tcn = player->object("TriggerChainNames");
+        int foundRow = -1;
+        if (tcn) {
+            for (std::size_t j = 1; j < tcn->fields.size(); ++j) {
+                const XPrmObject::Field& e = tcn->fields[j];
+                if (e.hasObject && e.object &&
+                    unquoted(e.object->scalar("name")) == chainFile) {
+                    foundRow = static_cast<int>(j) - 1;
+                    break;
+                }
+            }
+        }
+        if (enable) {
+            if (foundRow < 0) {
+                if (!tcn) {
+                    auto empty = std::make_shared<XPrmObject>();
+                    empty->fields.push_back(anonScalar("0", ';'));
+                    empty->gaps.assign(2, " ");
+                    XPrmObject::Field field;
+                    field.name = "TriggerChainNames";
+                    field.hasObject = true;
+                    field.object = empty;
+                    field.terminator = ';';
+                    field.edited = true;
+                    player->addField(std::move(field));
+                    tcn = player->object("TriggerChainNames");
+                }
+                XPrmObject::Field entry;
+                entry.hasObject = true;
+                entry.object =
+                    freshObject({namedScalar("name", quoted(chainFile))});
+                entry.edited = true;
+                appendArrayElement(tcn, std::move(entry));
+            }
+        } else if (foundRow >= 0) {
+            removeArrayElement(tcn, foundRow);
+        }
+
+        // The legacy lowercase list merges into TriggerChainNames on read —
+        // purge the name from it in both modes (it must appear exactly once,
+        // in the modern list).
+        XPrmObject* legacy = player->object("triggerChainNames");
+        if (legacy) {
+            for (std::size_t j = 1; j < legacy->fields.size();) {
+                const XPrmObject::Field& e = legacy->fields[j];
+                if (!e.hasObject && unquoted(e.scalar) == chainFile) {
+                    removeArrayElement(legacy, static_cast<int>(j) - 1);
+                } else {
+                    ++j;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+bool SpgFile::normalizeScumNestLabels()
+{
+    if (!loaded()) {
+        return false;
+    }
+    bool changed = false;
+    const std::vector<ScumSpot> spots = scumSpots();
+    for (const ScumSpot& s : spots) {
+        if (!s.paired || s.filthIndex < 0 || s.moundLabeled) {
+            continue;
+        }
+        // Pre-fix nests carry the nest label on the SPAWNER only — move it
+        // to the mound and give the spawner the "_gen" action-target label.
+        // Mounds with any other (foreign) label scheme are left alone.
+        XPrmObject* fArray = filthObjectsArray(save_, false);
+        XPrmObject* bArray = buildingsArray(save_, false);
+        if (!fArray || !bArray || s.filthIndex + 1 >= static_cast<int>(fArray->fields.size()) ||
+            s.buildingIndex + 1 >= static_cast<int>(bArray->fields.size())) {
+            continue;
+        }
+        XPrmObject* filth =
+            fArray->fields[static_cast<std::size_t>(s.filthIndex) + 1]
+                .object.get();
+        const std::string filthLabel = unquoted(filth->scalar("label"));
+        if (filthLabel.rfind("scum_spot_", 0) != 0 ||
+            filthLabel.size() < 5 ||
+            filthLabel.compare(filthLabel.size() - 4, 4, "_gen") == 0) {
+            continue;
+        }
+        filth->setScalar("label", quoted(filthLabel + "_gen"));
+        XPrmObject* mound =
+            bArray->fields[static_cast<std::size_t>(s.buildingIndex) + 1]
+                .object.get();
+        mound->setScalar("label", quoted(filthLabel));
+        changed = true;
+    }
+    return changed;
+}
+
+std::string SpgFile::buildScumTriggerScript(
+    const std::string& chainName) const
+{
+    const std::vector<ScumSpot> spots = scumSpots();
+
+    const char* triggerTail =
+        "\n\t\t\toutcomingLinks = {\n"
+        "\t\t\t\t0;\n"
+        "\t\t\t};\n"
+        "\t\t\tstate_ = SLEEPING;\n"
+        "\t\t\texecutionCounter_ = 0;\n"
+        "\t\t\tinternalColor_ = 0;\n"
+        "\t\t\tcellIndex = {\n"
+        "\t\t\t\tx = 0;\n"
+        "\t\t\t\ty = 0;\n"
+        "\t\t\t};\n"
+        "\t\t\tboundingRect = {\n"
+        "\t\t\t\tleft = 0;\n"
+        "\t\t\t\ttop = 0;\n"
+        "\t\t\t\tright = 0;\n"
+        "\t\t\t\tbottom = 0;\n"
+        "\t\t\t};\n"
+        "\t\t}";
+
+    std::vector<std::string> texts;
+
+    // START: always-true condition, links wake every pair trigger.
+    std::string start =
+        "\t\t{\n"
+        "\t\t\tname = \"START\";\n"
+        "\t\t\tcondition = \"struct ConditionSwitcher\" {\n"
+        "\t\t\t\tstate_ = true;\n"
+        "\t\t\t\tinternalColor_ = 0;\n"
+        "\t\t\t\ttype = AND;\n"
+        "\t\t\t\tconditions = {\n"
+        "\t\t\t\t\t1;\n"
+        "\t\t\t\t\t{\n"
+        "\t\t\t\t\t\ttype = NORMAL;\n"
+        "\t\t\t\t\t\tcondition = \"struct ConditionSwitcher\" {\n"
+        "\t\t\t\t\t\t\tstate_ = true;\n"
+        "\t\t\t\t\t\t\tinternalColor_ = 0;\n"
+        "\t\t\t\t\t\t\ttype = AND;\n"
+        "\t\t\t\t\t\t\tconditions = {\n"
+        "\t\t\t\t\t\t\t\t0;\n"
+        "\t\t\t\t\t\t\t};\n"
+        "\t\t\t\t\t\t};\n"
+        "\t\t\t\t\t}\n"
+        "\t\t\t\t};\n"
+        "\t\t\t};\n"
+        "\t\t\taction = 0;\n";
+    {
+        std::vector<std::string> links;
+        for (const ScumSpot& s : spots) {
+            if (!s.paired || !s.moundLabeled) {
+                continue; // no mound label — nothing the wiring can watch
+            }
+            links.push_back(s.label + "_on");
+            links.push_back(s.label + "_off");
+        }
+        std::string linkText =
+            "\t\t\toutcomingLinks = {\n\t\t\t\t" +
+            std::to_string(links.size()) + ";\n";
+        for (std::size_t i = 0; i < links.size(); ++i) {
+            linkText += "\t\t\t\t{\n"
+                        "\t\t\t\t\ttriggerName = \"" +
+                        links[i] +
+                        "\";\n"
+                        "\t\t\t\t\tcolor = STRATEGY_RED;\n"
+                        "\t\t\t\t\ttype = THIN;\n"
+                        "\t\t\t\t\tactive_ = false;\n"
+                        "\t\t\t\t\tparentOffset = {\n"
+                        "\t\t\t\t\t\tx = 0;\n"
+                        "\t\t\t\t\t\ty = 0;\n"
+                        "\t\t\t\t\t};\n"
+                        "\t\t\t\t\tchildOffset = {\n"
+                        "\t\t\t\t\t\tx = 0;\n"
+                        "\t\t\t\t\t\ty = 0;\n"
+                        "\t\t\t\t\t};\n"
+                        "\t\t\t\t}" +
+                        (i + 1 < links.size() ? "," : "") + "\n";
+        }
+        linkText += "\t\t\t};\n";
+        start += linkText;
+    }
+    // START must be stored CHECKING: TriggerChain::load -> initialize() ->
+    // buildLinks() seeds activeTriggers_ from the STORED state
+    // (the SLEEPING->CHECKING reset in initializeTriggersAndLinks runs only
+    // in the debug editor path). A SLEEPING START leaves the whole chain
+    // dead — exactly how the shipped chains store it (03isoland.scr).
+    start += "\t\t\tstate_ = CHECKING;\n"
+            "\t\t\texecutionCounter_ = 0;\n"
+            "\t\t\tinternalColor_ = 0;\n"
+            "\t\t\tcellIndex = {\n"
+            "\t\t\t\tx = 0;\n"
+            "\t\t\t\ty = 0;\n"
+            "\t\t\t};\n"
+            "\t\t\tboundingRect = {\n"
+            "\t\t\t\tleft = 0;\n"
+            "\t\t\t\ttop = 0;\n"
+            "\t\t\t\tright = 0;\n"
+            "\t\t\t\tbottom = 0;\n"
+            "\t\t\t};\n"
+            "\t\t}";
+    texts.push_back(std::move(start));
+
+    // Per pair: the conditions watch the MOUND by its label — exists while
+    // it stands (activates the spawner), a destroy event once it dies
+    // (deactivates it). Distance-based wiring is impossible here: the game
+    // loads spawner and mound at the SAME coordinates and
+    // terPlayer::findUnit(id, pos) filters distanceMin=0 with `dist > 0`,
+    // excluding a co-located unit outright (the live EXTDEMO bug).
+    for (const ScumSpot& s : spots) {
+        if (!s.paired || !s.moundLabeled) {
+            continue;
+        }
+        const std::string genLabel = s.label + "_gen";
+        texts.push_back(
+            "\t\t{\n"
+            "\t\t\tname = \"" + s.label + "_on\";\n"
+            "\t\t\tcondition = \"struct ConditionObjectByLabelExists\" {\n"
+            "\t\t\t\tstate_ = false;\n"
+            "\t\t\t\tinternalColor_ = 0;\n"
+            "\t\t\t\tlabel = \"" + s.label + "\";\n"
+            "\t\t\t};\n"
+            "\t\t\taction = \"struct ActionActivateObjectByLabel\" {\n"
+            "\t\t\t\tinternalColor_ = 0;\n"
+            "\t\t\t\tlabel = \"" + genLabel + "\";\n"
+            "\t\t\t};\n" + triggerTail);
+
+        texts.push_back(
+            "\t\t{\n"
+            "\t\t\tname = \"" + s.label + "_off\";\n"
+            "\t\t\tcondition = \"struct ConditionKillObjectByLabel\" {\n"
+            "\t\t\t\tstate_ = false;\n"
+            "\t\t\t\tinternalColor_ = 0;\n"
+            "\t\t\t\tlabel = \"" + s.label + "\";\n"
+            "\t\t\t};\n"
+            "\t\t\taction = \"struct ActionDeactivateObjectByLabel\" {\n"
+            "\t\t\t\tinternalColor_ = 0;\n"
+            "\t\t\t\tlabel = \"" + genLabel + "\";\n"
+            "\t\t\t};\n" + triggerTail);
+    }
+
+    std::string out;
+    out += "TriggerChain = {\n";
+    out += "\tname = \"" + chainName + "\";\n";
+    out += "\ttriggers = {\n";
+    out += "\t\t" + std::to_string(texts.size()) + ";\n";
+    for (std::size_t i = 0; i < texts.size(); ++i) {
+        out += texts[i];
+        out += (i + 1 < texts.size() ? ",\n" : "\n");
+    }
+    out += "\t};\n";
+    out += "\tboundingRect = {\n"
+           "\t\tleft = 0;\n"
+           "\t\ttop = 0;\n"
+           "\t\tright = 0;\n"
+           "\t\tbottom = 0;\n"
+           "\t};\n";
+    out += "\tviewRect = {\n"
+           "\t\tleft = 0;\n"
+           "\t\ttop = 0;\n"
+           "\t\tright = 0;\n"
+           "\t\tbottom = 0;\n"
+           "\t};\n";
+    out += "};\n";
+    return out;
+}
+
+int SpgFile::filthTypeCount()
+{
+    return kFilthTypeCount;
+}
+
+const char* SpgFile::filthTypeIdentifier(int ordinal)
+{
+    return filthTypeName(ordinal);
 }
 
 } // namespace MapEditor
