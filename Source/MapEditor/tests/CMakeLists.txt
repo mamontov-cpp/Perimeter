@@ -35,6 +35,7 @@ ADD_EXECUTABLE(map_editor_tests
         BuildingsTests.cpp
         UnitModelCatalogTests.cpp
         ScumSpotsTests.cpp
+        NatureObjectsTests.cpp
         ScriptedBrushTests.cpp
         SculptBrushTests.cpp
         BrushHeightGateTests.cpp

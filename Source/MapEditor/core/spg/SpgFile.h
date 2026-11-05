@@ -286,6 +286,42 @@ public:
     /// Idempotent; runs before saving. Returns true when anything changed.
     bool normalizeScumNestLabels();
 
+    // -----------------------------------------------------------------------
+    // Static nature objects — SavePrm.environment ("struct
+    // SaveUnitNatureData": SaveUnitData base + modelName/visible/natureFlag/
+    // chain fields). The per-instance model comes from the save entry (the
+    // attribute's own model is a placeholder); `radius` scales the model
+    // (scale = radius / native bound radius, Nature.cpp setModelName).
+    // HP is not editable — always a full damageMolecula. z is stored and
+    // used verbatim (no re-snap on load).
+    // -----------------------------------------------------------------------
+
+    struct NatureObject
+    {
+        std::size_t index = 0;  ///< row in natureObjects().
+        int unitId = 0;
+        std::string modelName;  ///< M3D path, e.g. RESOURCE\Models\...
+        double x = 0, y = 0, z = 0;
+        double angleDeg = 0;
+        double radius = 10.0;
+        bool destroyable = true;   ///< NATURE_FLAG_DESTROY.
+        bool collisions = true;    ///< NATURE_FLAG_REAL.
+        bool lighting = false;     ///< NATURE_FLAG_LIGHT.
+        std::string label;
+    };
+
+    std::vector<NatureObject> natureObjects() const;
+    /// Appends an entry. Fills unitId (maxUnitId()+1) and the file row.
+    bool addNatureObject(NatureObject& object);
+    /// Moves/rotates/re-heights an existing object.
+    bool setNatureObjectPose(std::size_t index, double x, double y, double z,
+                             double angleDeg);
+    /// Rewrites the size and the natureFlag bits.
+    bool setNatureObjectShape(std::size_t index, double radius,
+                              bool destroyable, bool collisions,
+                              bool lighting);
+    bool removeNatureObject(std::size_t index);
+
     /// Adds/removes `chainFile` (e.g. "EXTDEMO.scr") in EVERY player's
     /// TriggerChainNames, and purges it from the legacy lowercase
     /// triggerChainNames. Add is a no-op when already registered. Call before

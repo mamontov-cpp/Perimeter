@@ -433,6 +433,39 @@ public:
     /// Index of the nest under the map cell (-1 when none).
     int scumIndexAtCell(double mapX, double mapY) const;
 
+    /// Static nature objects (SavePrm.environment) — per-instance M3D
+    /// model; a separate overlay like the scum nests.
+    struct NaturePoint
+    {
+        QString modelName;
+        double mapX = 0; ///< world units == map cells.
+        double mapY = 0;
+        double z = 0;    ///< stored verbatim (no re-snap on load).
+        double angleDeg = 0;
+        double radius = 10;
+        bool selected = false;
+    };
+    void setNaturePoints(const std::vector<NaturePoint> &objects);
+    const std::vector<NaturePoint> &naturePoints() const
+    {
+        return naturePoints_;
+    }
+    /// The nature-panel tool active in the viewport.
+    enum class NatureTool
+    {
+        None,
+        Place,  ///< click emits naturePlaceRequested(x, y).
+        Select, ///< click emits natureSelectRequested(x, y).
+        Delete, ///< click emits natureDeleteRequested(x, y).
+    };
+    void setNatureTool(NatureTool tool) { natureTool_ = tool; }
+    NatureTool natureTool() const { return natureTool_; }
+    /// Placement preview footprint at the cursor (green/red).
+    void setNaturePreview(const QString &modelName, double radiusCells,
+                          bool valid);
+    /// Index of the object under the map cell (-1 when none).
+    int natureIndexAtCell(double mapX, double mapY) const;
+
     /// Bake a building model (UnitModelCatalog attributeId) into an icon
     /// through the GPU view's offscreen scene. Returns a null icon when the
     /// GPU view is inactive or the model cannot be loaded — callers keep
@@ -512,6 +545,10 @@ signals:
     void scumPlaceRequested(double mapX, double mapY);
     void scumSelectRequested(double mapX, double mapY);
     void scumDeleteRequested(double mapX, double mapY);
+    /// The nature-panel tools clicked a map cell.
+    void naturePlaceRequested(double mapX, double mapY);
+    void natureSelectRequested(double mapX, double mapY);
+    void natureDeleteRequested(double mapX, double mapY);
     /// Emitted once after the first successful GPU terrain view init (or
     /// after a reload that drops it back to the CPU path). MainWindow
     /// hides the freeze-dam action (which only makes sense for the CPU path)
@@ -590,6 +627,9 @@ private:
     /// Deliberately NOT drawn on the minimap or the exported top-down view.
     void drawScumPoints(QPainter &painter);
     void drawScumPoints3D(QPainter &painter);
+    /// Nature objects: dots (2D) / per-instance models (3D) + the ghost.
+    void drawNaturePoints(QPainter &painter);
+    void drawNaturePoints3D(QPainter &painter);
     void drawHud(QPainter &painter);
     QRect visibleCellRange() const;
 
@@ -805,6 +845,12 @@ private:
     int scumPreviewAttr_ = -1;
     double scumPreviewRadius_ = 0;
     bool scumPreviewValid_ = true;
+    /// Static nature objects — per-instance model, separate list.
+    std::vector<NaturePoint> naturePoints_;
+    NatureTool natureTool_ = NatureTool::None;
+    QString naturePreviewModel_;
+    double naturePreviewRadius_ = 0;
+    bool naturePreviewValid_ = true;
 
     /// Default grid step in map cells: 1 << kmGrid (VMAP.h:89).
     static constexpr int kFineGridCell = 4;

@@ -345,6 +345,8 @@ SET(MAP_EDITOR_APP_SRCS
         ui/BuildingsPanel.cpp
         ui/ScumSpotsPanel.cpp
         ui/MainWindowScumSpots.cpp
+        ui/NaturePanel.cpp
+        ui/MainWindowNature.cpp
         ui/BuildingsPanel.h
         ui/ScriptEditorDialog.cpp
         ui/ScriptEditorDialog.h

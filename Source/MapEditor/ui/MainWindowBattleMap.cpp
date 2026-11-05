@@ -13,6 +13,7 @@
 #include "BuildingsPanel.h"
 #include "BuildingCatalog.h"
 #include "ScumSpotsPanel.h"
+#include "NaturePanel.h"
 #include "EditorSession.h"
 #include "MinimapWidget.h"
 #include "ViewportWidget.h"
@@ -101,6 +102,7 @@ void MainWindow::buildBattleMapDock()
 
     buildBuildingsDock();
     buildScumSpotsDock();
+    buildNatureDock();
 }
 
 void MainWindow::buildBuildingsDock()
@@ -523,6 +525,7 @@ void MainWindow::refreshBattleMapUI()
     if (active) {
         reloadPlacedBuildings();
         reloadScumSpots();
+        reloadNatureObjects();
     } else {
         placedBuildings_.clear();
         selectedBuildingRow_ = -1;
@@ -530,12 +533,17 @@ void MainWindow::refreshBattleMapUI()
         placedScumSpots_.clear();
         selectedScumRow_ = -1;
         syncScumOverlay();
+        placedNature_.clear();
+        selectedNatureRow_ = -1;
+        syncNatureOverlay();
         if (viewport_) {
             viewport_->setBuildingTool(
                 MapEditor::ViewportWidget::BuildingTool::None);
             viewport_->setBuildingPreview(-1, 0, true);
             viewport_->setScumTool(MapEditor::ViewportWidget::ScumTool::None);
             viewport_->setScumPreview(-1, 0, true);
+            viewport_->setNatureTool(MapEditor::ViewportWidget::NatureTool::None);
+            viewport_->setNaturePreview(QString(), 0, true);
         }
     }
     if (buildingsPanel_) {
@@ -567,6 +575,23 @@ void MainWindow::refreshBattleMapUI()
     }
     if (active) {
         bakeScumIconsIfPossible();
+    }
+    if (naturePanel_) {
+        naturePanel_->setActive(active);
+        if (active) {
+            if (!natureModelsScanned_ && session_ &&
+                session_->hasGameDir()) {
+                naturePanel_->setModels(scanNatureModels());
+                natureModelsScanned_ = true;
+            }
+            // Zero-layer baseline for the Z spin (placement default).
+            naturePanel_->setDefaultZ(battleMap_.zeroLayerHeight());
+            naturePanel_->setSelectionInfo(
+                tr("%1 object(s) on the map.").arg(placedNature_.size()));
+        }
+    }
+    if (natureDock_) {
+        natureDock_->setVisible(active);
     }
     // The one place that maps session/battle-map state onto every action
     // (Save/Save As, Open, Validate, autofixes).

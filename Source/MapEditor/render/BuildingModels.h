@@ -24,6 +24,7 @@
 
 #pragma once
 
+#include <string>
 #include <vector>
 
 class cScene;
@@ -40,6 +41,11 @@ struct BuildingModelPose
     float x = 0.f;          ///< Map cell == world unit (see TerrainGpuView).
     float y = 0.f;
     float angleDeg = 0.f;   ///< Yaw around +Z, degrees.
+    /// Nature objects: per-instance M3D path (attributeId ignored, no
+    /// catalog lookup) with an explicit footprint radius and absolute z.
+    const char* modelFile = nullptr;
+    float radius = 0.f;
+    float z = 0.f;
 };
 
 class BuildingModels
@@ -74,16 +80,23 @@ public:
     bool hasPreviewInstance() const { return previewNode_ != nullptr; }
 
 private:
-    cObjectNodeRoot* createInstance(int attributeId);
+    static std::string instanceKey(const BuildingModelPose& pose)
+    {
+        if (pose.modelFile) {
+            return std::string("file:") + pose.modelFile;
+        }
+        return "attr:" + std::to_string(pose.attributeId);
+    }
+    cObjectNodeRoot* createInstance(const BuildingModelPose& pose);
     void poseInstance(cObjectNodeRoot* node, int attributeId,
                       const BuildingModelPose& pose, float zeroPlastZ);
 
     cScene* scene_ = nullptr;                    ///< not owned
     cUnkLight* light_ = nullptr;                 ///< owned (scene-attached)
     std::vector<cObjectNodeRoot*> nodes_;        ///< owned, scene-attached
-    std::vector<int> nodeAttributeIds_;          ///< parallel to nodes_
+    std::vector<std::string> nodeKeys_;          ///< parallel to nodes_
     cObjectNodeRoot* previewNode_ = nullptr;     ///< owned, scene-attached
-    int previewAttributeId_ = -1;
+    std::string previewKey_;
 };
 
 } // namespace MapEditor

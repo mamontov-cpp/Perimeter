@@ -226,9 +226,29 @@ private:
                     return false;
                 }
             } else {
-                if (!readToken(text_, pos_, field.scalar)) {
-                    errorPos = pos_;
-                    return false;
+                // Scalar value: everything up to the field terminator (';'
+                // for named struct fields, ',' between array elements) or
+                // the closing brace. Enum/bitmask values are expressions
+                // ("A | B | C") — reading a single token would silently
+                // truncate them (and misparse the rest of the object).
+                const std::size_t valueBegin = pos_;
+                while (pos_ < text_.size() && text_[pos_] != ';' &&
+                       text_[pos_] != ',' && text_[pos_] != '}') {
+                    ++pos_;
+                }
+                field.scalar =
+                    text_.substr(valueBegin, pos_ - valueBegin);
+                while (!field.scalar.empty() &&
+                       (field.scalar.back() == ' ' ||
+                        field.scalar.back() == '\t' ||
+                        field.scalar.back() == '\r' ||
+                        field.scalar.back() == '\n')) {
+                    field.scalar.pop_back();
+                }
+                if (field.name == "natureFlag") {
+                    fprintf(stderr, "XPARSE natureFlag='%s'\n",
+                            field.scalar.c_str());
+                    fflush(stderr);
                 }
             }
 

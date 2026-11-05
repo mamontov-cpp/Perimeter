@@ -31,6 +31,7 @@ class PalettePanel;
 class BattleMapPanel;
 class BuildingsPanel;
 class ScumSpotsPanel;
+class NaturePanel;
 class BrushTool;
 struct View3DCamera;
 }
@@ -238,7 +239,17 @@ private:
     /// TriggerChainNames (before a save).
     void syncScumTriggerArtifacts();
     /// Writes/deletes Scripts/Triggers/<world>.scr after a successful save.
-    void flushScumTriggerFile();    void reloadPlacedBuildings();
+    void flushScumTriggerFile();
+    /// Nature dock + handlers (MainWindowNature.cpp).
+    void buildNatureDock();
+    void reloadNatureObjects();
+    void syncNatureOverlay();
+    void onNaturePlace(double mapX, double mapY);
+    void onNatureSelect(double mapX, double mapY);
+    void onNatureDelete(double mapX, double mapY);
+    void onNatureCursorMoved(int mapX, int mapY);
+    /// Nature models under RESOURCE/Models/Environment (game-content scan).
+    QStringList scanNatureModels() const;    void reloadPlacedBuildings();
     void syncBuildingsOverlay();
     void onBuildingPlace(double mapX, double mapY);
     void onBuildingSelect(double mapX, double mapY);
@@ -572,7 +583,12 @@ private:
     std::vector<MapEditor::SpgFile::ScumSpot> placedScumSpots_;
     int selectedScumRow_ = -1;
     bool scumIconsBaked_ = false;
-    /// Filth parameters the panel currently holds (stamped on placement,
+    /// Nature panel + state (SavePrm.environment SaveUnitNatureData).
+    QDockWidget *natureDock_ = nullptr;
+    MapEditor::NaturePanel *naturePanel_ = nullptr;
+    std::vector<MapEditor::SpgFile::NatureObject> placedNature_;
+    int selectedNatureRow_ = -1;
+    bool natureModelsScanned_ = false;    /// Filth parameters the panel currently holds (stamped on placement,
     /// applied to the selection on edit).
     MapEditor::SpgFile::FilthParams pendingFilth_;
     /// Set by syncScumTriggerArtifacts() before a save, consumed by

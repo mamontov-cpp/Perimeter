@@ -3968,6 +3968,8 @@ void MainWindow::onActionSelectGameDir()
     }
 
     gameDirMgr_->saveGameDir(dir);
+    // The nature model list comes from the game folder — rescan on switch.
+    natureModelsScanned_ = false;
     // The session unloaded the world when the directory switched — drop the
     // viewport raster binding and the minimap image with it.
     onWorldUnload();

@@ -1971,6 +1971,224 @@ std::string SpgFile::buildScumTriggerScript(
     return out;
 }
 
+// ---------------------------------------------------------------------------
+// Static nature objects — SavePrm.environment ("struct SaveUnitNatureData").
+// Format per the shipped missions (02PYRAMIDA.spg trees, 03ISOLAND.spg
+// effects): the SaveUnitData base + modelName/visible/natureFlag/chain
+// fields. HP stays full (damageMolecula all-zero); z is stored verbatim.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// SavePrm.environment.objects (created on demand).
+XPrmObject* environmentObjectsArray(XPrmObject* save, bool create)
+{
+    if (!save) {
+        return nullptr;
+    }
+    XPrmObject* holder = save->object("environment");
+    if (!holder && create) {
+        auto objects = std::make_shared<XPrmObject>();
+        objects->fields.push_back(anonScalar("0", ';'));
+        objects->gaps.assign(2, " ");
+        auto block = std::make_shared<XPrmObject>();
+        block->fields.push_back(XPrmObject::Field{
+            "objects", "", true, "", objects, "", ';', true});
+        block->gaps.assign(2, " ");
+        XPrmObject::Field entry;
+        entry.name = "environment";
+        entry.hasObject = true;
+        entry.object = block;
+        entry.terminator = ';';
+        entry.edited = true;
+        save->addField(std::move(entry));
+        holder = save->object("environment");
+    }
+    return holder ? holder->object("objects") : nullptr;
+}
+
+std::string natureFlagsText(bool destroyable, bool collisions, bool lighting)
+{
+    std::string text;
+    if (destroyable) {
+        text += "NATURE_FLAG_DESTROY | ";
+    }
+    if (collisions) {
+        text += "NATURE_FLAG_REAL | ";
+    }
+    if (lighting) {
+        text += "NATURE_FLAG_LIGHT | ";
+    }
+    text += "NATURE_FLAG_NONE";
+    return text;
+}
+
+void parseNatureFlags(const std::string& text, SpgFile::NatureObject& out)
+{
+    out.destroyable = text.find("NATURE_FLAG_DESTROY") != std::string::npos;
+    out.collisions = text.find("NATURE_FLAG_REAL") != std::string::npos;
+    out.lighting = text.find("NATURE_FLAG_LIGHT") != std::string::npos;
+}
+
+std::shared_ptr<XPrmObject>
+natureEntryObject(const SpgFile::NatureObject& object)
+{
+    std::vector<XPrmObject::Field> fields;
+    fields.push_back(namedScalar("unitID", std::to_string(object.unitId)));
+    fields.push_back(
+        namedScalar("attributeID", "UNIT_ATTRIBUTE_STATIC_NATURE"));
+    fields.push_back(XPrmObject::Field{
+        "position", "", true, "",
+        vectorObject(object.x, object.y, object.z), "", ';', true});
+    fields.push_back(XPrmObject::Field{"orientaion", "", true, "",
+                                       quaternionZObject(object.angleDeg),
+                                       "", ';', true});
+    fields.push_back(
+        namedScalar("radius", formatXPrmNumber(object.radius)));
+    fields.push_back(namedScalar("label", quoted(object.label)));
+    fields.push_back(XPrmObject::Field{"damageMolecula", "", true, "",
+                                       damageObject(100, {0, 0, 0, 0, 1}),
+                                       "", ';', true});
+    fields.push_back(
+        namedScalar("modelName", quote(object.modelName)));
+    fields.push_back(namedScalar("visible", "true"));
+    fields.push_back(namedScalar(
+        "natureFlag",
+        natureFlagsText(object.destroyable, object.collisions,
+                        object.lighting)));
+    fields.push_back(namedScalar("chainName", quoted("main")));
+    fields.push_back(namedScalar("chainPhase", "0."));
+    fields.push_back(namedScalar("chainPeriod", "0."));
+    return freshObject(std::move(fields));
+}
+
+} // namespace
+
+std::vector<SpgFile::NatureObject> SpgFile::natureObjects() const
+{
+    std::vector<NatureObject> out;
+    if (!loaded()) {
+        return out;
+    }
+    XPrmObject* array = environmentObjectsArray(save_, false);
+    if (!array) {
+        return out;
+    }
+    for (std::size_t i = 1; i < array->fields.size(); ++i) {
+        const XPrmObject::Field& entry = array->fields[i];
+        if (!entry.hasObject || !entry.object) {
+            continue;
+        }
+        const XPrmObject* obj = entry.object.get();
+        if (obj->scalar("attributeID") != "UNIT_ATTRIBUTE_STATIC_NATURE") {
+            continue;
+        }
+        NatureObject n;
+        n.index = out.size();
+        n.unitId = scalarInt(obj, "unitID");
+        const XPrmObject* pos = obj->object("position");
+        n.x = scalarDouble(pos, "x");
+        n.y = scalarDouble(pos, "y");
+        n.z = scalarDouble(pos, "z");
+        const XPrmObject* quat = obj->object("orientaion");
+        const double qs = scalarDouble(quat, "s");
+        const double qz = scalarDouble(quat, "z");
+        double angle = 2.0 * std::atan2(qz, qs) * 180.0 /
+                       3.14159265358979323846;
+        while (angle > 180.0) angle -= 360.0;
+        while (angle <= -180.0) angle += 360.0;
+        n.angleDeg = angle;
+        n.radius = scalarDouble(obj, "radius");
+        n.label = unquoted(obj->scalar("label"));
+        n.modelName = unquote(obj->scalar("modelName"));
+        parseNatureFlags(obj->scalar("natureFlag"), n);
+        out.push_back(std::move(n));
+    }
+    return out;
+}
+
+bool SpgFile::addNatureObject(NatureObject& object)
+{
+    if (!loaded() || object.modelName.empty()) {
+        return false;
+    }
+    XPrmObject* array = environmentObjectsArray(save_, true);
+    if (!array) {
+        return false;
+    }
+    object.unitId = maxUnitId() + 1;
+    XPrmObject::Field entry;
+    entry.typeTag = "struct SaveUnitNatureData";
+    entry.hasObject = true;
+    entry.object = natureEntryObject(object);
+    entry.edited = true;
+    appendArrayElement(array, std::move(entry));
+    object.index = array->elementCount() - 1;
+    return true;
+}
+
+bool SpgFile::setNatureObjectPose(std::size_t index, double x, double y,
+                                  double z, double angleDeg)
+{
+    if (!loaded()) {
+        return false;
+    }
+    XPrmObject* array = environmentObjectsArray(save_, false);
+    if (!array || index + 1 >= array->fields.size() ||
+        !array->fields[index + 1].object) {
+        return false;
+    }
+    XPrmObject* obj = array->fields[index + 1].object.get();
+    XPrmObject* pos = obj->object("position");
+    if (!pos) {
+        return false;
+    }
+    pos->setScalar("x", formatXPrmNumber(x));
+    pos->setScalar("y", formatXPrmNumber(y));
+    pos->setScalar("z", formatXPrmNumber(z));
+    XPrmObject::Field* quatField = obj->field("orientaion");
+    if (!quatField) {
+        return false;
+    }
+    quatField->hasObject = true;
+    quatField->object = quaternionZObject(angleDeg);
+    quatField->edited = true;
+    return true;
+}
+
+bool SpgFile::setNatureObjectShape(std::size_t index, double radius,
+                                   bool destroyable, bool collisions,
+                                   bool lighting)
+{
+    if (!loaded()) {
+        return false;
+    }
+    XPrmObject* array = environmentObjectsArray(save_, false);
+    if (!array || index + 1 >= array->fields.size() ||
+        !array->fields[index + 1].object) {
+        return false;
+    }
+    XPrmObject* obj = array->fields[index + 1].object.get();
+    obj->setScalar("radius", formatXPrmNumber(radius));
+    obj->setScalar(
+        "natureFlag",
+        natureFlagsText(destroyable, collisions, lighting));
+    return true;
+}
+
+bool SpgFile::removeNatureObject(std::size_t index)
+{
+    if (!loaded()) {
+        return false;
+    }
+    XPrmObject* array = environmentObjectsArray(save_, false);
+    if (!array || index + 1 >= array->fields.size()) {
+        return false;
+    }
+    removeArrayElement(array, static_cast<int>(index));
+    return true;
+}
+
 int SpgFile::filthTypeCount()
 {
     return kFilthTypeCount;

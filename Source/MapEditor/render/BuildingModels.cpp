@@ -80,12 +80,12 @@ void BuildingModels::shutdown()
         }
     }
     nodes_.clear();
-    nodeAttributeIds_.clear();
+    nodeKeys_.clear();
 
     if (previewNode_) {
         previewNode_->Release();
         previewNode_ = nullptr;
-        previewAttributeId_ = -1;
+        previewKey_.clear();
     }
 
     if (light_) {
@@ -95,32 +95,57 @@ void BuildingModels::shutdown()
     scene_ = nullptr;
 }
 
-cObjectNodeRoot* BuildingModels::createInstance(int attributeId)
+cObjectNodeRoot* BuildingModels::createInstance(const BuildingModelPose& pose)
 {
-    const UnitModelInfo* info = unitModelInfo(attributeId);
-    if (!info || !scene_) {
+    if (!scene_) {
+        return nullptr;
+    }
+    if (pose.modelFile) {
+        // Nature object: the model comes from the save entry; textures
+        // resolve relative to the model's own directory.
+        return scene_->CreateObject(pose.modelFile, nullptr);
+    }
+    const UnitModelInfo* info = unitModelInfo(pose.attributeId);
+    if (!info) {
         return nullptr;
     }
     cObjectNodeRoot* node = scene_->CreateObject(info->modelFile, kFactionTexturePath);
     if (!node) {
         editorTrace("BuildingModels: model load failed for attribute %d (%s)",
-                    attributeId, info->modelFile);
+                    pose.attributeId, info->modelFile);
         return nullptr;
     }
     return node;
 }
 
 void BuildingModels::poseInstance(cObjectNodeRoot* node, int attributeId,
-                                  const BuildingModelPose& pose, float zeroPlastZ)
+                                  const BuildingModelPose& pose,
+                                  float zeroPlastZ)
 {
-    const UnitModelInfo* info = unitModelInfo(attributeId);
-    if (!info) {
-        return;
-    }
     // GlobalBound is computed at load (cObjLibrary::LoadM3D -> CalcBorder):
     // the unscaled local-space bounds of the whole hierarchy.
     sBox6f bound;
     node->GetBoundBox(bound);
+
+    if (pose.modelFile) {
+        // Nature object: radius IS the footprint — scale the model so its
+        // native bound radius equals it; z is stored verbatim (the game
+        // does not re-snap nature objects on load).
+        const float nativeRadius = bound.GetRadius();
+        const float scale =
+            nativeRadius > 1e-6f ? pose.radius / nativeRadius : 1.f;
+        node->SetScale(Vect3f(scale, scale, scale));
+        Mat3f rot(static_cast<float>(pose.angleDeg * kDegToRad), Z_AXIS);
+        node->SetPosition(
+            MatXf(rot, Vect3f(pose.x, pose.y, pose.z)));
+        node->Update();
+        return;
+    }
+
+    const UnitModelInfo* info = unitModelInfo(attributeId);
+    if (!info) {
+        return;
+    }
     const float scale = modelScale(info, bound.GetRadius());
 
     node->SetScale(Vect3f(scale, scale, scale));
@@ -147,25 +172,25 @@ void BuildingModels::sync(const std::vector<BuildingModelPose>& poses, float zer
             nodes_.back()->Release();
         }
         nodes_.pop_back();
-        nodeAttributeIds_.pop_back();
+        nodeKeys_.pop_back();
     }
 
     // Grow the pool.
     while (static_cast<int>(nodes_.size()) < static_cast<int>(poses.size())) {
         const int index = static_cast<int>(nodes_.size());
-        nodes_.push_back(createInstance(poses[index].attributeId));
-        nodeAttributeIds_.push_back(poses[index].attributeId);
+        nodes_.push_back(createInstance(poses[index]));
+        nodeKeys_.push_back(instanceKey(poses[index]));
     }
 
-    // Attribute change on an existing slot (selection-independent, but cheap
-    // to check): recreate the instance.
+    // Identity change on an existing slot (attribute id for catalog
+    // buildings, model file for nature objects): recreate the instance.
     for (int i = 0; i < static_cast<int>(poses.size()); ++i) {
-        if (nodeAttributeIds_[i] != poses[i].attributeId) {
+        if (nodeKeys_[i] != instanceKey(poses[i])) {
             if (nodes_[i]) {
                 nodes_[i]->Release();
             }
-            nodes_[i] = createInstance(poses[i].attributeId);
-            nodeAttributeIds_[i] = poses[i].attributeId;
+            nodes_[i] = createInstance(poses[i]);
+            nodeKeys_[i] = instanceKey(poses[i]);
         }
     }
 
@@ -190,13 +215,13 @@ void BuildingModels::setPreview(bool valid, const BuildingModelPose& pose, float
         return;
     }
 
-    if (previewAttributeId_ != pose.attributeId) {
+    if (previewKey_ != instanceKey(pose)) {
         if (previewNode_) {
             previewNode_->Release();
             previewNode_ = nullptr;
         }
-        previewNode_ = createInstance(pose.attributeId);
-        previewAttributeId_ = pose.attributeId;
+        previewNode_ = createInstance(pose);
+        previewKey_ = instanceKey(pose);
     }
     if (!previewNode_) {
         return;

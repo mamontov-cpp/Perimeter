@@ -21,6 +21,9 @@ struct BuildingModelPose
     float x = 0.f;
     float y = 0.f;
     float angleDeg = 0.f;
+    const char* modelFile = nullptr;
+    float radius = 0.f;
+    float z = 0.f;
 };
 class TerrainGpuView
 {
@@ -952,6 +955,37 @@ int ViewportWidget::scumIndexAtCell(double mapX, double mapY) const
     return best;
 }
 
+void ViewportWidget::setNaturePoints(const std::vector<NaturePoint> &objects)
+{
+    naturePoints_ = objects;
+    update();
+}
+
+void ViewportWidget::setNaturePreview(const QString &modelName,
+                                      double radiusCells, bool valid)
+{
+    naturePreviewModel_ = modelName;
+    naturePreviewRadius_ = radiusCells;
+    naturePreviewValid_ = valid;
+    update();
+}
+
+int ViewportWidget::natureIndexAtCell(double mapX, double mapY) const
+{
+    int best = -1;
+    double bestDist = 1e18;
+    for (std::size_t i = 0; i < naturePoints_.size(); ++i) {
+        const NaturePoint& n = naturePoints_[i];
+        const double reach = std::max(n.radius, 8.0);
+        const double d = std::hypot(n.mapX - mapX, n.mapY - mapY);
+        if (d <= reach && d < bestDist) {
+            bestDist = d;
+            best = static_cast<int>(i);
+        }
+    }
+    return best;
+}
+
 // ---------------------------------------------------------------------------
 // Coordinate conversion
 // ---------------------------------------------------------------------------
@@ -1285,11 +1319,13 @@ void ViewportWidget::paintGL()
                 editorTrace("ViewportWidget: GPU frame %d (%dx%d)", ++gpuFrameLog,
                             fboW, fboH);
             }
-            // Placed buildings + scum nests ride the same scene draw — sync
-            // the M3D model instances with both overlay lists before
-            // rendering (scum nests follow the buildings in the pose list).
+            // Placed buildings + scum nests + nature objects ride the same
+            // scene draw — sync the M3D model instances with all overlay
+            // lists before rendering (scum nests follow the buildings, then
+            // the nature objects, in the pose list).
             std::vector<BuildingModelPose> modelPoses;
-            modelPoses.reserve(buildings_.size() + scumSpots_.size());
+            modelPoses.reserve(buildings_.size() + scumSpots_.size() +
+                               naturePoints_.size());
             for (const BuildingPoint &b : buildings_) {
                 modelPoses.push_back({b.attributeId,
                                       static_cast<float>(b.mapX),
@@ -1302,12 +1338,34 @@ void ViewportWidget::paintGL()
                                       static_cast<float>(b.mapY),
                                       static_cast<float>(b.angleDeg)});
             }
+            // Keep the UTF-8 model paths alive until the sync consumes them.
+            std::vector<std::string> natureModelPaths;
+            natureModelPaths.reserve(naturePoints_.size());
+            for (const NaturePoint &n : naturePoints_) {
+                natureModelPaths.push_back(n.modelName.toUtf8().constData());
+            }
+            for (std::size_t i = 0; i < naturePoints_.size(); ++i) {
+                const NaturePoint &n = naturePoints_[i];
+                BuildingModelPose pose;
+                pose.attributeId = 166; // UNIT_ATTRIBUTE_STATIC_NATURE.
+                pose.x = static_cast<float>(n.mapX);
+                pose.y = static_cast<float>(n.mapY);
+                pose.angleDeg = static_cast<float>(n.angleDeg);
+                pose.modelFile = natureModelPaths[i].c_str();
+                pose.radius = static_cast<float>(n.radius);
+                pose.z = static_cast<float>(n.z);
+                modelPoses.push_back(pose);
+            }
             gpuView_->syncBuildingModels(modelPoses);
             const bool buildingPreviewOn =
                 buildingTool_ == BuildingTool::Place && buildingPreviewAttr_ >= 0 &&
                 cursorCell_.x() >= 0 && cursorCell_.y() >= 0;
             const bool scumPreviewOn =
                 scumTool_ == ScumTool::Place && scumPreviewAttr_ >= 0 &&
+                cursorCell_.x() >= 0 && cursorCell_.y() >= 0;
+            const bool naturePreviewOn =
+                natureTool_ == NatureTool::Place &&
+                !naturePreviewModel_.isEmpty() &&
                 cursorCell_.x() >= 0 && cursorCell_.y() >= 0;
             if (buildingPreviewOn) {
                 gpuView_->setBuildingModelPreview(
@@ -1321,6 +1379,17 @@ void ViewportWidget::paintGL()
                     {scumPreviewAttr_,
                      static_cast<float>(cursorCell_.x() + 0.5),
                      static_cast<float>(cursorCell_.y() + 0.5), 0.f});
+            } else if (naturePreviewOn) {
+                BuildingModelPose pose;
+                pose.attributeId = 166;
+                pose.x = static_cast<float>(cursorCell_.x() + 0.5);
+                pose.y = static_cast<float>(cursorCell_.y() + 0.5);
+                const std::string previewModelUtf8 =
+                    naturePreviewModel_.toUtf8().constData();
+                pose.modelFile = previewModelUtf8.c_str();
+                pose.radius = static_cast<float>(naturePreviewRadius_);
+                pose.z = 0.f; // the panel Z applies at placement time
+                gpuView_->setBuildingModelPreview(true, pose);
             } else {
                 gpuView_->setBuildingModelPreview(false, {});
             }
@@ -1369,6 +1438,7 @@ void ViewportWidget::paintGL()
         drawSpawnPoints3D(painter);
         drawBuildingPoints3D(painter);
         drawScumPoints3D(painter);
+        drawNaturePoints3D(painter);
         if (brushPreviewVisible_) drawBrushPreview(painter);
         drawHud(painter);
         emitViewRectIfChanged();
@@ -1381,6 +1451,7 @@ void ViewportWidget::paintGL()
     drawSpawnPoints(painter);
     drawBuildingPoints(painter);
     drawScumPoints(painter);
+    drawNaturePoints(painter);
     drawHud(painter);
 
     // --- Announce the view rectangle for the minimap (T2.4) ---
@@ -2193,6 +2264,88 @@ void ViewportWidget::drawScumPoints3D(QPainter &painter)
     }
 }
 
+void ViewportWidget::drawNaturePoints(QPainter &painter)
+{
+    if (!renderer_ || !renderer_->isBound()) return;
+
+    painter.setRenderHint(QPainter::Antialiasing);
+    for (const NaturePoint &n : naturePoints_) {
+        const QPointF pos = mapToScreen(n.mapX, n.mapY);
+        painter.setPen(QPen(QColor(30, 60, 30, 200), 1));
+        painter.setBrush(QColor(140, 220, 140));
+        painter.drawEllipse(pos, 3.5, 3.5);
+        if (n.selected) {
+            painter.setBrush(Qt::NoBrush);
+            painter.setPen(QPen(QColor(255, 170, 0), 2));
+            painter.drawEllipse(pos, 8.5, 8.5);
+        }
+    }
+
+    // Placement ghost at the cursor.
+    if (!naturePreviewModel_.isEmpty() && cursorCell_.x() >= 0 &&
+            cursorCell_.y() >= 0) {
+        const QPointF c = mapToScreen(cursorCell_.x() + 0.5,
+                                      cursorCell_.y() + 0.5);
+        const double r = qMax(3.0, naturePreviewRadius_ * zoom_);
+        const QColor fill = naturePreviewValid_
+            ? QColor(80, 200, 120, 70) : QColor(230, 60, 60, 70);
+        const QColor line = naturePreviewValid_
+            ? QColor(40, 160, 90) : QColor(200, 40, 40);
+        painter.setBrush(fill);
+        painter.setPen(QPen(line, 2, Qt::DashLine));
+        painter.drawEllipse(c, r, r);
+    }
+}
+
+void ViewportWidget::drawNaturePoints3D(QPainter &painter)
+{
+    if (naturePoints_.empty() || !renderer_->isBound()) return;
+
+    const std::size_t modelOffset = buildings_.size() + scumSpots_.size();
+    painter.setRenderHint(QPainter::Antialiasing);
+    auto project = [&](const NaturePoint &n, QPointF &pos) {
+        bool visible = false;
+        if (gpuActive()) {
+            double camZ = 0.0;
+            double sx = 0.0;
+            double sy = 0.0;
+            const qreal dpr = devicePixelRatioF();
+            visible = gpuView_->projectToScreenZ(
+                          n.mapX + 0.5, n.mapY + 0.5, n.z, camZ, sx, sy) &&
+                      camZ > gpuView_->nearPlaneZ();
+            pos = QPointF(sx / dpr, sy / dpr);
+        } else {
+            pos = obliqueMapToWidgetF(QPointF(n.mapX + 0.5, n.mapY + 0.5));
+            visible = QRectF(rect()).contains(pos);
+        }
+        return visible;
+    };
+
+    for (std::size_t i = 0; i < naturePoints_.size(); ++i) {
+        const NaturePoint &n = naturePoints_[i];
+        QPointF pos;
+        if (!project(n, pos)) {
+            continue;
+        }
+        if (gpuActive() && gpuView_->hasBuildingModel(static_cast<int>(modelOffset + i))) {
+            if (n.selected) {
+                painter.setBrush(Qt::NoBrush);
+                painter.setPen(QPen(QColor(255, 170, 0), 2));
+                painter.drawEllipse(pos, 10.0, 10.0);
+            }
+            continue;
+        }
+        painter.setPen(QPen(QColor(20, 40, 20, 190), 1));
+        painter.setBrush(QColor(140, 220, 140, 235));
+        painter.drawEllipse(pos, 5.0, 5.0);
+        if (n.selected) {
+            painter.setBrush(Qt::NoBrush);
+            painter.setPen(QPen(QColor(255, 170, 0), 2));
+            painter.drawEllipse(pos, 9.0, 9.0);
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // HUD — cursor cell + zoom readout
 // ---------------------------------------------------------------------------
@@ -2366,6 +2519,28 @@ void ViewportWidget::mousePressEvent(QMouseEvent *event)
                 emit scumSelectRequested(cell.x(), cell.y());
             } else {
                 emit scumDeleteRequested(cell.x(), cell.y());
+            }
+        }
+        event->accept();
+        return;
+    }
+
+    // Nature-panel tools take the left click while active — same
+    // press-only semantics as the buildings.
+    if (event->button() == Qt::LeftButton
+            && natureTool_ != NatureTool::None) {
+        const QPoint pos = event->position().toPoint();
+        const QPoint cell = onMapCellAtWidgetPos(pos);
+        if (cell.x() >= 0 && cell.y() >= 0) {
+            cursorWidgetPos_ = pos;
+            cursorCell_ = cell;
+            setCursor(Qt::CrossCursor);
+            if (natureTool_ == NatureTool::Place) {
+                emit naturePlaceRequested(cell.x(), cell.y());
+            } else if (natureTool_ == NatureTool::Select) {
+                emit natureSelectRequested(cell.x(), cell.y());
+            } else {
+                emit natureDeleteRequested(cell.x(), cell.y());
             }
         }
         event->accept();

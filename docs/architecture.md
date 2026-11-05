@@ -1086,7 +1086,7 @@ Headless-тесты `map_editor_tests` (`tests/`), по файлу на моду
 | 100 | `BuildingsTests` | предустановленные здания (nobodysBuildings): разбор штатного 02PYRAMIDA.spg (11 зданий: атрибут/позиция/угол/HP), байт-точность нетронутого round-trip, add (typed-структура, разделитель прежнего хвоста, count, уникальный unitID) → pose/HP-edit → remove через save→re-parse; грамматика игрового читателя в сыром тексте сохранения (хвост массива без разделителя, elementsDead без «;» перед «}», count) |
 | 101 | `UnitModelCatalogTests` | каталог M3D-моделей зданий: у 43 размещаемых зданий есть строка с совпадающим id, путь в `RESOURCE\MODELS\MAIN\`, файл существует в game dir, масштабы (boundRadius/boundScale) валидны |
 | 102 | `ScumSpotsTests` | скверна-гнёзда: разбор изоландских пар курган+спавнер, add (mound + SaveUnitFilthData + label + unitIDs) → pose/HP/filth-edit → remove через save→re-parse, грамматика сырого текста, регистрация `<world>.scr` в TriggerChainNames всех игроков (add/no-dup/remove, legacy-вычистка), структура сгенерированного триггерного скрипта |
-
+| 103 | `NatureObjectsTests` | природа (SaveUnitNatureData в environment): разбор 48 объектов 02PYRAMIDA (модель/radius/z/флаги, LIGHT-only), add (typed struct, unitId) → pose/shape-edit → remove через save→re-parse, грамматика сырого текста |
 Тесты пишут только во временный content-root (`%TEMP%/map_editor_roundtrip`),
 исходный мир не изменяется. `SaveWorldTests` строит изолированный content-root
 (копия сохранённого мира + общие ресурсы `RESOURCE/GeoTx` + `Perimeter.ini`),
@@ -1693,3 +1693,46 @@ distanceMin=0 через `dist > 0` — юнит на дистанции 0 от�
 save→re-parse с грамматикой сырого текста, регистрация цепочки (add /
 no-dup / remove по всем игрокам), структура сгенерированного .scr
 (START, счётчик триггеров 1+2N, метки, activate/deactivate).
+
+## 5.32. Природа — NaturePanel + SaveUnitNatureData в environment
+
+Панель **Nature** (док-вкладка у Battle Map; активна только при
+загруженной/созданной боевой карте) ставит статичную природу
+(`UNIT_ATTRIBUTE_STATIC_NATURE` = 166) по образу Buildings-панели
+(Place/Select/Delete). Записи — `"struct SaveUnitNatureData"` в
+`SavePrm.environment.objects` (формат штатных миссий, 02PYRAMIDA.spg):
+базовый SaveUnitData (position с z БЕЗ пересадки при загрузке —
+terUnitGeneric::setPose хранит позу как есть) + modelName (per-instance
+M3D — атрибутный dzot.m3d заглушка), radius = масштаб (scale = radius /
+native bound radius, Nature.cpp setModelName), natureFlag
+(DESTROY/REAL/LIGHT идентификаторами через «|», NATURE_FLAG_NONE всегда),
+chainName "main"/phase 0/period 0, HP всегда полный damageMolecula.
+
+- **Модели**: список — скан `RESOURCE/Models/Environment` (корень + один
+  уровень подпапок, *.m3d без учёта регистра) — ровно покрытие
+  контент-скана игры (GameContent.cpp). Перескан при смене game dir;
+  без папки игры список пуст. Иконки не печём (238 моделей).
+- **SpgFile API**: `natureObjects()` (парсинг modelName через unquote —
+  распаковка `\`), `addNatureObject` (unitId = maxUnitId()+1;
+  environment-секция создаётся по образу filth), `setNatureObjectPose`
+  (x/y/z/угол), `setNatureObjectShape` (radius + флаги),
+  `removeNatureObject`.
+- **UI-параметры** (NaturePanel): угол, Z (базовая линия — zero layer,
+  правится на выбранном), radius, чекбоксы Destroy/Collisions/Lighting.
+  Place штампует, Select правит выбранное. HP не редактируется (спека).
+- **Рендер**: 2D — зелёные точки; 3D — настоящие M3D через BuildingModels,
+  расширенные per-instance poses (`BuildingModelPose.modelFile/radius/z` —
+  каталог не используется, масштаб = radius/nativeBound, z как записан,
+  текстуры относительно своей папки модели). Превью-модель под курсором
+  общая (приоритет building > scum > nature). На миникарту НЕ попадают
+  (спека молчит — как у скверна-гнёзд).
+- **Парсер XPrmDocument**: скалярные значения читаются ДО разделителя
+  поля, а не одним токеном — иначе выражения `A | B | C`
+  (buildingStatusBV/natureFlag) молча обрезались первым токеном (битовые
+  маски парсились бы неверно; побочный дефект исторического парсера).
+- Undo история не затрагивается (как здания/гнёзда).
+
+**Проверка.** Тест 103 (`NatureObjectsTests`): разбор 48 объектов
+02PYRAMIDA (модель/radius/z/угол/флаги, 5 LIGHT-only), add (typed struct,
+unitId) → pose/shape-edit → remove через save→re-parse, грамматика сырого
+текста (type tag, natureFlag-идентификаторы, хвосты без разделителей).
