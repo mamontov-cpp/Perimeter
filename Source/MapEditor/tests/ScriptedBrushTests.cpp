@@ -488,9 +488,10 @@ bool runScriptedBrushTests()
                      baseGeo);
 
         // A 9x9 plateau at plateauH with a 3x3 bump at bumpH on top. The
-        // bump is small enough that both a radius-4 Smooth average and a
-        // radius-2 Gaussian kernel reach the lower plateau, so one stamp of
-        // either brush must pull the bump centre down.
+        // bump is small enough that both the radius-4 Tricubic reference
+        // (lattice stride 4) and a radius-2 Gaussian kernel reach the lower
+        // plateau, so one stamp of either brush must pull the bump centre
+        // down. applySmooth binds the TRICUBIC sculpting brush.
         BrushParams bump = params;
         bump.script = std::string("var p = getCurrentPos();\n") +
             "setHeight({x: p.x, y: p.y}, " + std::to_string(plateauH) + ", 4, false);\n" +
@@ -518,8 +519,8 @@ bool runScriptedBrushTests()
             static_cast<int>(vMap.SGetAlt(cx, cy)) >> VX_FRACTION;
         TEST_REQUIRE(smoothed25 < bumpH && smoothed25 > plateauH,
                      "applySmooth(effect 0.25) must pull the bump towards the "
-                     "plateau average, got %d (expected plateau %d < x < bump "
-                     "%d).",
+                     "tricubic reference, got %d (expected plateau %d < x < "
+                     "bump %d).",
                      smoothed25, plateauH, bumpH);
         TEST_REQUIRE(session.undo(), "the applySmooth undo failed.");
         TEST_REQUIRE(static_cast<int>(vMap.SGetAlt(cx, cy)) >> VX_FRACTION ==

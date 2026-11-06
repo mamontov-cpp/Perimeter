@@ -256,7 +256,7 @@ boolean: true — заполненный квадрат, false — заполн�
 | `paintVeryLightDam(pos, radius, square)` | «очень лёгкая дамба» |
 | `paintColor(pos, red, green, blue, radius, square)` | краска: ближайший цвет Dam-палитры к RGB (0..255) |
 | `applyBlur(pos, radius, blurRadius, effect, square)` | Gaussian Blur: сглаживание высот гауссовым ядром; `blurRadius` клампится в `1..radius-1`, `effect` — доля эффекта 0..1 (1.0 = доход за один штамп) |
-| `applySmooth(pos, radius, effect, square)` | Smooth: сглаживание к средней высоте под штампом, `effect` — доля 0..1 |
+| `applySmooth(pos, radius, effect, square)` | Tricubic: сглаживание к трикубической (bicubic Catmull-Rom) интерполяции решётки под штампом — как кисть Tricubic в тулбаре Sculpting; `effect` — доля 0..1 |
 | `getDamHeight(pos)` | высота дамбы в клетке в целых вокселях (**0**, если дамбы нет) |
 | `getGeoColor(pos)` | `{r, g, b}` — индекс SurBuf клетки через **Geo**-палитру |
 | `getDamColor(pos)` | `{r, g, b}` — индекс SurBuf клетки через **Dam**-палитру |

@@ -329,7 +329,13 @@ duk_ret_t apiApplyBlur(duk_context* ctx)
 
 duk_ret_t apiApplySmooth(duk_context* ctx)
 {
-    return applySculptOp(ctx, BrushEffect::Smooth, 0);
+    // applySmooth is the TRICUBIC sculpting brush (bicubic Catmull-Rom
+    // interpolation of a coarse lattice over the pre-edit heights) — the
+    // same brush as the Sculpting toolbar's "Tricubic". The
+    // average-height brush (BrushEffect::Smooth, "force the ground into
+    // the average plane") is NOT what this binding promises; see
+    // BrushTool.h for the effect semantics.
+    return applySculptOp(ctx, BrushEffect::Tricubic, 0);
 }
 
 /// Shared tail of the read* bindings: reads the {x, y} position and
