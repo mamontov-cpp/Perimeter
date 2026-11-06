@@ -28,11 +28,21 @@
 
 #include "TestHarness.h"
 
+#ifdef MAP_EDITOR_MCP
+// The MCP server tests need a Qt event loop (QHttpServer + the HTTP client
+// run on it); everything else is indifferent to the QCoreApplication.
+#include <QCoreApplication>
+#endif
+
 #include <cstdio>
 #include <string>
 
 int main(int argc, char* argv[])
 {
+#ifdef MAP_EDITOR_MCP
+    QCoreApplication app(argc, argv);
+    (void)app;
+#endif
     std::printf("Map Editor Round-Trip Test\n");
     std::printf("==========================\n");
 

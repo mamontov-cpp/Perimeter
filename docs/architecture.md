@@ -1087,7 +1087,7 @@ Headless-тесты `map_editor_tests` (`tests/`), по файлу на моду
 | 101 | `UnitModelCatalogTests` | каталог M3D-моделей зданий: у 43 размещаемых зданий есть строка с совпадающим id, путь в `RESOURCE\MODELS\MAIN\`, файл существует в game dir, масштабы (boundRadius/boundScale) валидны |
 | 102 | `ScumSpotsTests` | скверна-гнёзда: разбор изоландских пар курган+спавнер, add (mound + SaveUnitFilthData + label + unitIDs) → pose/HP/filth-edit → remove через save→re-parse, грамматика сырого текста, регистрация `<world>.scr` в TriggerChainNames всех игроков (add/no-dup/remove, legacy-вычистка), структура сгенерированного триггерного скрипта |
 | 103 | `NatureObjectsTests` | природа (SaveUnitNatureData в environment): разбор 48 объектов 02PYRAMIDA (модель/radius/z/флаги, LIGHT-only), add (typed struct, unitId) → pose/shape-edit → remove через save→re-parse, грамматика сырого текста |
-Тесты пишут только во временный content-root (`%TEMP%/map_editor_roundtrip`),
+| 110 | `McpServerTests` | встроенный MCP-сервер: каталог инструментов (28 шт., схемы, заметка 500 мс), ini-порт, протокол JSON-RPC по loopback (initialize/tools.list/tools.call/isError/202/-32601/GET), рестарт на том же порту, чистый отказ на занятом |Тесты пишут только во временный content-root (`%TEMP%/map_editor_roundtrip`),
 исходный мир не изменяется. `SaveWorldTests` строит изолированный content-root
 (копия сохранённого мира + общие ресурсы `RESOURCE/GeoTx` + `Perimeter.ini`),
 чтобы `fullLoad()` прошёл так же, как в игре.
@@ -1736,3 +1736,45 @@ chainName "main"/phase 0/period 0, HP всегда полный damageMolecula.
 02PYRAMIDA (модель/radius/z/угол/флаги, 5 LIGHT-only), add (typed struct,
 unitId) → pose/shape-edit → remove через save→re-parse, грамматика сырого
 текста (type tag, natureFlag-идентификаторы, хвосты без разделителей).
+
+## 5.33. Встроенный MCP-сервер (QHttpServer + JSON-RPC 2.0)
+
+LLM-агенты управляют редактором по HTTP: сервер `mcp/McpServer` (свой
+статик-либ MapEditorMcp = Qt6 Core/Network/HttpServer только, без moc —
+Q_OBJECT не используется) принимает POST /mcp (и корень) с JSON-RPC 2.0:
+initialize (protocolVersion 2025-06-18, capabilities.tools), ping,
+tools/list, tools/call; уведомления (без id) -> 202; GET / — info-страница.
+Каталог инструментов — `mcp/McpTools.h` (имя + агентское описание +
+JSON Schema), общий для приложения и тестов, 28 инструментов:
+set_game_path / list_worlds / get_world_properties / create_world /
+open_world / save_world / list_battle_maps / open_battle_map /
+save_battle_map / new_battle_map / list_battle_map_objects /
+place|update|delete_{building,scum_spot,nature_object} / apply_brush /
+run_script / set_scripted_brush_script / get_terrain_at / get_palette /
+set_palette_color / undo / redo. Описания мутирующих инструментов и undo
+упоминают группировку правок внутри 500 мс в одну undo-транзакцию.
+
+- **Мост** (`ui/MainWindowMcp.cpp`): сервер живёт на UI-потоке (QHttpServer
+  обрабатывает соединения в событийном цикле своего потока — обращения к
+  vMap/editor-state строго однопоточны, как у виджетов). Каждый инструмент
+  зовёт те же core-пути, что UI-экшены/панели (диалоги заменены строковыми
+  аргументами: run_script -> runEditorScript, set_scripted_brush_script ->
+  BrushParams.script, open_battle_map -> battleMap_.load + мир из spg и т.д.).
+  Результат — JSON; ошибка -> {"error": ...} -> MCP isError.
+- **Порт**: map_editor.ini рядом с exe, [mcp] port=N, default 10102
+  (McpServer::configuredPort). Занятый порт — предупреждение в trace,
+  редактор работает дальше. start()/stop() пересоздают QHttpServer +
+  QTcpServer целиком — рестарт на том же порту без "address already in use".
+- **Компиляционный нюанс**: Qt6 навязывает потребителям /permissive-, под
+  которым ломается legacy-тернарий PrmString в Util/EditArchive.h (цепочка
+  terra.h -> tools.h -> UnitAttribute.h). Мост не включает terra.h вообще
+  (terrain-сэмпл — Qt-free EditorSession::terrainSample); тестовые TUs,
+  включающие terra.h, собираются с /permissive (per-file override).
+- Тестирование: тесты гоняют НАСТОЯЩИЙ сервер по loopback через
+  QNetworkAccessManager (main() обзавёлся QCoreApplication).
+
+**Проверка.** Тест 110 (`McpServerTests`): каталог (все обязательные
+инструменты, описания >40 символов, схемы-object, заметка 500 мс у undo и
+apply_brush), ini-конфигурация порта, протокол (initialize/list/call/
+isError/unknown-tool/notification 202/unknown-method -32601/GET), рестарт
+на том же порту, занятый порт -> чистый отказ.

@@ -16,6 +16,16 @@ IF(Qt6_FOUND)
     SET(MAP_EDITOR_QT_LIBS Qt6::Widgets Qt6::OpenGL Qt6::OpenGLWidgets)
     SET(MAP_EDITOR_QT_MAJOR 6)
     MESSAGE(STATUS "Map editor: using Qt${MAP_EDITOR_QT_MAJOR} (${Qt6_VERSION})")
+    # The embedded MCP server (mcp/) needs the HttpServer + Network modules;
+    # without them the editor builds without the server.
+    FIND_PACKAGE(Qt6 COMPONENTS HttpServer Network WebSockets QUIET HINTS ${MAP_EDITOR_QT_HINTS})
+    IF(Qt6HttpServer_FOUND AND Qt6Network_FOUND AND Qt6WebSockets_FOUND)
+        SET(MAP_EDITOR_MCP ON)
+        MESSAGE(STATUS "Map editor: MCP server enabled (Qt HttpServer)")
+    ELSE()
+        SET(MAP_EDITOR_MCP OFF)
+        MESSAGE(WARNING "Map editor: Qt6 HttpServer/Network not found - the MCP server is disabled")
+    ENDIF()
 ELSE()
     FIND_PACKAGE(Qt5 COMPONENTS Widgets QUIET HINTS ${MAP_EDITOR_QT_HINTS})
     IF(Qt5_FOUND)
@@ -347,6 +357,7 @@ SET(MAP_EDITOR_APP_SRCS
         ui/MainWindowScumSpots.cpp
         ui/NaturePanel.cpp
         ui/MainWindowNature.cpp
+        ui/MainWindowMcp.cpp
         ui/BuildingsPanel.h
         ui/ScriptEditorDialog.cpp
         ui/ScriptEditorDialog.h
@@ -370,6 +381,19 @@ TARGET_INCLUDE_DIRECTORIES(map_editor PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/../tx3d"
 )
 
+IF(MAP_EDITOR_MCP)
+    # Embedded MCP server (QHttpServer + JSON-RPC). Lives in its own target:
+    # Qt Core/Network/HttpServer only, so the test binary can drive it
+    # without the widgets.
+    ADD_LIBRARY(MapEditorMcp STATIC
+            mcp/McpServer.cpp
+            mcp/McpServer.h
+            mcp/McpTools.h
+    )
+    TARGET_LINK_LIBRARIES(MapEditorMcp PUBLIC Qt6::Core Qt6::Network Qt6::HttpServer)
+    TARGET_INCLUDE_DIRECTORIES(MapEditorMcp PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/mcp")
+ENDIF()
+
 TARGET_LINK_LIBRARIES(map_editor PRIVATE
         MapEditorCore
         MapEditorSupport
@@ -380,6 +404,12 @@ TARGET_LINK_LIBRARIES(map_editor PRIVATE
         SDL2::SDL2
         ${MAP_EDITOR_QT_LIBS}
 )
+
+IF(TARGET MapEditorMcp)
+    TARGET_LINK_LIBRARIES(map_editor PRIVATE MapEditorMcp)
+    TARGET_COMPILE_DEFINITIONS(map_editor PRIVATE MAP_EDITOR_MCP=1)
+ENDIF()
+
 
 IF(TARGET MapEditorRender)
     # GPU viewport: the game's sokol render stack (GLCORE) built for the

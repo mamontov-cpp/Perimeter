@@ -36,6 +36,7 @@ ADD_EXECUTABLE(map_editor_tests
         UnitModelCatalogTests.cpp
         ScumSpotsTests.cpp
         NatureObjectsTests.cpp
+        McpServerTests.cpp
         ScriptedBrushTests.cpp
         SculptBrushTests.cpp
         BrushHeightGateTests.cpp
@@ -90,6 +91,71 @@ TARGET_LINK_LIBRARIES(map_editor_tests PRIVATE
         ZLIB::ZLIB
         SDL2::SDL2
 )
+
+# MCP server tests: drive the real QHttpServer over the loopback interface.
+# Needs Qt Core/Network (client) and the MapEditorMcp lib (server).
+IF(TARGET MapEditorMcp)
+    TARGET_LINK_LIBRARIES(map_editor_tests PRIVATE MapEditorMcp Qt6::Network Qt6::Core)
+    TARGET_COMPILE_DEFINITIONS(map_editor_tests PRIVATE MAP_EDITOR_MCP=1)
+ENDIF()
+
+IF(TARGET MapEditorMcp AND PERIMETER_WINDOWS)
+    # The test binary links Qt6 (QHttpServer + the HTTP client) — the DLLs
+    # must sit next to the executable or it fails to launch.
+    ADD_CUSTOM_COMMAND(TARGET map_editor_tests POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_FILE:Qt6::Core>
+                $<TARGET_FILE:Qt6::Network>
+                $<TARGET_FILE:Qt6::HttpServer>
+                $<TARGET_FILE:Qt6::WebSockets>
+                $<TARGET_FILE_DIR:map_editor_tests>)
+ENDIF()
+IF(MSVC)
+    # The Qt6::Core link brings /permissive- into this target, which breaks
+    # the legacy PrmString ternary in Util/EditArchive.h pulled via terra.h
+    # (tools.h -> UnitAttribute.h). Those TUs keep the conforming-off mode
+    # they always built in; the MCP test TU (pure Qt) stays conforming.
+    SET_SOURCE_FILES_PROPERTIES(
+            BrushAlignDamOnGeoTests.cpp
+            BrushAlignVariableHZPTests.cpp
+            BrushColorToolTests.cpp
+            BrushHeightGateTests.cpp
+            BrushHeightToolsTests.cpp
+            BrushMaskTests.cpp
+            BrushPickColorTests.cpp
+            BrushSetHeightTests.cpp
+            BrushThicknessTests.cpp
+            BrushToolTests.cpp
+            BrushZeroplastGeoTests.cpp
+            BrushZeroplastHardnessTests.cpp
+            GmpDiffTests.cpp
+            ImageDecalTests.cpp
+            ImageImportExportTests.cpp
+            MinimapRasterTests.cpp
+            ModWorldsTests.cpp
+            ModelBrushTests.cpp
+            NewBattleMapFlowTests.cpp
+            PaletteOpsTests.cpp
+            PolygonBrushTests.cpp
+            SaveWorldTests.cpp
+            ScriptedBrushTests.cpp
+            SculptBrushTests.cpp
+            ShadowTrailTests.cpp
+            Shape3DTests.cpp
+            UndoCoalescingTests.cpp
+            UndoHistoryTests.cpp
+            ValidationTests.cpp
+            View3DHazeTests.cpp
+            View3DRendererTests.cpp
+            View3DSmoothTests.cpp
+            ViewOptionsTests.cpp
+            ViewportRendererTests.cpp
+            WorldCreationTests.cpp
+            WorldParamsTests.cpp
+            WorldRoundTripTests.cpp
+            PROPERTIES COMPILE_OPTIONS "/permissive")
+ENDIF()
+
 
 # The test needs the same compile options as the rest of the project.
 TARGET_COMPILE_OPTIONS(map_editor_tests PRIVATE ${PERIMETER_COMPILE_OPTIONS})

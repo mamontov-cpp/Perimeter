@@ -261,6 +261,20 @@ Undo `Ctrl+Z` / Redo `Ctrl+R`/`Ctrl+Y`. Правки, следующие дру�
   Destroy/Collisions/Lighting; HP всегда 100%. В 3D — настоящие модели, в
   2D — зелёные точки; на миникарту не попадают.
 
+### MCP-сервер (для LLM-агентов)
+
+Редактор встраивает MCP-сервер: HTTP + JSON-RPC 2.0 (POST /mcp), порт —
+`map_editor.ini` рядом с exe (`[mcp] port=`, default 10102). Инструменты
+(28 шт.): set_game_path, list_worlds, get_world_properties, create_world,
+open_world, save_world, list_battle_maps, open/save_battle_map,
+new_battle_map, list_battle_map_objects, place/update/delete для зданий,
+скверна-гнёзд и природы, apply_brush (все эффекты кистей + параметры),
+run_script / set_scripted_brush_script (строковый скрипт вместо диалогов),
+get_terrain_at, get_palette / set_palette_color, undo/redo (описания
+упоминают группировку правок в 500 мс). Сервер живёт на UI-потоке;
+старт/стоп пересоздают сокет — рестарт на том же порту чистый. Тест 110
+(`McpServerTests`) гоняет реальный сервер по loopback.
+
 ### Валидация (`Tools`)
 - **Validate World**: обязательные файлы, размеры (степень двойки ≤ 16384),
   `hZeroPlast` 0..255, палитры (768 байт), `leveledSurfaceTexture.tga`,

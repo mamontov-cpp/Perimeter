@@ -166,6 +166,22 @@ public:
     /// Returns -1 when no world is loaded or the cell is out of range.
     int terrainHeightAt(int x, int y) const;
 
+    /// One-cell terrain sample for the MCP server / scripting UIs: whole
+    /// voxel geo height, the top-surface height while a dam layer exists
+    /// (0 where dam-free), the SurBuf surface index with its Geo/Dam
+    /// palette RGB, and the raw attribute byte. False when no world is
+    /// loaded or (x, y) is outside the map.
+    struct TerrainSample
+    {
+        int geoHeight = 0;
+        int damHeight = 0;   ///< 0 where the cell has no dam layer.
+        int surfaceIndex = 0;
+        unsigned int attributes = 0;
+        unsigned int geoRgb = 0; ///< 0xRRGGBB of surfaceIndex in the geo palette.
+        unsigned int damRgb = 0; ///< 0xRRGGBB of surfaceIndex in the dam palette.
+    };
+    bool terrainSample(int x, int y, TerrainSample& out) const;
+
     /// T8.4 — the loaded world's zero-layer height (vMap.hZeroPlast), used
     /// as the initial manualData.zeroLayerHeight of a new battle map.
     /// Returns -1 when no world is loaded.

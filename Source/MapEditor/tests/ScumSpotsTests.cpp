@@ -245,7 +245,56 @@ bool runScumSpotsTests()
     std::printf("[PASS] trigger chain registration add/no-dup/remove.\n");
 
     // ------------------------------------------------------------------
-    // 4: the generated .scr trigger script (fresh load of `edited` — 4
+    // 3b: removePlayer — arbitrary index, id renumber, round-trip.
+    // ------------------------------------------------------------------
+    {
+        MapEditor::SpgFile players;
+        TEST_REQUIRE(players.load(compass.u8string()), "COMPASS load failed.");
+        const int before = players.playerCount();
+        TEST_REQUIRE(before >= 2, "COMPASS must have at least 2 players.");
+        // Remove the FIRST player: the remaining ids must renumber 0..n-1.
+        TEST_REQUIRE(players.removePlayer(0), "removePlayer(0) refused.");
+        TEST_REQUIRE(players.playerCount() == before - 1,
+                     "the player count must drop by one.");
+        for (int i = 0; i < players.playerCount(); ++i) {
+            const MapEditor::SpgFile::PlayerData data = players.playerData(i);
+            TEST_REQUIRE(data.playerID == i,
+                         "player %d must be renumbered to id %d, got %d.",
+                         i, i, data.playerID);
+        }
+        // The spawn anchor of the former second player must survive.
+        double ax = 0;
+        double ay = 0;
+        TEST_REQUIRE(players.playerAnchor(0, ax, ay),
+                     "the first anchor must survive the removal.");
+        TEST_REQUIRE(!players.removePlayer(players.playerCount()),
+                     "an out-of-range removal must fail.");
+        const fs::path playerPath = ctx.tempRoot / "spg" / "players_removed.spg";
+        TEST_REQUIRE(players.save(playerPath.u8string()), "save failed.");
+        MapEditor::SpgFile reloaded;
+        TEST_REQUIRE(reloaded.load(playerPath.u8string()),
+                     "the re-load failed.");
+        TEST_REQUIRE(reloaded.playerCount() == before - 1,
+                     "the removal must survive the round-trip.");
+        for (int i = 0; i < reloaded.playerCount(); ++i) {
+            TEST_REQUIRE(reloaded.playerData(i).playerID == i,
+                         "ids must stay renumbered after the round-trip.");
+        }
+           // The grow path (what MCP add_player uses): one more player cloned
+            // from the last, ids renumbered, round-trip stable.
+            const std::string lastName =
+                players.playerData(players.playerCount() - 1).name;
+            TEST_REQUIRE(players.setPlayerCount(players.playerCount() + 1),
+                         "the grow refused.");
+            TEST_REQUIRE(players.playerCount() == before,
+                         "the count must return to the original.");
+            TEST_REQUIRE(players.playerData(before - 1).name == lastName,
+                         "the newcomer must be a clone of the last player.");
+    }
+    std::printf("[PASS] removePlayer index/renumber/round-trip.\n");
+
+    // ------------------------------------------------------------------
+    // 4: the generated .scr trigger script (fresh load of `edited` - 4
     //    nests: the editor nest is mound-labeled, the three isoland ones
     //    are not, so exactly one pair gets wiring).
     // ------------------------------------------------------------------
@@ -256,7 +305,7 @@ bool runScumSpotsTests()
         scriptSrc.buildScumTriggerScript("ISOLAND.scr");
     const std::string flatScript = collapseWs(script);
     TEST_REQUIRE(flatScript.find("TriggerChain = {") == 0,
-                 "the script must open a TriggerChain.");
+                 "the chain must open a TriggerChain.");
     TEST_REQUIRE(flatScript.find("name = \"START\";") != std::string::npos,
                  "the chain needs the mandatory START trigger.");
     // Regression: START must be stored CHECKING — TriggerChain::load seeds

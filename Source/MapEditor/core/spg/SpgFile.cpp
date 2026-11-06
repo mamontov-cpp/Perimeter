@@ -994,6 +994,41 @@ std::vector<SpgFile::PlacedBuilding> SpgFile::buildings() const
     return out;
 }
 
+bool SpgFile::removePlayer(int index)
+{
+    if (!loaded() || index < 0) {
+        return false;
+    }
+    XPrmObject* data = playersDataArray();
+    XPrmObject* players = playersArray();
+    XPrmObject* cameras = camerasArray();
+    if (!data || !players || !cameras ||
+        static_cast<std::size_t>(index) + 1 >= data->fields.size() ||
+        static_cast<std::size_t>(index) + 1 >= players->fields.size() ||
+        static_cast<std::size_t>(index) + 1 >= cameras->fields.size()) {
+        return false;
+    }
+    const int count = static_cast<int>(data->elementCount());
+    if (count <= 1) {
+        return false; // a battle map needs at least one player
+    }
+    removeArrayElement(data, index);
+    removeArrayElement(players, index);
+    removeArrayElement(cameras, index);
+    for (int i = 0; i < count - 1; ++i) {
+        if (XPrmObject* player = elementObject(data, i)) {
+            player->setScalar("playerID", num(i));
+        }
+    }
+    mission_->setScalar("playerAmountScenarioMax", num(count - 1));
+    mission_->setScalar("activePlayerID", num(0));
+    std::vector<int> identity(static_cast<std::size_t>(count) - 1);
+    for (int i = 0; i < count - 1; ++i) {
+        identity[static_cast<std::size_t>(i)] = i;
+    }
+    setShufflingIndices(identity);
+    return true;
+}
 bool SpgFile::addBuilding(const PlacedBuilding& building)
 {
     if (!loaded()) {

@@ -610,3 +610,102 @@ scripted brush — его операции наследуют параметры
   редактор делает это автоматически при каждом сохранении.
 - Новую карту обязательно проверяйте в самой игре (Tools-валидатор ловит
   только структурные проблемы).
+
+## MCP-сервер (управление редактором из LLM-агентов)
+
+Редактор встраивает **MCP-сервер** — по нему LLM-агент (Claude, Cursor и
+т.п.) выполняет те же действия, что и UI: открывает миры и карты, правит
+рельеф кистями, расставляет объекты, работает с палитрами и отменой.
+
+### Запуск и настройки по умолчанию
+
+- Сервер **стартует автоматически** вместе с редактором — отдельно запускать
+  ничего не нужно. Если порт занят, сервер просто отключается (запись в
+  журнале трассировки), на работу редактора это не влияет.
+- Протокол: **HTTP + JSON-RPC 2.0**, endpoint `POST /mcp`
+  (принимается и корень `/`), ответы `application/json`;
+  `GET /` — информационная страница сервера.
+- Порт по умолчанию: **10102**.
+
+### Файл настроек и порт
+
+Рядом с исполняемым файлом редактора (`map_editor.exe`) можно положить
+`map_editor.ini`:
+
+```ini
+[mcp]
+port=12345
+```
+
+`port` — любой свободный порт (0 или отсутствующий/некорректный ключ —
+снова 10102). После правки ini перезапустите редактор. Остановка сервера
+происходит при выходе из редактора; повторный старт на том же порту —
+без ошибок «порт занят».
+
+### Подключение агента
+
+Сервер без состояния, совместим с обычными MCP-клиентами
+(streamable-HTTP). Пример конфигурации клиента:
+
+```json
+{
+  "mcpServers": {
+    "perimeter-map-editor": {
+      "url": "http://127.0.0.1:10102/mcp"
+    }
+  }
+}
+```
+
+Руками это выглядит как обычный JSON-RPC:
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"tools/list"}
+{"jsonrpc":"2.0","id":2,"method":"tools/call",
+ "params":{"name":"get_world_properties","arguments":{}}}
+```
+
+Порядок работы агента: `set_game_path` → `list_worlds` → `open_world` /
+`open_battle_map` → правки (`apply_brush`, инструменты объектов) →
+`save_world` / `save_battle_map`. Как и в UI, правки идут в undo-историю,
+а действия с интервалом меньше **500 мс** объединяются в одну транзакцию
+(инструменты `undo`/`redo`).
+
+### Список инструментов (tools)
+
+**Мир и сессия:** `set_game_path` (путь к папке игры), `list_worlds`,
+`get_world_properties`, `create_world`, `open_world`, `save_world`.
+
+**Боевые карты:** `list_battle_maps`, `open_battle_map`,
+`save_battle_map`, `new_battle_map`.
+
+**Игроки карты:** `list_players`, `add_player`, `update_player` (свойства и
+координаты спавна), `remove_player`.
+
+**Объекты карты:** `list_battle_map_objects` (здания, гнёзда скверны,
+природа), `place_building` / `update_building` / `delete_building`,
+`place_scum_spot` / `update_scum_spot` / `delete_scum_spot`,
+`place_nature_object` / `update_nature_object` / `delete_nature_object`.
+
+**Кисти:** `apply_brush` — все эффекты (raise/lower/set height, зеропласт,
+сажа, очень лёгкая дамба, paintColor, скульптинг smooth/flatten/tricubic/
+inflate/gaussianBlur), 3D-тела (`shape`: cone, pyramid, truncatedCone,
+truncatedPyramid, torus, halfEllipsoid), ImageDecal (`load_decal_image` +
+`effect: "imageDecal"`), кисть-модель (`import_model` + `effect: "model"`),
+параметры штампа (radius, square, sides/angleOffset, fraction, blurRadius,
+layer dam/geo). В режиме различий штамп пишет в diff-буфер.
+
+**Скрипты:** `run_script` (JavaScript одним undo-шагом, тот же API, что у
+Scripted Brush / Run Script), `set_scripted_brush_script`.
+
+**Режим различий (.gmp):** `set_difference_mode`, `save_difference`,
+`load_difference`.
+
+**Террейн и палитры:** `get_terrain_at` (высоты Geo/Dam, индекс и цвета
+поверхности, атрибуты клетки), `get_palette`, `set_palette_color`.
+
+**История:** `undo`, `redo`.
+
+Ошибки приходят как `isError` с текстом; уведомления (без `id`) получают
+HTTP 202. Полное описание каждого инструмента — с JSON Schema аргументов —
+агент получает через `tools/list`.

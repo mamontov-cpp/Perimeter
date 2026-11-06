@@ -477,6 +477,26 @@ int EditorSession::terrainHeightAt(int x, int y) const
     return vMap.SGetAlt(x, y) >> VX_FRACTION;
 }
 
+bool EditorSession::terrainSample(int x, int y, TerrainSample& out) const
+{
+    const unsigned w = mapWidth();
+    const unsigned h = mapHeight();
+    if (!isWorldLoaded() || w == 0 || x < 0 || y < 0 ||
+        static_cast<unsigned>(x) >= w || static_cast<unsigned>(y) >= h) {
+        return false;
+    }
+    const int off = vMap.offsetBuf(x, y);
+    out.geoHeight = static_cast<int>(vMap.VxGBuf[off]) >> VX_FRACTION;
+    out.damHeight = vMap.VxDBuf[off] != 0
+                        ? static_cast<int>(vMap.SGetAlt(off)) >> VX_FRACTION
+                        : 0;
+    out.surfaceIndex = vMap.SurBuf[off];
+    out.attributes = vMap.AtrBuf[off];
+    out.geoRgb = paletteRgb(PaletteLayer::Geo, out.surfaceIndex);
+    out.damRgb = paletteRgb(PaletteLayer::Dam, out.surfaceIndex);
+    return true;
+}
+
 SessionState EditorSession::state() const noexcept
 {
     return state_;

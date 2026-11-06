@@ -33,6 +33,7 @@ class BuildingsPanel;
 class ScumSpotsPanel;
 class NaturePanel;
 class BrushTool;
+class McpServer;
 struct View3DCamera;
 }
 
@@ -240,6 +241,14 @@ private:
     void syncScumTriggerArtifacts();
     /// Writes/deletes Scripts/Triggers/<world>.scr after a successful save.
     void flushScumTriggerFile();
+#ifdef MAP_EDITOR_MCP
+    /// Embedded MCP server for LLM agents (ui/MainWindowMcp.cpp): QHttpServer
+    /// on the UI thread, port from map_editor.ini ([mcp] port=, default
+    /// 10102). Started in the constructor, stopped on destruction.
+    void setupMcpServer();
+    QVariantMap mcpInvoke(const QString& name, const QVariantMap& args);
+    MapEditor::McpServer* mcpServer_ = nullptr;
+#endif
     /// Nature dock + handlers (MainWindowNature.cpp).
     void buildNatureDock();
     void reloadNatureObjects();

@@ -1039,12 +1039,21 @@ MainWindow::MainWindow(QWidget *parent)
     // blank until the first pan/zoom.
     updateViewReadout();
     updateStatusBar();
+#ifdef MAP_EDITOR_MCP
+    // Embedded MCP server for LLM agents (after everything it can touch
+    // exists). A busy port only disables the server, never the editor.
+    setupMcpServer();
+#endif
     editorTrace("MainWindow: ctor done");
 }
 
 MainWindow::~MainWindow()
 {
     editorTrace("MainWindow: dtor start");
+#ifdef MAP_EDITOR_MCP
+    delete mcpServer_; // stops serving and releases the port
+    mcpServer_ = nullptr;
+#endif
     if (g_mainWindowForScriptHook == this) {
         g_mainWindowForScriptHook = nullptr;
         MapEditor::setScriptPaletteHook(nullptr);

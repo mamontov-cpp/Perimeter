@@ -167,6 +167,12 @@ public:
     /// file is not loaded or count is out of 1..8.
     bool setPlayerCount(int count);
 
+    /// Drops ONE player (arbitrary index) from playersData/players/cameras,
+    /// renumbers the remaining ids and rebuilds the identity shuffling —
+    /// the arbitrary-index variant of setPlayerCount's shrink path. False
+    /// when the index is invalid or the last player would be removed.
+    bool removePlayer(int index);
+
     /// manualData.cameras (nullptr when absent) — used by validation.
     XPrmObject* camerasArray();
 
