@@ -469,6 +469,151 @@ bool runScriptedBrushTests()
     std::printf("[PASS] getDamHeight/getGeoColor/getDamColor read the world "
                 "and the message boxes reach the hook.\n");
 
+    // ------------------------------------------------------------------
+    // 5: applySmooth / applyBlur — the sculpting brushes through the API.
+    //    The bump is built by a SEPARATE stamp so that undo reverts only
+    //    the sculpting op (one stamp = one undo entry).
+    //    Heights are computed relative to the geo layer so PutAltDam
+    //    actually creates dams (dam is capped at geo, see VMAP.h:855).
+    // ------------------------------------------------------------------
+    cx += 128;
+    {
+        // Compute absolute plateau and bump heights from the geo surface.
+        const int baseGeo =
+            static_cast<int>(vMap.VxGBuf[vMap.offsetBuf(cx, cy)]);
+        const int plateauH = baseGeo + 16;
+        const int bumpH = baseGeo + 48;
+        TEST_REQUIRE(bumpH <= MAX_VX_HEIGHT_WHOLE,
+                     "terrain too tall for sculpting test (geo=%d).",
+                     baseGeo);
+
+        // A 9x9 plateau at plateauH with a 3x3 bump at bumpH on top. The
+        // bump is small enough that both a radius-4 Smooth average and a
+        // radius-2 Gaussian kernel reach the lower plateau, so one stamp of
+        // either brush must pull the bump centre down.
+        BrushParams bump = params;
+        bump.script = std::string("var p = getCurrentPos();\n") +
+            "setHeight({x: p.x, y: p.y}, " + std::to_string(plateauH) + ", 4, false);\n" +
+            "setHeight({x: p.x, y: p.y}, " + std::to_string(bumpH) + ", 1, false);\n" +
+            "if (getDamHeight({x: p.x, y: p.y}) !== " + std::to_string(bumpH) + ") {\n" +
+            "    throw new Error('bump not set: ' +\n" +
+            "                    getDamHeight({x: p.x, y: p.y}));\n" +
+            "}\n";
+        TEST_REQUIRE(brush.applyStamp(cx, cy, bump),
+                     "the bump stamp failed: %s",
+                     brush.lastScriptError().c_str());
+        TEST_REQUIRE(session.canUndo(), "the bump stamp is one undo entry.");
+
+        // --- applySmooth ---------------------------------------------------
+        // The UI sculptEffect is deliberately 1.0 here: the script's own
+        // `effect` argument must win over it.
+        params.sculptEffect = 1.0;
+        params.script = R"JS(
+            var p = getCurrentPos();
+            applySmooth({x: p.x, y: p.y}, 4, 0.25, false);
+        )JS";
+        TEST_REQUIRE(brush.applyStamp(cx, cy, params),
+                     "applySmooth failed: %s", brush.lastScriptError().c_str());
+        const int smoothed25 =
+            static_cast<int>(vMap.SGetAlt(cx, cy)) >> VX_FRACTION;
+        TEST_REQUIRE(smoothed25 < bumpH && smoothed25 > plateauH,
+                     "applySmooth(effect 0.25) must pull the bump towards the "
+                     "plateau average, got %d (expected plateau %d < x < bump "
+                     "%d).",
+                     smoothed25, plateauH, bumpH);
+        TEST_REQUIRE(session.undo(), "the applySmooth undo failed.");
+        TEST_REQUIRE(static_cast<int>(vMap.SGetAlt(cx, cy)) >> VX_FRACTION ==
+                         bumpH,
+                     "undo must restore the bump after applySmooth.");
+
+        // effect 1.0 reaches the reference in one stamp — strictly closer to
+        // the plateau than the 0.25 pass (the argument governs, not the UI).
+        params.script = R"JS(
+            var p = getCurrentPos();
+            applySmooth({x: p.x, y: p.y}, 4, 1.0, false);
+        )JS";
+        TEST_REQUIRE(brush.applyStamp(cx, cy, params),
+                     "applySmooth(1.0) failed: %s",
+                     brush.lastScriptError().c_str());
+        const int smoothed100 =
+            static_cast<int>(vMap.SGetAlt(cx, cy)) >> VX_FRACTION;
+        TEST_REQUIRE(smoothed100 < smoothed25,
+                     "effect 1.0 must smooth deeper than 0.25, got %d vs %d.",
+                     smoothed100, smoothed25);
+        TEST_REQUIRE(session.undo(), "the applySmooth(1.0) undo failed.");
+
+        // --- applyBlur -----------------------------------------------------
+        params.script = R"JS(
+            var p = getCurrentPos();
+            applyBlur({x: p.x, y: p.y}, 4, 2, 0.5, false);
+        )JS";
+        TEST_REQUIRE(brush.applyStamp(cx, cy, params),
+                     "applyBlur failed: %s", brush.lastScriptError().c_str());
+        const int blurred =
+            static_cast<int>(vMap.SGetAlt(cx, cy)) >> VX_FRACTION;
+        TEST_REQUIRE(blurred < bumpH && blurred > plateauH,
+                     "applyBlur must pull the bump towards the blurred "
+                     "height, got %d (expected plateau %d < x < bump %d).",
+                     blurred, plateauH, bumpH);
+        TEST_REQUIRE(session.undo(), "the applyBlur undo failed.");
+        TEST_REQUIRE(static_cast<int>(vMap.SGetAlt(cx, cy)) >> VX_FRACTION ==
+                         bumpH,
+                     "undo must restore the bump after applyBlur.");
+
+        // A blur kernel that is not smaller than the stamp is clamped the
+        // same way the sculpting toolbar clamps it, not rejected.
+        params.script = R"JS(
+            var p = getCurrentPos();
+            applyBlur({x: p.x, y: p.y}, 4, 99, 0.5, false);
+        )JS";
+        TEST_REQUIRE(brush.applyStamp(cx, cy, params),
+                     "an oversized blurRadius must clamp, not fail: %s",
+                     brush.lastScriptError().c_str());
+        TEST_REQUIRE(static_cast<int>(vMap.SGetAlt(cx, cy)) >> VX_FRACTION <
+                         bumpH,
+                     "the clamped blur must still smooth the bump.");
+        TEST_REQUIRE(session.undo(), "the clamped blur undo failed.");
+
+        // --- argument validation ------------------------------------------
+        params.script = "applyBlur({x: 0, y: 0}, 4, 0, 0.5, false);";
+        TEST_REQUIRE(!brush.applyStamp(cx, cy, params),
+                     "a blurRadius below 1 must be refused.");
+        TEST_REQUIRE(brush.lastScriptError().find("blurRadius") !=
+                         std::string::npos,
+                     "the error must name blurRadius: %s",
+                     brush.lastScriptError().c_str());
+
+        params.script = "applySmooth({x: 0, y: 0}, 0, 0.5, false);";
+        TEST_REQUIRE(!brush.applyStamp(cx, cy, params),
+                     "a radius below 1 must be refused.");
+        TEST_REQUIRE(brush.lastScriptError().find("radius") !=
+                         std::string::npos,
+                     "the error must name radius: %s",
+                     brush.lastScriptError().c_str());
+
+        params.script = "applyBlur({x: 0, y: 0}, 0, 1, 0.5, false);";
+        TEST_REQUIRE(!brush.applyStamp(cx, cy, params),
+                     "applyBlur must validate its radius too.");
+
+        params.script = "applySmooth('not a position', 2, 0.5, false);";
+        TEST_REQUIRE(!brush.applyStamp(cx, cy, params),
+                     "a non-object position must be refused.");
+        TEST_REQUIRE(brush.lastScriptError().find("position") !=
+                         std::string::npos,
+                     "the error must mention the position: %s",
+                     brush.lastScriptError().c_str());
+
+        // A non-numeric effect (undefined -> NaN) must be refused.
+        params.script = "applySmooth({x: 0, y: 0}, 2, undefined, false);";
+        TEST_REQUIRE(!brush.applyStamp(cx, cy, params),
+                     "a non-finite effect must be refused.");
+        TEST_REQUIRE(brush.lastScriptError().find("effect") !=
+                         std::string::npos,
+                     "the error must mention effect: %s",
+                     brush.lastScriptError().c_str());
+    }
+    std::printf("[PASS] applySmooth/applyBlur sculpt through the scripted API.\n");
+
     return true;
 }
 

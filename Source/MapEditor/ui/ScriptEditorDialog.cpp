@@ -61,6 +61,7 @@ ScriptHighlighter::ScriptHighlighter(QTextDocument* parent)
         QStringLiteral("setHeight"),           QStringLiteral("setToZP"),
         QStringLiteral("paintSoot"),           QStringLiteral("paintVeryLightDam"),
         QStringLiteral("paintColor"),
+        QStringLiteral("applyBlur"),           QStringLiteral("applySmooth"),
         QStringLiteral("getDamHeight"),        QStringLiteral("getGeoColor"),
         QStringLiteral("getDamColor"),         QStringLiteral("setGeoPalette"),
         QStringLiteral("setDamPalette"),       QStringLiteral("showInfoMessageBox"),
@@ -170,11 +171,14 @@ ScriptEdit::ScriptEdit(QWidget* parent)
         "//   paintSoot(pos, radius, square)\n"
         "//   paintVeryLightDam(pos, radius, square)\n"
         "//   paintColor(pos, red, green, blue, radius, square)\n"
+        "//   applyBlur(pos, radius, blurRadius, effect, square)\n"
+        "//   applySmooth(pos, radius, effect, square)\n"
         "//   getDamHeight(pos) -> int        getGeoColor(pos) / getDamColor(pos)"
         " -> {r,g,b}\n"
         "//   setGeoPalette(index, {r, g, b}) / setDamPalette(index, {r, g, b})\n"
         "//   showInfoMessageBox(text) / showErrorMessageBox(text)\n"
-        "// pos = {x: int, y: int}; radius >= 1; square = boolean. Dam layer only."));
+        "// pos = {x: int, y: int}; radius >= 1; effect 0..1; square = boolean. "
+        "Dam layer only."));
 }
 
 int ScriptEdit::lineNumberAreaWidth() const

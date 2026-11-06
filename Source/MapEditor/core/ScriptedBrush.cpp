@@ -14,6 +14,8 @@
 //   paintSoot(pos, radius, square)
 //   paintVeryLightDam(pos, radius, square)
 //   paintColor(pos, red, green, blue, radius, square)
+//   applyBlur(pos, radius, blurRadius, effect, square)
+//   applySmooth(pos, radius, effect, square)
 //
 //   getDamHeight(pos)                  -> int     dam height (whole voxels,
 //                                                 0 where no dam)
@@ -27,6 +29,11 @@
 //   pos    = {x: int, y: int}             map cell
 //   radius = int >= 1 (circle radius or square half-side), clamped to the
 //            editor brush radius cap
+//   blurRadius = int >= 1 (Gaussian Blur kernel radius in cells, clamped to
+//            [1, radius - 1] like the sculpting toolbar brush)
+//   effect = number 0..1 (clamped) — the fraction of the way each covered
+//            cell moves towards the sculpting reference in one stamp; the
+//            same value the Sculpting spinbox sets in the UI (0.5 = 50 %)
 //   square = boolean: true → filled square stamp, false → filled circle
 //   height = whole voxels, behaves like the corresponding editor brush
 //            (raise/lower step per call; setHeight/setToZP absolute)
@@ -45,6 +52,7 @@
 #include "ScriptedBrush.h"
 
 #include <climits>
+#include <cmath>
 
 #include "duktape.h"
 
@@ -254,6 +262,76 @@ duk_ret_t apiPaintColor(duk_context* ctx)
     return applyOp(ctx, BrushEffect::SetColor, (r << 16) | (g << 8) | b, true);
 }
 
+/// Shared tail of applyBlur/applySmooth: the sculpting brushes own their
+/// stamp geometry, so the radius sits at index 1 (unlike the height ops,
+/// where index 1 carries the height). The stamp is Dam-mode only, exactly
+/// like the editor sculpting toolbar; the effect fraction is the explicit
+/// `effect` argument (0..1, clamped like the Sculpting spinbox — the UI
+/// value is NOT used), and the Gaussian blur additionally takes its kernel
+/// radius — clamped into [1, stampRadius - 1] the same way clampedParams()
+/// does for the toolbar brush.
+/// Stack layouts:
+///   applySmooth(pos, radius, effect, square)
+///   applyBlur(pos, radius, blurRadius, effect, square)
+duk_ret_t applySculptOp(duk_context* ctx, BrushEffect effect, int blurRadius)
+{
+    ScriptEnv* env = getEnv(ctx);
+    const bool isBlur = effect == BrushEffect::GaussianBlur;
+    int x = 0;
+    int y = 0;
+    if (!readPosition(ctx, 0, x, y)) {
+        return duk_error(ctx, DUK_ERR_TYPE_ERROR,
+                         "first argument must be a position {x, y}");
+    }
+    int radius = duk_to_int(ctx, 1);
+    if (radius < 1) {
+        return duk_error(ctx, DUK_ERR_RANGE_ERROR,
+                         "radius must be a number >= 1, got %d", radius);
+    }
+    radius = BrushTool::clampRadius(radius);
+    // The effect argument: index 2 for applySmooth, index 3 for applyBlur
+    // (the blurRadius argument shifts it).
+    const int effectIndex = isBlur ? 3 : 2;
+    if (isBlur && blurRadius < 1) {
+        return duk_error(ctx, DUK_ERR_RANGE_ERROR,
+                         "blurRadius must be a number >= 1, got %d",
+                         blurRadius);
+    }
+    const double requestedEffect = duk_to_number(ctx, effectIndex);
+    if (!std::isfinite(requestedEffect)) {
+        return duk_error(ctx, DUK_ERR_TYPE_ERROR,
+                         "effect must be a finite number 0..1");
+    }
+    const double effectFraction =
+        BrushTool::clampSculptEffect(requestedEffect);
+    const bool square = duk_to_boolean(ctx, effectIndex + 1);
+
+    BrushMask mask = square ? BrushMasks::filledSquare(radius)
+                            : BrushMasks::filledCircle(radius);
+    mask.translate(x, y);
+
+    BrushParams op = *env->params;
+    op.mode = BrushMode::Dam; // sculpting owns the dam layer
+    op.effect = effect;
+    op.useImageMask = false;
+    op.sculptEffect = effectFraction;
+    if (isBlur) {
+        op.blurRadius = BrushTool::clampBlurRadius(blurRadius, radius);
+    }
+    env->brush->applyMask(mask, op);
+    return 0;
+}
+
+duk_ret_t apiApplyBlur(duk_context* ctx)
+{
+    return applySculptOp(ctx, BrushEffect::GaussianBlur, duk_to_int(ctx, 2));
+}
+
+duk_ret_t apiApplySmooth(duk_context* ctx)
+{
+    return applySculptOp(ctx, BrushEffect::Smooth, 0);
+}
+
 /// Shared tail of the read* bindings: reads the {x, y} position and
 /// range-checks it against the loaded map. Throws a duktape error (which
 /// aborts the evaluation with a clear brush.js message) when the argument
@@ -414,6 +492,8 @@ void registerApiBindings(duk_context* ctx)
     registerBinding(ctx, "paintSoot", apiPaintSoot, 3);
     registerBinding(ctx, "paintVeryLightDam", apiPaintVeryLightDam, 3);
     registerBinding(ctx, "paintColor", apiPaintColor, 6);
+    registerBinding(ctx, "applyBlur", apiApplyBlur, 5);
+    registerBinding(ctx, "applySmooth", apiApplySmooth, 4);
     registerBinding(ctx, "getDamHeight", apiGetDamHeight, 1);
     registerBinding(ctx, "getGeoColor", apiGetGeoColor, 1);
     registerBinding(ctx, "getDamColor", apiGetDamColor, 1);

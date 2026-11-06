@@ -2806,8 +2806,9 @@ void MainWindow::createBrushActions()
         tr("Runs a JavaScript (duktape) script at every stamp: the script "
            "drives the editor brush API — raiseHeight/lowerHeight/setHeight/"
            "setToZP/paintSoot/paintVeryLightDam at explicit positions and "
-           "radii, and paintColor with an RGB colour (nearest Dam palette "
-           "entry). Dam layer only. The whole stamp evaluation is ONE undo "
+           "radii, paintColor with an RGB colour (nearest Dam palette "
+           "entry), and the sculpting brushes applyBlur/applySmooth. Dam "
+           "layer only. The whole stamp evaluation is ONE undo "
            "step; a 20 s time limit applies. Edit the script with the "
            "pencil button next to this one."),
         MapEditor::BrushEffect::Script, 0);
@@ -2842,6 +2843,8 @@ void MainWindow::createBrushActions()
                 "//   paintSoot(pos, radius, square)\n"
                 "//   paintVeryLightDam(pos, radius, square)\n"
                 "//   paintColor(pos, red, green, blue, radius, square)\n"
+                "//   applyBlur(pos, radius, blurRadius, effect, square)\n"
+                "//   applySmooth(pos, radius, effect, square)\n"
                 "\n"
                 "var p = getCurrentPos();\n"
                 "var r = getCurrentRadius();\n"
@@ -4614,6 +4617,7 @@ void MainWindow::onActionRunScript()
             "//   setHeight(pos, height, radius, square) / setToZP(pos, r, sq)\n"
             "//   paintSoot(pos, r, sq) / paintVeryLightDam(pos, r, sq)\n"
             "//   paintColor(pos, red, green, blue, radius, square)\n"
+            "//   applyBlur(pos, radius, blurRadius, effect, square) / applySmooth(pos, radius, effect, sq)\n"
             "//   setGeoPalette(index, {r, g, b}) / setDamPalette(index, {r, g, b})\n"
             "//   getDamHeight(pos) / getGeoColor(pos) / getDamColor(pos)\n"
             "\n"

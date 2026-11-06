@@ -7,8 +7,9 @@
 //
 // BrushEffect::Script runs params.script once per stamp at the stamp
 // centre. The script calls the editor brush API (height/zeroplast/soot/
-// very-light-dam/palette ops at explicit positions and radii), reads the
-// current brush parameters via getCurrent*(), and is bounded by a time
+// very-light-dam/palette ops and the applySmooth/applyBlur sculpting ops at
+// explicit positions and radii), reads the current brush parameters via
+// getCurrent*(), and is bounded by a time
 // limit enforced through the duktape interrupt mechanism. The whole
 // evaluation lands in ONE undo entry (EditorSession undo group).
 // ============================================================================
