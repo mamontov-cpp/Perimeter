@@ -4,6 +4,7 @@
 
 #include <string>
 
+#include "BattleMapController.h"
 #include "BrushTool.h"
 #include "ImageDecal.h"
 #include "ScriptEditorDialog.h"
@@ -28,12 +29,10 @@ class EditorSession;
 class ViewportWidget;
 class MinimapWidget;
 class PalettePanel;
-class BattleMapPanel;
-class BuildingsPanel;
-class ScumSpotsPanel;
-class NaturePanel;
 class BrushTool;
-class McpServer;
+class BrushUiController;
+class ImageIoController;
+class McpBridge;
 struct View3DCamera;
 }
 
@@ -133,44 +132,26 @@ private slots:
 
     /// Handle eyedropper pick: update the color brush palette index (T3.3).
     void onEyedropperPicked(int mapX, int mapY, unsigned char surIndex);
-    /// Place Spawn mode click: move the selected battle-map player's spawn
-    /// group to the clicked cell (terrain z-correction, undoable through
-    /// SpgFile::setPlayerAnchorUndoable).
-    void onSpawnPlacementRequested(int mapX, int mapY);
     /// The scripted brush evaluation failed — show the message in a
     /// critical message box (QMessageBox::critical per spec).
     void onBrushScriptError(const QString& message);
 
-    /// T3.5 — open a file dialog, load an image as brush mask.
-    void onLoadBrushImage();
-
-    /// ImageDecal — open a file dialog, convert the image into a Dam-palette
-    /// limited decal (ImageDecal::prepare), add the new colours to the Dam
-    /// palette and make the decal the stamp of the ImageDecal brush.
-    void onLoadDecalImage();
-
-    // T6 — image import/export.
-    /// T6.3 — paint SurBuf from an image (RGB -> nearest palette index,
-    /// indexed TGA -> indices as-is).
+    // T6 — image import/export: the actions stay here (updateActionStates
+    // tables over them), the flows live in the ImageIoController — these
+    // slots are thin wrappers (docs/architecture.md §5.37).
     void onActionImportMapImage();
-    /// T6.1 — any user image becomes the world's up.tga (512x512 24-bit).
     void onActionImportUpTga();
-    /// T6.4 — replace leveledSurfaceTexture.tga with validation.
     void onActionImportLeveledTexture();
-    /// T6.2 — 8-bit grayscale heightmap (SGetAlt >> 5).
     void onActionExportHeightmap();
-    /// T6.2 — the top view raster as 24-bit TGA.
     void onActionExportTopView();
 
     // T8 — battle maps (.spg).
     void onActionOpenBattleMap();
     void onActionSaveBattleMap();
     void onActionSaveBattleMapAs();
-    /// T8.4 — new battle map from a template (BattleMapPanel request).
-    void onNewBattleMapRequested(const QString &name, const QString &templateMap,
-                                 int playerCount);
     /// T8.4 — the File-menu entry: asks for the name/template/player count
-    /// and creates the battle map for the currently loaded world.
+    /// and creates the battle map for the currently loaded world. Thin
+    /// wrapper over BattleMapController::newBattleMap().
     void onActionNewBattleMap();
 
     // T9 — validation + autofixes (Tools menu).
@@ -189,8 +170,6 @@ private:
     void buildMinimapDock();
     // T4.1 — the palette panel dock (built right after the minimap dock).
     void buildPaletteDock();
-    // T8 — the battle map panel dock.
-    void buildBattleMapDock();
     // T9 — the Tools menu (validation + autofixes).
     void buildToolsMenu();
     /// Shared report dialog with the "Go To" jump wired to the viewport.
@@ -211,101 +190,28 @@ private:
     // Difference mode (.gmp): File menu save/load of the difference data.
     // The default path is the loaded battle map's .gmp sibling; without a
     // battle map a file dialog is used.
+    /// Thin wrappers over BattleMapController::saveDiffData()/loadDiffData().
     void onActionSaveDiff();
     void onActionLoadDiff();
-    QString diffGmpPath(bool forSave);
 
-    // T8 — battle map helpers: panel/overlay/action refresh, the world the
-    // .spg refers to, and the spawn overlay contents.
-    void refreshBattleMapUI();
-    bool ensureWorldForBattleMap();
-    void syncSpawnOverlay();
-    /// Pre-placed buildings (SavePrm.nobodysBuildings): the dock panel, the
-    /// viewport/minimap overlays, and the three panel tools (place/select/
-    /// delete) wired to the SpgFile mutation API.
-    void buildBuildingsDock();
-    /// Bake the BuildingsPanel button icons from the game M3D models through
-    /// the viewport's GPU scene (once; retries while the GPU view is absent).
-    void bakeBuildingIconsIfPossible();
-    /// Scum nests dock + handlers (MainWindowScumSpots.cpp).
-    void buildScumSpotsDock();
-    void bakeScumIconsIfPossible();
-    void reloadScumSpots();
-    void syncScumOverlay();
-    void onScumPlace(double mapX, double mapY);
-    void onScumSelect(double mapX, double mapY);
-    void onScumDelete(double mapX, double mapY);
-    void onScumCursorMoved(int mapX, int mapY);
-    /// Registers/unregisters the <world>.scr chain in every player's
-    /// TriggerChainNames (before a save).
-    void syncScumTriggerArtifacts();
-    /// Writes/deletes Scripts/Triggers/<world>.scr after a successful save.
-    void flushScumTriggerFile();
+    /// The battle-map domain (panels, .spg open/save/new, spawn overlay,
+    /// .gmp difference save/load) — extracted from this class, see
+    /// docs/architecture.md §5.35. The T8/T9 action slots below are thin
+    /// wrappers over it.
 #ifdef MAP_EDITOR_MCP
-    /// Embedded MCP server for LLM agents (ui/MainWindowMcp.cpp): QHttpServer
-    /// on the UI thread, port from map_editor.ini ([mcp] port=, default
-    /// 10102). Started in the constructor, stopped on destruction.
-    void setupMcpServer();
-    QVariantMap mcpInvoke(const QString& name, const QVariantMap& args);
-    MapEditor::McpServer* mcpServer_ = nullptr;
+    // The MCP layer (server + tool dispatch) lives in McpBridge
+    // (ui/McpBridge.cpp, docs/architecture.md §5.37).
+    MapEditor::McpBridge *mcpBridge_ = nullptr;
 #endif
-    /// Nature dock + handlers (MainWindowNature.cpp).
-    void buildNatureDock();
-    void reloadNatureObjects();
-    void syncNatureOverlay();
-    void onNaturePlace(double mapX, double mapY);
-    void onNatureSelect(double mapX, double mapY);
-    void onNatureDelete(double mapX, double mapY);
-    void onNatureCursorMoved(int mapX, int mapY);
-    /// Nature models under RESOURCE/Models/Environment (game-content scan).
-    QStringList scanNatureModels() const;    void reloadPlacedBuildings();
-    void syncBuildingsOverlay();
-    void onBuildingPlace(double mapX, double mapY);
-    void onBuildingSelect(double mapX, double mapY);
-    void onBuildingDelete(double mapX, double mapY);
-    void onBuildingCursorMoved(int mapX, int mapY);
-    /// True when a building of `radius` at (x, y) intersects an existing one.
-    bool buildingPlacementBlocked(double mapX, double mapY, double radius) const;
-    /// Bring spawn groups resting above the world's zero layer down to it
-    /// (SpgFile::restPlayersOnZeroLayer) so the frames start landed in the
-    /// game. No-op unless the map's world is loaded.
-    void normalizeBattleMapSpawnHeights();
-    QString askBattleMapSaveName(bool &toWorldsFolder) const;
-    /// *.spg file names in RESOURCE/Battle of the current game dir.
-    QStringList battleMapTemplates() const;
-    /// Warn the user when the file name (without extension/path) does not
-    /// match the world name — the game expects them to be identical.
-    void checkBattleMapNameMatchesWorld(const QString &filePath,
-                                        const std::string &worldName);
 
-    // T3.2 — create the brush type (effect), the brush mode (Geo/Dam) and
-    // the editor interaction mode (View/Brush/Eyedropper) actions. Called
-    // before the menus/toolbars so both can embed them.
+    // T3.2 — create the brush actions + the editor interaction mode
+    // (View/Brush/Eyedropper) actions. Called before the menus/toolbars so
+    // both can embed them. The brush domain itself lives in the
+    // BrushUiController (docs/architecture.md §5.36); only the editor-mode
+    // actions stay here (the Edit menu, updateActionStates and the autotest
+    // hooks keep them).
     void createBrushActions();
-    // T3.2 — the Brush toolbar: the View/Brush/Eyedropper mode switch, the
-    // type buttons, the target-height spinbox of the level tool and the
-    // Geo/Dam mode buttons.
-    void buildBrushToolbar();
-    /// The Sculpting toolbar: Smooth / Flatten (Dam mode only) + the shared
-    /// 0..1 fraction spinbox. Lives on its OWN row — addToolBarBreak() runs
-    /// inside, before the toolbar is inserted into the main window.
-    void buildSculptToolbar();
-    void buildModifierToolbar();
-    /// The Model toolbar (own row): the PLY import, the model brush toggle,
-    /// the place/add/subtract modes and the height/x/y scale spinboxes.
-    void buildModelToolbar();
-    /// Import a PLY model as the model-heightmap brush (file dialog, error
-    /// box on failure, palette quantization + activation helpers).
-    void onImportModel();
-    /// Quantize the imported model colours against the loaded world's Dam
-    /// palette (ImageDecal::prepare, same unused-colour accounting) and hand
-    /// raster + indices to the brush tool. False without a loaded world.
-    bool quantizeModelBrush();
-    // T3.2 — re-read the tool parameters into the buttons/spinbox state.
-    void syncBrushControls();
-    // T3.3 — update the color swatch label and spinbox to reflect the
-    // current colorIndex in the brush params.
-    void syncColorControls();
+    void createEditorModeActions();
 
     /// Put the current world name into the window title:
     /// "Perimeter Map Editor - <world>" while a world is loaded, otherwise
@@ -353,6 +259,14 @@ private:
     // T3.1 — the brush tool driving left-drag editing in the viewport;
     // T3.2+ tool panels will change its parameters.
     MapEditor::BrushTool *brushTool_ = nullptr;
+
+    // T3.2+ — the whole brush UI domain: the type/mode/stamp actions, the
+    // Brush / Sculpting / Modifiers / Model toolbars, the control sync and
+    // the image/decal/model import flows (docs/architecture.md §5.36).
+    MapEditor::BrushUiController *brushUI_ = nullptr;
+
+    // T6 — image import/export flows (docs/architecture.md §5.37).
+    MapEditor::ImageIoController *imageIO_ = nullptr;
 
     // Toggled to reflect session state; owned by the menus.
     QAction *actSave_ = nullptr;
@@ -406,141 +320,10 @@ private:
     QAction *actModeEyedropper_ = nullptr;
     QAction *actModePlaceSpawn_ = nullptr;
 
-    // T3.2 — brush type (effect) actions: raise / lower / level to
-    // zeroplast / level to an arbitrary height.
-    QAction *actBrushRaise_ = nullptr;
-    QAction *actBrushLower_ = nullptr;
-    QAction *actBrushLevelZP_ = nullptr;
-    QAction *actBrushLevelHeight_ = nullptr;
-    // T3.3 — color brush (SetSurf) action.
-    QAction *actBrushColor_ = nullptr;
-    // T4.2 — eyedropper as a brush type: the PickColor effect. Exclusive
-    // member of the brush type group; while it is selected the Brush toolbar
-    // acts on the surface pixels by sampling them (editor mode Eyedropper).
-    QAction *actBrushPickColor_ = nullptr;
-    // T3.4/T5 — dam-marking brushes (soot, very light dam); the zeroplast
-    // marking itself happens through the "Level to Zeroplast" brush.
-    QAction *actBrushSoot_ = nullptr;
-    QAction *actBrushVeryLightDam_ = nullptr;
-    // Scripted brush (JavaScript via duktape, Dam mode only): the type
-    // action and the script-editor action (opens the editing window).
-    QAction *actBrushScript_ = nullptr;
-    QAction *actBrushScriptEdit_ = nullptr;
-    // Sculpting brushes (Dam mode only): Smooth pulls the covered cells
-    // towards the average height under the mask, Flatten towards a
-    // least-squares plane, Tricubic towards the bicubic interpolation of a
-    // coarse lattice, Inflate/Deflate offset the surface along its voxel
-    // normals. The fraction spinbox below is shared by all of them.
-    QAction *actBrushSmooth_ = nullptr;
-    QAction *actBrushFlatten_ = nullptr;
-    QAction *actBrushTricubic_ = nullptr;
-    QAction *actBrushInflate_ = nullptr;
-    QAction *actBrushDeflate_ = nullptr;
-    QAction *actBrushGaussianBlur_ = nullptr;
-    // 3D shape brushes (Dam mode only): the solid stamped instead of a flat
-    // mask (cone / pyramid / truncated cone / truncated pyramid / half torus /
-    // half ellipsoid — BrushParams::shape3d). Exclusive group of their own;
-    // they combine with the common Raise / Lower / Set-to-Height brush types.
-    QAction *actBrush3DCone_ = nullptr;
-    QAction *actBrush3DPyramid_ = nullptr;
-    QAction *actBrush3DTruncCone_ = nullptr;
-    QAction *actBrush3DTruncPyramid_ = nullptr;
-    QAction *actBrush3DTorus_ = nullptr;
-    QAction *actBrush3DEllipsoid_ = nullptr;
-    // 3D shape settings (sculpting toolbar): the amplitude, the upper part
-    // XY offset, the upper part radius (truncated cone top / torus inner) and
-    // the upper part side length (truncated pyramid). The polygon side count
-    // and angle come from the shared 2D polygon spins.
-    QSpinBox *shapeHeightSpin_ = nullptr;
-    QSpinBox *shapeTopOffsetXSpin_ = nullptr;
-    QSpinBox *shapeTopOffsetYSpin_ = nullptr;
-    QSpinBox *shapeTopRadiusSpin_ = nullptr;
-    QSpinBox *shapeTopSideSpin_ = nullptr;
-    // Model-heightmap brush (own toolbar): the import action, the use-brush
-    // toggle, the place/add/subtract mode buttons and the height/x/y scale
-    // spinboxes. The imported raster lives in BrushTool; the actions here
-    // manage its activation and parameters.
-    QAction *actImportModel_ = nullptr;
-    QAction *actModelBrush_ = nullptr;
-    QAction *actModelPlace_ = nullptr;
-    QAction *actModelAdd_ = nullptr;
-    QAction *actModelSubtract_ = nullptr;
-    QSpinBox *modelHeightSpin_ = nullptr;
-    QDoubleSpinBox *modelScaleXSpin_ = nullptr;
-    QDoubleSpinBox *modelScaleYSpin_ = nullptr;
-    // The last imported model path (status messages / re-quantization).
-    QString modelImportPath_;
-    // Gaussian-blur convolution radius (cells) — always less than the
-    // stamp radius (the maximum follows the brush-radius spinbox).
-    QSpinBox *blurRadiusSpin_ = nullptr;
-    // The script source kept by the window (loaded into BrushParams::script
-    // when the scripted brush runs) and the stamp preview shape picked in
-    // the script editor.
-    QString brushScript_;
-    MapEditor::ScriptStampShape scriptStampShape_ =
-        MapEditor::ScriptStampShape::Circle;
-    // Sculpting fraction (0..1) shared by Smooth / Flatten.
-    QDoubleSpinBox *sculptEffectSpin_ = nullptr;
-    // Brush height-gate modifiers (Dam mode only): two mutually exclusive
-    // checkable conditions — apply the effect only where the voxel's dam
-    // height is above / below the gate height — plus the comparison height
-    // spinbox. The actions live in the Brush Modifiers toolbar AND in the
-    // Edit → Brush Modifiers menu (the menu wraps the same actions; its
-    // height spinbox is a synced mirror of the toolbar one).
-    QAction *actGateAbove_ = nullptr;
-    QAction *actGateBelow_ = nullptr;
-    QSpinBox *gateHeightSpin_ = nullptr;
-    QSpinBox *gateHeightMenuSpin_ = nullptr;
-    // T3.5 — load-image action: the loaded image becomes the stamp mask of
-    // every terrain effect (BrushParams::useImageMask) until a stamp shape
-    // is picked explicitly.
-    QAction *actLoadBrushImage_ = nullptr;
-    // ImageDecal — palette-limited image stamp: picks the image, converts it
-    // to Dam palette indices and paints them with the SetColor semantics.
-    QAction *actBrushImageDecal_ = nullptr;
-    // T3.1 — brush form (stamp shape) actions: filled circle/square, the two
-    // outlines and the two-point line. Exclusive group, mirrored in the
-    // viewport preview and in BrushParams::shape.
-    QAction *actShapeCircle_ = nullptr;
-    QAction *actShapeSquare_ = nullptr;
-    QAction *actShapeCircleOutline_ = nullptr;
-    QAction *actShapeSquareOutline_ = nullptr;
-    // Regular-polygon stamps: filled and outline (the outline takes the
-    // stroke width, like the circle/square outlines).
-    QAction *actShapePolygon_ = nullptr;
-    QAction *actShapePolygonOutline_ = nullptr;
-    QAction *actShapeLine_ = nullptr;
-    // T3.1 — stamp half-size in map cells (BrushParams::radius).
-    QSpinBox *brushRadiusSpin_ = nullptr;
-    // Regular-polygon stamp params (BrushParams::polygonSides /
-    // polygonAngleDeg): the vertex count (3..20) and the first-vertex angle
-    // (0..360°, wrapping). Enabled only with a polygon shape.
-    QSpinBox *polygonSidesSpin_ = nullptr;
-    QDoubleSpinBox *polygonAngleSpin_ = nullptr;
-    // Stroke width in cells of the unfilled shapes (CircleOutline,
-    // SquareOutline, Line). 1 = original one-cell border. Only enabled when
-    // an unfilled shape is active; ignored for the filled shapes.
-    QSpinBox *brushThicknessSpin_ = nullptr;
-    // T3.2 — brush mode actions: which layer the height tools drive.
-    QAction *actBrushGeo_ = nullptr;
-    QAction *actBrushDam_ = nullptr;
-    // T3.2 — AlignVariableH target height (whole voxels 0..255).
-    QSpinBox *brushLevelSpin_ = nullptr;
-    // T3.3 — palette index spinbox for the color brush (0..255).
-    QSpinBox *brushColorIndexSpin_ = nullptr;
-    // T3.3 — color swatch label showing the current color preview.
-    QLabel *brushColorSwatch_ = nullptr;
-
-    // T3.5 — the image-mask scale control (percent of the loaded image
-    // size) and the un-scaled original mask: the scaled mask is recomputed
-    // from the original on every change, so rescaling never accumulates
-    // interpolation blur.
-    QSpinBox *brushMaskScaleSpin_ = nullptr;
-    MapEditor::BrushMask brushMaskOriginal_;
-
-    // ImageDecal — the un-scaled palette-index decal: the scale spinbox
-    // recomputes the stamp from it, exactly like the brush-image mask above.
-    MapEditor::ImageDecal::DecalImage decalOriginal_;
+    // T3.1 — the brush tool driving left-drag editing in the viewport; its
+    // UI (actions, toolbars, imports) lives in the BrushUiController.
+    // (brushTool_ itself stays — the viewport, the palette panel, the run-
+    // script flow and the MCP layer drive it directly.)
 
     // Toolbar readout of the current 3D camera.
     QLabel *viewReadout_ = nullptr;
@@ -576,36 +359,14 @@ private:
     QAction *actRunScript_ = nullptr;
     QString runScript_;
 
-    // T8 — the loaded battle map (.spg), its dock panel and File actions.
-    MapEditor::SpgFile battleMap_;
-    QString battleMapPath_;
-    QDockWidget *battleMapDock_ = nullptr;
-    MapEditor::BattleMapPanel *battleMapPanel_ = nullptr;
-    /// Pre-placed buildings panel + state (mirror of SpgFile::buildings()).
-    QDockWidget *buildingsDock_ = nullptr;
-    MapEditor::BuildingsPanel *buildingsPanel_ = nullptr;
-    bool buildingIconsBaked_ = false;
-    /// Scum nests panel + state (paired SCUM_SPOT mounds / FILTH_SPOT
-    /// spawners — see docs/architecture.md).
-    QDockWidget *scumSpotsDock_ = nullptr;
-    MapEditor::ScumSpotsPanel *scumSpotsPanel_ = nullptr;
-    std::vector<MapEditor::SpgFile::ScumSpot> placedScumSpots_;
-    int selectedScumRow_ = -1;
-    bool scumIconsBaked_ = false;
-    /// Nature panel + state (SavePrm.environment SaveUnitNatureData).
-    QDockWidget *natureDock_ = nullptr;
-    MapEditor::NaturePanel *naturePanel_ = nullptr;
-    std::vector<MapEditor::SpgFile::NatureObject> placedNature_;
-    int selectedNatureRow_ = -1;
-    bool natureModelsScanned_ = false;    /// Filth parameters the panel currently holds (stamped on placement,
-    /// applied to the selection on edit).
-    MapEditor::SpgFile::FilthParams pendingFilth_;
-    /// Set by syncScumTriggerArtifacts() before a save, consumed by
-    /// flushScumTriggerFile() after it: the chain file to write or delete.
-    QString pendingScumChainFile_;
-    bool pendingScumChainWrite_ = false;
-    std::vector<MapEditor::SpgFile::PlacedBuilding> placedBuildings_;
-    int selectedBuildingRow_ = -1;
+    // T8 — the battle-map domain lives in the controller (see the class doc
+    // note above); these File-menu actions stay here as thin wrappers.
+    MapEditor::BattleMapController *battleMaps_ = nullptr;
+    /// MCP/validation accessors to the loaded battle map (null-safe is the
+    /// caller's job — every use site is behind an isLoaded() check).
+    MapEditor::SpgFile &battleMap() { return battleMaps_->spgFile(); }
+    const MapEditor::SpgFile &battleMap() const { return battleMaps_->spgFile(); }
+    QString battleMapPath() const { return battleMaps_->path(); }
     QAction *actOpenBattleMap_ = nullptr;
     QAction *actSaveBattleMap_ = nullptr;
     QAction *actSaveBattleMapAs_ = nullptr;

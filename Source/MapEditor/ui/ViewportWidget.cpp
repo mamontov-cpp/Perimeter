@@ -2061,41 +2061,50 @@ void ViewportWidget::drawBuildingPoints(QPainter &painter)
     }
 }
 
+double ViewportWidget::terrainZAt(double mapX, double mapY) const
+{
+    double z = 0.0;
+    if (session_) {
+        const int terrain =
+            session_->terrainHeightAt(qRound(mapX), qRound(mapY));
+        if (terrain > 0) {
+            z = terrain;
+        }
+    }
+    return z;
+}
+
+bool ViewportWidget::projectPointToWidget(double mapX, double mapY, double z,
+                                          QPointF& out) const
+{
+    bool visible = false;
+    if (gpuActive()) {
+        double camZ = 0.0;
+        double sx = 0.0;
+        double sy = 0.0;
+        const qreal dpr = devicePixelRatioF();
+        visible = gpuView_->projectToScreenZ(
+                      mapX + 0.5, mapY + 0.5, z, camZ, sx, sy) &&
+                  camZ > gpuView_->nearPlaneZ();
+        out = QPointF(sx / dpr, sy / dpr);
+    } else {
+        out = obliqueMapToWidgetF(QPointF(mapX + 0.5, mapY + 0.5));
+        visible = QRectF(rect()).contains(out);
+    }
+    return visible;
+}
+
 void ViewportWidget::drawBuildingPoints3D(QPainter &painter)
 {
     if (buildings_.empty() || !renderer_->isBound()) return;
 
     painter.setRenderHint(QPainter::Antialiasing);
-    auto project = [&](const BuildingPoint &b, QPointF &pos) {
-        bool visible = false;
-        if (gpuActive()) {
-            double z = 0.0;
-            if (session_) {
-                const int terrain =
-                    session_->terrainHeightAt(qRound(b.mapX), qRound(b.mapY));
-                if (terrain > 0) {
-                    z = terrain;
-                }
-            }
-            double camZ = 0.0;
-            double sx = 0.0;
-            double sy = 0.0;
-            const qreal dpr = devicePixelRatioF();
-            visible = gpuView_->projectToScreenZ(
-                          b.mapX + 0.5, b.mapY + 0.5, z, camZ, sx, sy) &&
-                      camZ > gpuView_->nearPlaneZ();
-            pos = QPointF(sx / dpr, sy / dpr);
-        } else {
-            pos = obliqueMapToWidgetF(QPointF(b.mapX + 0.5, b.mapY + 0.5));
-            visible = QRectF(rect()).contains(pos);
-        }
-        return visible;
-    };
 
     for (std::size_t i = 0; i < buildings_.size(); ++i) {
         const BuildingPoint &b = buildings_[i];
         QPointF pos;
-        if (!project(b, pos)) {
+        if (!projectPointToWidget(b.mapX, b.mapY, terrainZAt(b.mapX, b.mapY),
+                                  pos)) {
             continue;
         }
         if (gpuActive() && gpuView_->hasBuildingModel(static_cast<int>(i))) {
@@ -2130,7 +2139,8 @@ void ViewportWidget::drawBuildingPoints3D(QPainter &painter)
         ghost.mapX = cursorCell_.x();
         ghost.mapY = cursorCell_.y();
         QPointF pos;
-        if (project(ghost, pos)) {
+        if (projectPointToWidget(ghost.mapX, ghost.mapY,
+                                 terrainZAt(ghost.mapX, ghost.mapY), pos)) {
             const double cellsPerPx =
                 obliqueCellsPerWidgetPx(); // approximation both paths
             const double r = qMax(
@@ -2212,36 +2222,12 @@ void ViewportWidget::drawScumPoints3D(QPainter &painter)
 
     const std::size_t modelOffset = buildings_.size();
     painter.setRenderHint(QPainter::Antialiasing);
-    auto project = [&](const BuildingPoint &b, QPointF &pos) {
-        bool visible = false;
-        if (gpuActive()) {
-            double z = 0.0;
-            if (session_) {
-                const int terrain =
-                    session_->terrainHeightAt(qRound(b.mapX), qRound(b.mapY));
-                if (terrain > 0) {
-                    z = terrain;
-                }
-            }
-            double camZ = 0.0;
-            double sx = 0.0;
-            double sy = 0.0;
-            const qreal dpr = devicePixelRatioF();
-            visible = gpuView_->projectToScreenZ(
-                          b.mapX + 0.5, b.mapY + 0.5, z, camZ, sx, sy) &&
-                      camZ > gpuView_->nearPlaneZ();
-            pos = QPointF(sx / dpr, sy / dpr);
-        } else {
-            pos = obliqueMapToWidgetF(QPointF(b.mapX + 0.5, b.mapY + 0.5));
-            visible = QRectF(rect()).contains(pos);
-        }
-        return visible;
-    };
 
     for (std::size_t i = 0; i < scumSpots_.size(); ++i) {
         const BuildingPoint &b = scumSpots_[i];
         QPointF pos;
-        if (!project(b, pos)) {
+        if (!projectPointToWidget(b.mapX, b.mapY, terrainZAt(b.mapX, b.mapY),
+                                  pos)) {
             continue;
         }
         if (gpuActive() && gpuView_->hasBuildingModel(static_cast<int>(modelOffset + i))) {
@@ -2303,28 +2289,11 @@ void ViewportWidget::drawNaturePoints3D(QPainter &painter)
 
     const std::size_t modelOffset = buildings_.size() + scumSpots_.size();
     painter.setRenderHint(QPainter::Antialiasing);
-    auto project = [&](const NaturePoint &n, QPointF &pos) {
-        bool visible = false;
-        if (gpuActive()) {
-            double camZ = 0.0;
-            double sx = 0.0;
-            double sy = 0.0;
-            const qreal dpr = devicePixelRatioF();
-            visible = gpuView_->projectToScreenZ(
-                          n.mapX + 0.5, n.mapY + 0.5, n.z, camZ, sx, sy) &&
-                      camZ > gpuView_->nearPlaneZ();
-            pos = QPointF(sx / dpr, sy / dpr);
-        } else {
-            pos = obliqueMapToWidgetF(QPointF(n.mapX + 0.5, n.mapY + 0.5));
-            visible = QRectF(rect()).contains(pos);
-        }
-        return visible;
-    };
 
     for (std::size_t i = 0; i < naturePoints_.size(); ++i) {
         const NaturePoint &n = naturePoints_[i];
         QPointF pos;
-        if (!project(n, pos)) {
+        if (!projectPointToWidget(n.mapX, n.mapY, n.z, pos)) {
             continue;
         }
         if (gpuActive() && gpuView_->hasBuildingModel(static_cast<int>(modelOffset + i))) {

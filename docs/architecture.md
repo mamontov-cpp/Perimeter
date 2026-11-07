@@ -1778,3 +1778,129 @@ set_palette_color / undo / redo. Описания мутирующих инст�
 apply_brush), ini-конфигурация порта, протокол (initialize/list/call/
 isError/unknown-tool/notification 202/unknown-method -32601/GET), рестарт
 на том же порту, занятый порт -> чистый отказ.
+
+## 5.34. Код-ревью и рефакторинг (2026-11)
+
+Аудит (дубли, методы >100 LOC, цикломатика, размеры классов) с последующим
+исправлением по приоритетам:
+
+- **mcpInvoke (1251 LOC) разрезан** на доменные обработчики MainWindow
+  (`mcpHandleSession/BattleMapFiles/Difference/Players/Objects/Brushes/
+  Terrain/History`) за таблицей диспетчеризации; общий аргументный плумбинг
+  вынесен в члены (`mcpRequireGameDir/World/BattleMap`, `mcpArgInt/Dbl/Str`,
+  протокол "__unhandled"). Общий хвост add/update player
+  (`mcpApplyPlayerArgs`) убрал копипаст ~65 строк между add_player и
+  update_player; тело apply_brush — отдельный `mcpApplyBrush`.
+- **Механические выносики дублирования** (3 копии каждой):
+  `angleFromQuaternion` (SpgFile — парсинг кватерниона buildings/scumSpots/
+  natureObjects), `ViewportWidget::projectPointToWidget` + `terrainZAt`
+  (оверлеи зданий/гнёзд/природы), `buildCameraMatrix` (TerrainGpuView —
+  applyCamera/applyGameCamera/renderModelIcon).
+- **createBrushActions (601 LOC) разрезан** на 7 секционных методов
+  (createBrushType/SculptType/Shape3D/Mode/Gate/StampShape/EditorMode
+  Actions); общий создатель типов — `addBrushTypeAction` (бывшая лямбда
+  addType, exclusivity-группа `brushTypeGroup_`). Табличная конверсия
+  строковых данных (иконки/тултипы) сознательно не делалась — данные
+  остаются данными, выигрыш только в обвязке.
+- Не тронуто (заслуживают отдельной задачи): ViewportWidget
+  (92 метода), renderSmooth/drawGridOverlay (CPU-растр), paintGL/
+  mousePressEvent. Тулбар-билдеры: повторение 2-4 строк с
+  неоднородными колбэками, вынос добавил бы косвенность без реального
+  устранения дубля — оставлено как есть. God object MainWindow — см. §5.35.
+
+## 5.35. Разбиение MainWindow — вынос BattleMapController (2026-11)
+
+MainWindow оставался классом-богом (119 методов, заголовок 618 строк):
+вся боевая-картовая доменная логика, четыре док-панели, оверлеи спавнов,
+потоки open/save/new .spg и save/load .gmp жили внутри него
+(implementation-файлы MainWindowBattleMap.cpp / MainWindowScumSpots.cpp /
+MainWindowNature.cpp, ~1700 строк).
+
+Вынесен **BattleMapController** (`ui/BattleMapController.h/.cpp`, QObject):
+владеет `SpgFile`, доками (Battle Map / Buildings / Scum Nests / Nature),
+массивами placed-объектов и выделенными строками, pendingFilth_/
+pendingScumChain*, латчами иконок; содержит все onBuilding*/onScum*/
+onNature*-обработчики, оверлейные sync*, open/save/save-as/new (включая
+MCP-варианты `openPath` / `saveToCurrentPath` / `newBattleMapFromTemplate`
+без диалогов), save/load .gmp и спавн-историю (undoPlayerMove/redoPlayerMove
+сами дёргают refreshPlayerPanelAndOverlay).
+
+Контракт с хостом: конструктор получает `(session, viewport, minimap,
+window, viewMenu)` без передачи владения; обратные вызовы — сигналы
+`statusMessage` (вместо statusBar()), `actionStatesNeedUpdate` (вместо
+updateActionStates()), `palettesNeedRefresh` (вместо
+refreshPaletteRenderers()) и два синхронных std::function-колбэка
+(`setWorldSwitchGuard` — confirmDiscardUnsavedChanges, `setWorldLoadedHook`
+— onWorldLoaded мирового свитча). MainWindow хранит `battleMaps_`, держит
+только тонкие обёртки пунктов меню (onActionOpenBattleMap →
+battleMaps_->openBattleMap() и т.д.) и MCP-акцессоры `battleMap()` /
+`battleMapPath()`; 49 точек доступа MainWindowMcp.cpp переписаны на них.
+
+Три старых implementation-файла удалены из CMakeLists и репозитория
+(`git rm`), их код переехал в BattleMapController.cpp почти дословно.
+Поведение не менялось; UI-автотесты MCP/SpgFile покрывают потоки
+сохранения/загрузки.
+
+Оставшиеся кластеры MainWindow (кандидаты на будущие выноски): билдеры
+тулбаров кистей + createBrushActions, MCP-диспетчеризация (mcpHandle*),
+мировые потоки (load/save/unload/валидация) и view-меню.
+
+## 5.36. Разбиение MainWindow — вынос BrushUiController (2026-11)
+
+Второй шаг разбиения MainWindow (после BattleMapController, §5.35): вынесен
+**BrushUiController** (`ui/BrushUiController.h/.cpp`, QObject) — домен UI
+кистей:
+
+- все brush-действия (типы raise/lower/level/color/pick/soot/verylightdam/
+  script, скульптинг Smooth/Flatten/Tricubic/Inflate/Deflate/GaussianBlur,
+  3D-формы, Geo/Dam, гейты выше/ниже, формы штампа, ImageDecal, загрузка
+  маски-картинки, Model brush) + эксклюзивная группа brushTypeGroup_;
+- четыре тулбара (Brush / Sculpting / Modifiers / Model) со всеми спинбоксами
+  (радиус, полигон, толщина, level, colorIndex, swatch, mask scale, fraction,
+  blur radius, shape 3D, gate height, model height/scales);
+- подменю Edit → "Brush Type / Mode" и "Brush Modifiers" (включая зеркальный
+  gate-height спин меню — теперь целиком в контроллере,
+  `addEditMenuSubMenus`);
+- синхронизация контролов (`syncControls`/`syncColorControls`, бывшие
+  syncBrushControls/syncColorControls) и блок enablement из
+  updateActionStates (`updateEnabledStates(worldLoaded)` — все предикаты
+  выводятся из BrushParams);
+- потоки импорта: картинка как маска, ImageDecal (квантизация палитры Dam),
+  PLY-модель как хайтмап (ModelBrush).
+
+Контракт с хостом повторяет §5.35: заимствованные brushTool/session/window +
+отложенный `setViewport()` (тулбары строятся до создания viewport),
+`setEditorModeActions()` для встраивания оконных mode-действий в тулбар
+Brush. Сигналы: statusMessage, actionStatesNeedUpdate, palettesNeedRefresh
+(декаль/модель меняют палитру — repaint + refresh PalettePanel),
+syncPaletteSelection (подсветка палитры следует за цветом кисти).
+Editor-mode действия (View/Brush/Eyedropper/Place Spawn) остались в MainWindow
+— ими пользуются Edit-меню, updateActionStates и автотест-хуки.
+
+`makeBrushIcon()` и `scaleBrushMask()` (статические хелперы, общие с
+оставшимся кодом MainWindow) вынесены в header-only `ui/BrushUiAssets.h`.
+
+MainWindow.cpp: ~5450 → ~2500 строк. Дополнительно updateActionStates
+переписан таблично (§5.34 обещал ~80 строк против 328): три таблицы действий
+с единым предикатом (worldLoaded / battleMapLoaded / прочее) + особые случаи
+(diff-toggle с зеркалом checked, PlaceSpawn-фолбэк, undo/redo с двумя
+историями); brush-таблица — в BrushUiController::updateEnabledStates.
+
+Билдеры меню (build*Menu/build*Toolbar) в отдельный класс сознательно не
+выносились: они создают те самые action-члены, over которыми табличный
+updateActionStates работает; вынос потребовал бы структуру с ~40 указателями
+в обе стороны — чистая косвенность без изменения поведения.
+
+Третий шаг (2026-11, тот же месяц): вынесены **ImageIoController**
+(`ui/ImageIoController.h/.cpp`, §5.37 — пять T6-потоков импорта/экспорта
+картинок; сигналы statusMessage/statusBarNeedsUpdate) и **McpBridge**
+(`ui/McpBridge.h/.cpp` — поглощён MainWindowMcp.cpp целиком: сервер, dispatch
+invoke → доменные обработчики, mcpApplyBrush, аргументный плумбинг; хостовые
+сервисы — синхронные std::function-хуки: world unload/load, status bar,
+palette repaint; MainWindowMcp.cpp удалён). ViewController (камера/режимы/
+навигация) сознательно не выносился: view-действия создаёт buildViewMenu
+(вперемешку с diff-тоглом и dock-тоглами), тулбар view встраивает чужие
+действия, а buildViewport дёргает view-слоты напрямую — граница класса
+получилась бы рваной, а выигрыш ~150 строк не окупает риск. После трёх
+выносок MainWindow.cpp — редактор верхнего уровня: конструктор, жизненный
+цикл мира, валидация, view-хром и тонкие обёртки действий.

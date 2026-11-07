@@ -1,4 +1,8 @@
 #include "MainWindow.h"
+#include "BrushUiAssets.h"
+#include "BrushUiController.h"
+#include "ImageIoController.h"
+#include "McpBridge.h"
 #include "EditorMath.h"
 
 #include <View3DRenderer.h>
@@ -71,895 +75,6 @@ namespace {
 /// it at the running MainWindow (set in the ctor, cleared in the dtor).
 MainWindow* g_mainWindowForScriptHook = nullptr;
 
-// ---------------------------------------------------------------------------
-// Toolbar icons — painted once per action with QPainter so the view toolbar
-// does not depend on any icon theme being installed.
-// ---------------------------------------------------------------------------
-
-// kDegToRad lives in EditorMath.h (shared math constants).
-const QColor kInk(45, 45, 45);
-const QColor kAccent(0, 96, 170);
-
-/// Small filled arrow head at `tip` pointing into `direction` (degrees,
-/// screen coords: y grows downwards).
-void drawArrowHead(QPainter &p, const QPointF &tip, double directionDeg,
-                   double length = 6.0, double halfWidth = 3.0)
-{
-    const double a = directionDeg * MapEditor::kDegToRad;
-    const QPointF dir(std::cos(a), std::sin(a));
-    const QPointF normal(-dir.y(), dir.x());
-    QPolygonF head;
-    head << tip
-         << tip - dir * length + normal * halfWidth
-         << tip - dir * length - normal * halfWidth;
-    p.drawPolygon(head);
-}
-
-void drawGroundLine(QPainter &p, double y)
-{
-    p.drawLine(QPointF(4.0, y), QPointF(18.0, y));
-}
-
-/// Arc-with-arrow rotation icon; `mirror` flips the arc direction by about
-/// the vertical axis (drawn explicitly — no QPixmap::transformed involved).
-QIcon makeRotateIcon(bool mirror)
-{
-    QPixmap pm(22, 22);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing);
-    p.setPen(QPen(kInk, 2.0));
-
-    const QRectF circle(4.0, 4.0, 14.0, 14.0);
-    const double gapCenterDeg = 45.0;   // gap centred on the 45° ray…
-    const double spanDeg = 270.0;       // …270° long
-
-    // CCW (left rotation) draws from the gap start going counter-clockwise;
-    // the mirrored (right rotation) draws clockwise from the same gap.
-    if (mirror) {
-        p.drawArc(circle,
-                  static_cast<int>((gapCenterDeg - 15.0) * 16),
-                  static_cast<int>(-spanDeg * 16));
-    } else {
-        p.drawArc(circle,
-                  static_cast<int>((gapCenterDeg + 15.0) * 16),
-                  static_cast<int>(spanDeg * 16));
-    }
-
-    // Arrow head at the arc end, tangent to the drawing direction.
-    const QPointF center = circle.center();
-    const double radius = circle.width() / 2.0;
-    const double endAngle = gapCenterDeg
-        + (mirror ? -15.0 - spanDeg : 15.0 + spanDeg);
-    const double endAngleRad = endAngle * MapEditor::kDegToRad;
-    const QPointF end(center.x() + radius * std::cos(endAngleRad),
-                      center.y() - radius * std::sin(endAngleRad));
-    // Tangent: for CCW arcs the position angle grows, for CW it shrinks.
-    const double turn = mirror ? -1.0 : 1.0;
-    drawArrowHead(p, end, std::atan2(turn * radius * std::cos(endAngleRad),
-                                     turn * radius * std::sin(endAngleRad)) / MapEditor::kDegToRad);
-    return QIcon(pm);
-}
-
-QIcon makeTiltIcon(bool up)
-{
-    QPixmap pm(22, 22);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing);
-    p.setPen(QPen(kInk, 2.0));
-    // Horizon the camera tilts about.
-    drawGroundLine(p, 16.0);
-    if (up) {
-        p.drawLine(QPointF(11.0, 14.0), QPointF(11.0, 6.0));
-        drawArrowHead(p, QPointF(11.0, 6.0), -90.0);
-    } else {
-        p.drawLine(QPointF(11.0, 5.0), QPointF(11.0, 13.0));
-        drawArrowHead(p, QPointF(11.0, 13.0), 90.0);
-    }
-    return QIcon(pm);
-}
-
-QIcon makeLiftIcon(bool up)
-{
-    QPixmap pm(22, 22);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing);
-    p.setPen(QPen(kInk, 2.0));
-    // Ground the camera lifts from.
-    drawGroundLine(p, 18.0);
-    // The camera itself as a floating box + its height "rail".
-    const qreal boxY = up ? 4.0 : 11.0;
-    QPen rail(kAccent, 1.5, Qt::DotLine);
-    p.setPen(rail);
-    p.drawLine(QPointF(11.0, boxY + 4.0), QPointF(11.0, 18.0));
-    p.setPen(QPen(kInk, 2.0));
-    p.setBrush(Qt::NoBrush);
-    p.drawRoundedRect(QRectF(7.5, boxY, 7.0, 4.5), 1.5, 1.5);
-    return QIcon(pm);
-}
-
-QIcon makeZoomIcon(bool in)
-{
-    QPixmap pm(22, 22);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing);
-    p.setPen(QPen(kAccent, 2.0));
-    p.setBrush(Qt::NoBrush);
-    p.drawEllipse(QRectF(4.0, 4.0, 11.0, 11.0));
-    p.drawLine(QPointF(14.0, 14.0), QPointF(19.0, 19.0));
-    p.setPen(QPen(kInk, 2.0));
-    p.drawLine(QPointF(6.0, 9.5), QPointF(13.0, 9.5));
-    if (in) {
-        p.drawLine(QPointF(9.5, 6.0), QPointF(9.5, 13.0));
-    }
-    return QIcon(pm);
-}
-
-QIcon makeResetIcon()
-{
-    QPixmap pm(22, 22);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing);
-    p.setPen(QPen(kInk, 2.0));
-    // Corner brackets of a "frame"…
-    const double r = 4.0, half = 7.0;
-    const QPointF c(11.0, 11.0);
-    for (int corner = 0; corner < 4; ++corner) {
-        const double dx = (corner & 1) ? half : -half;
-        const double dy = (corner & 2) ? half : -half;
-        const QPointF cornerPoint = c + QPointF(dx, dy);
-        p.drawLine(cornerPoint, cornerPoint - QPointF(dx * 0.5, 0.0));
-        p.drawLine(cornerPoint, cornerPoint - QPointF(0.0, dy * 0.5));
-    }
-    // …and the frame centre it refers to.
-    p.setBrush(QBrush(kAccent));
-    p.setPen(Qt::NoPen);
-    p.drawEllipse(c, 2.5, 2.5);
-    return QIcon(pm);
-}
-
-QIcon makeModeIcon(bool oblique)
-{
-    QPixmap pm(22, 22);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing);
-    p.setPen(QPen(oblique ? kAccent : kInk, 2.0));
-    p.setBrush(Qt::NoBrush);
-    p.drawRoundedRect(QRectF(2.0, 5.0, 18.0, 12.0), 3.0, 3.0);
-    QFont font = p.font();
-    font.setPointSizeF(6.5);
-    font.setBold(true);
-    p.setFont(font);
-    p.drawText(QRectF(2.0, 5.0, 18.0, 12.0), Qt::AlignCenter,
-               oblique ? QStringLiteral("3D")
-                       : QStringLiteral("2D"));
-    return QIcon(pm);
-}
-
-/// Post-T3.3 chunky/smooth renderer toggle glyphs. Both draw the same 2x2 block of
-/// map cells; Chunky shows the blocks as solid hard-edged pixels, Smooth
-/// shades them with blurred/gradient edges as if neighbors were blended.
-QIcon makeChunkyIcon()
-{
-    QPixmap pm(22, 22);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setPen(Qt::NoPen);
-    p.setBrush(kInk);
-    // 2x2 blocks with visible gaps — the "big pixels" of nearest-neighbor
-    // sampling.
-    p.drawRect(QRectF(4.0, 4.0, 6.0, 6.0));
-    p.drawRect(QRectF(12.0, 4.0, 6.0, 6.0));
-    p.drawRect(QRectF(4.0, 12.0, 6.0, 6.0));
-    p.drawRect(QRectF(12.0, 12.0, 6.0, 6.0));
-    return QIcon(pm);
-}
-
-QIcon makeSmoothIcon()
-{
-    QPixmap pm(22, 22);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing);
-    // The same 2x2 block, but the cells bleed into each other: soft round
-    // blobs on top of a fading base square.
-    QLinearGradient fade(0, 0, 22, 22);
-    fade.setColorAt(0.0, QColor(kInk.red(), kInk.green(), kInk.blue(), 200));
-    fade.setColorAt(1.0, QColor(kAccent.red(), kAccent.green(), kAccent.blue(), 200));
-    p.setBrush(fade);
-    p.setPen(Qt::NoPen);
-    p.drawRoundedRect(QRectF(4.0, 4.0, 14.0, 14.0), 6.0, 6.0);
-    p.setBrush(QColor(255, 255, 255, 120));
-    p.drawEllipse(QPointF(9.0, 9.0), 3.5, 3.5);
-    p.setBrush(QColor(255, 255, 255, 60));
-    p.drawEllipse(QPointF(14.0, 14.0), 3.0, 3.0);
-    return QIcon(pm);
-}
-
-/// T3.1 — brush edit toggle: a paintbrush glyph (handle + ferrule + tip).
-QIcon makeBrushIcon()
-{
-    QPixmap pm(22, 22);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing);
-    p.setPen(QPen(kInk, 2.0, Qt::SolidLine, Qt::RoundCap));
-    p.drawLine(QPointF(4.5, 4.0), QPointF(12.0, 11.5));    // handle
-    QPen ferrule(kAccent, 3.0, Qt::SolidLine, Qt::RoundCap);
-    p.setPen(ferrule);
-    p.drawLine(QPointF(13.0, 12.5), QPointF(15.0, 14.5));  // ferrule
-    p.setBrush(kInk);
-    p.setPen(Qt::NoPen);
-    QPolygonF drop;
-    drop << QPointF(14.0, 17.5)
-         << QPointF(11.5, 18.5)
-         << QPointF(10.5, 16.5)
-         << QPointF(14.0, 15.5);
-    p.drawPolygon(drop);                                   // bristle tip
-    return QIcon(pm);
-}
-
-/// T4.2 — View editor mode: the mouse-arrow the navigation gives back after
-/// the brush/pipette are put down.
-QIcon makeViewModeIcon()
-{
-    QPixmap pm(22, 22);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing);
-    p.setPen(QPen(kInk, 1.6));
-    p.setBrush(kAccent);
-    QPolygonF arrow;
-    arrow << QPointF(6.0, 3.5)
-          << QPointF(6.0, 17.0)
-          << QPointF(9.8, 13.6)
-          << QPointF(12.4, 18.5)
-          << QPointF(14.6, 17.3)
-          << QPointF(12.0, 12.6)
-          << QPointF(16.5, 12.0);
-    p.drawPolygon(arrow);
-    return QIcon(pm);
-}
-
-/// T3.2 — height tool glyphs: a small mound on a ground line moved/levelled
-/// by an arrow (up = raise, down = dig).
-QIcon makeHeightArrowIcon(bool up)
-{
-    QPixmap pm(22, 22);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing);
-    p.setPen(QPen(kInk, 2.0));
-    drawGroundLine(p, 17.0);
-    // The mound the tool works on.
-    p.setBrush(kInk);
-    p.setPen(Qt::NoPen);
-    QPolygonF mound;
-    mound << QPointF(6.0, 16.0)
-          << QPointF(9.0, up ? 12.0 : 13.5)
-          << QPointF(12.0, 16.0);
-    p.drawPolygon(mound);
-    // Movement arrow above / above the mound.
-    p.setPen(QPen(kAccent, 2.0));
-    p.setBrush(Qt::NoBrush);
-    const QPointF tailStart(9.0, up ? 10.0 : 6.5);
-    const QPointF tailEnd(9.0, up ? 3.5 : 9.5);
-    p.drawLine(tailStart, tailEnd);
-    drawArrowHead(p, tailEnd, up ? -90.0 : 90.0);
-    return QIcon(pm);
-}
-
-/// T3.2 — letter glyphs on a ground line: "Z" — level to the world
-/// zeroplast height, "H" — level to the chosen height, "G"/"D" — Geo/Dam
-/// brush mode.
-QIcon makeGroundLetterIcon(const QString &letter, const QColor &color)
-{
-    QPixmap pm(22, 22);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing);
-    p.setPen(QPen(kInk, 2.0));
-    drawGroundLine(p, 17.0);
-    QFont font = p.font();
-    font.setPointSizeF(9.0);
-    font.setBold(true);
-    p.setFont(font);
-    p.setPen(color);
-    p.drawText(QRectF(2.0, 2.0, 18.0, 14.0), Qt::AlignCenter, letter);
-    return QIcon(pm);
-}
-
-/// T3.3 — color palette brush: a filled circle representing the surface
-/// color index.
-QIcon makeColorBrushIcon()
-{
-    QPixmap pm(22, 22);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing);
-    // A palette swatch: concentric half-circles.
-    p.setBrush(QColor(220, 80, 60));
-    p.setPen(Qt::NoPen);
-    p.drawChord(QRectF(3, 3, 16, 16), 0 * 16, 120 * 16);
-    p.setBrush(QColor(60, 160, 60));
-    p.drawChord(QRectF(3, 3, 16, 16), 120 * 16, 120 * 16);
-    p.setBrush(QColor(60, 80, 200));
-    p.drawChord(QRectF(3, 3, 16, 16), 240 * 16, 120 * 16);
-    return QIcon(pm);
-}
-
-/// T3.3 — eyedropper glyph: a pipette with a drop.
-QIcon makeEyedropperIcon()
-{
-    QPixmap pm(22, 22);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing);
-    p.setPen(QPen(kInk, 2.0, Qt::SolidLine, Qt::RoundCap));
-    // Pipette body (diagonal line).
-    p.drawLine(QPointF(15.0, 3.0), QPointF(6.0, 12.0));
-    // Bulb at the top.
-    p.setBrush(kAccent);
-    p.setPen(QPen(kInk, 1.5));
-    p.drawEllipse(QRectF(13.5, 1.5, 5.0, 5.0));
-    // Tip at the bottom.
-    p.setPen(QPen(kInk, 1.5, Qt::SolidLine, Qt::RoundCap));
-    p.drawLine(QPointF(6.0, 12.0), QPointF(4.0, 18.0));
-    // Drop.
-    p.setBrush(QColor(80, 160, 220));
-    p.setPen(Qt::NoPen);
-    p.drawEllipse(QRectF(2.5, 17.0, 4.0, 4.0));
-    return QIcon(pm);
-}
-
-/// 3D shape brush glyphs: side-view silhouettes on a ground line.
-QIcon makeShape3DIcon(MapEditor::Shape3DKind kind)
-{
-    QPixmap pm(22, 22);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing);
-    p.setPen(QPen(kInk, 2.0));
-    drawGroundLine(p, 18.5);
-    p.setPen(QPen(kInk, 1.6));
-    p.setBrush(kAccent);
-    switch (kind) {
-    case MapEditor::Shape3DKind::Cone:
-        // Triangle with an elliptic base.
-        p.drawLine(QPointF(11.0, 3.0), QPointF(4.0, 17.0));
-        p.drawLine(QPointF(11.0, 3.0), QPointF(18.0, 17.0));
-        p.drawLine(QPointF(4.0, 17.0), QPointF(18.0, 17.0));
-        break;
-    case MapEditor::Shape3DKind::Pyramid:
-        // A triangle too — the polygon plan shows in the preview.
-        p.drawLine(QPointF(11.0, 3.0), QPointF(4.0, 17.0));
-        p.drawLine(QPointF(11.0, 3.0), QPointF(18.0, 17.0));
-        p.drawLine(QPointF(4.0, 17.0), QPointF(18.0, 17.0));
-        p.setPen(Qt::NoPen);
-        p.drawEllipse(QRectF(9.2, 1.2, 3.6, 3.6)); // apex dot
-        break;
-    case MapEditor::Shape3DKind::TruncatedCone:
-        p.drawPolygon(QPolygonF()
-                      << QPointF(8.0, 4.0) << QPointF(14.0, 4.0)
-                      << QPointF(19.0, 17.0) << QPointF(3.0, 17.0));
-        break;
-    case MapEditor::Shape3DKind::TruncatedPyramid:
-        p.drawPolygon(QPolygonF()
-                      << QPointF(8.0, 4.0) << QPointF(14.0, 4.0)
-                      << QPointF(17.0, 17.0) << QPointF(5.0, 17.0));
-        break;
-    case MapEditor::Shape3DKind::Torus:
-        // A half ring: outer arc + inner arc.
-        p.drawArc(QRectF(2.0, 6.0, 18.0, 18.0), 0, 180 * 16);
-        p.drawArc(QRectF(7.0, 11.0, 8.0, 8.0), 0, 180 * 16);
-        break;
-    case MapEditor::Shape3DKind::HalfEllipsoid:
-        p.drawChord(QRectF(3.0, 5.0, 16.0, 16.0), 0, 180 * 16);
-        break;
-    case MapEditor::Shape3DKind::None:
-        break;
-    }
-    return QIcon(pm);
-}
-
-/// Place Spawn mode glyph: a map pin over a ground line — the spawn the
-/// click drops at the target cell.
-QIcon makePlaceSpawnIcon()
-{
-    QPixmap pm(22, 22);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing);
-    p.setPen(QPen(kInk, 2.0));
-    drawGroundLine(p, 18.0);
-    // Pin: accent head with an ink tip onto the ground line.
-    p.setBrush(kAccent);
-    p.setPen(QPen(kInk, 1.5));
-    p.drawEllipse(QRectF(7.0, 2.5, 8.0, 8.0));
-    QPolygonF tip;
-    tip << QPointF(8.6, 9.0) << QPointF(13.4, 9.0) << QPointF(11.0, 15.5);
-    p.setPen(Qt::NoPen);
-    p.setBrush(kAccent);
-    p.drawPolygon(tip);
-    p.setPen(QPen(kInk, 1.5));
-    p.drawLine(QPointF(11.0, 15.5), QPointF(11.0, 18.0));
-    // The dot inside the head.
-    p.setBrush(kInk);
-    p.setPen(Qt::NoPen);
-    p.drawEllipse(QRectF(9.7, 5.2, 2.6, 2.6));
-    return QIcon(pm);
-}
-
-/// T3.5 — load-image action icon: folder with import arrow.
-QIcon makeLoadImageIcon()
-{
-    QPixmap pm(22, 22);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing);
-    p.setPen(QPen(kInk, 1.5));
-    p.setBrush(QColor(220, 200, 140));
-    QPolygonF folder;
-    folder << QPointF(3.0, 8.0) << QPointF(3.0, 18.0) << QPointF(19.0, 18.0)
-           << QPointF(19.0, 8.0) << QPointF(11.0, 8.0) << QPointF(9.0, 5.0)
-           << QPointF(3.0, 5.0);
-    p.drawPolygon(folder);
-    p.setPen(QPen(kAccent, 2.0, Qt::SolidLine, Qt::RoundCap));
-    p.drawLine(QPointF(11.0, 10.0), QPointF(11.0, 15.0));
-    p.setBrush(kAccent);
-    p.setPen(Qt::NoPen);
-    QPolygonF arrow;
-    arrow << QPointF(11.0, 16.5) << QPointF(8.5, 13.5) << QPointF(13.5, 13.5);
-    p.drawPolygon(arrow);
-    return QIcon(pm);
-}
-
-/// ImageDecal — a framed picture glyph: the stamp is a palette-limited image,
-/// so the button shows a small landscape in a frame.
-QIcon makeDecalIcon()
-{
-    QPixmap pm(22, 22);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing);
-    p.setPen(QPen(kInk, 1.5));
-    p.setBrush(QColor(235, 235, 235));
-    p.drawRect(QRectF(3.5, 4.5, 15.0, 13.0));
-    p.setPen(Qt::NoPen);
-    p.setBrush(QColor(120, 170, 220));
-    p.drawRect(QRectF(5.0, 6.0, 12.0, 6.0));
-    p.setBrush(QColor(90, 150, 90));
-    p.drawRect(QRectF(5.0, 12.0, 12.0, 4.0));
-    p.setBrush(QColor(245, 220, 120));
-    p.drawEllipse(QPointF(8.0, 8.0), 1.6, 1.6);
-    return QIcon(pm);
-}
-
-/// T3.1 — brush form (stamp shape) glyphs: the silhouette the brush paints
-/// with, drawn as it looks on the map (filled/outline circle and square, the
-/// two-point line).
-QIcon makeShapeIcon(MapEditor::BrushShape shape)
-{
-    QPixmap pm(22, 22);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing);
-    const QColor fill(120, 170, 220, 200);
-    switch (shape) {
-    case MapEditor::BrushShape::FilledCircle:
-        p.setPen(QPen(kInk, 1.5));
-        p.setBrush(fill);
-        p.drawEllipse(QRectF(4.0, 4.0, 14.0, 14.0));
-        break;
-    case MapEditor::BrushShape::FilledSquare:
-        p.setPen(QPen(kInk, 1.5));
-        p.setBrush(fill);
-        p.drawRect(QRectF(4.5, 4.5, 13.0, 13.0));
-        break;
-    case MapEditor::BrushShape::CircleOutline:
-        p.setPen(QPen(kAccent, 2.0));
-        p.setBrush(Qt::NoBrush);
-        p.drawEllipse(QRectF(4.0, 4.0, 14.0, 14.0));
-        break;
-    case MapEditor::BrushShape::SquareOutline:
-        p.setPen(QPen(kAccent, 2.0));
-        p.setBrush(Qt::NoBrush);
-        p.drawRect(QRectF(4.5, 4.5, 13.0, 13.0));
-        break;
-    case MapEditor::BrushShape::FilledPolygon:
-    case MapEditor::BrushShape::PolygonOutline:
-        // A hexagon in the icon regardless of the configured side count —
-        // the glyph stands for the regular-polygon family.
-        p.setPen(QPen(shape == MapEditor::BrushShape::FilledPolygon ? kInk : kAccent,
-                      1.8));
-        if (shape == MapEditor::BrushShape::FilledPolygon) {
-            p.setBrush(fill);
-        } else {
-            p.setBrush(Qt::NoBrush);
-        }
-        {
-            QPolygonF hex;
-            for (int i = 0; i < 6; ++i) {
-                const double a = MapEditor::kDegToRad * (60.0 * i - 90.0);
-                hex << QPointF(11.0 + 7.5 * std::cos(a), 11.0 + 7.5 * std::sin(a));
-            }
-            p.drawPolygon(hex);
-        }
-        break;
-    case MapEditor::BrushShape::Line:
-        p.setPen(QPen(kInk, 2.0, Qt::SolidLine, Qt::RoundCap));
-        p.drawLine(QPointF(5.0, 16.0), QPointF(17.0, 6.0));
-        p.setBrush(kAccent);
-        p.setPen(Qt::NoPen);
-        p.drawEllipse(QPointF(5.0, 16.0), 2.5, 2.5);
-        p.drawEllipse(QPointF(17.0, 6.0), 2.5, 2.5);
-        break;
-    }
-    return QIcon(pm);
-}
-
-/// Scripted brush type glyph: a ground tile with a "JS" scroll running over
-/// it — the script replaces the plain stamp with scripted actions.
-QIcon makeScriptBrushIcon()
-{
-    QPixmap pm(22, 22);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing);
-    // Ground tile.
-    p.setPen(QPen(kInk, 1.4));
-    p.setBrush(QColor(235, 235, 235));
-    p.drawRect(QRectF(3.5, 10.5, 15.0, 8.0));
-    p.setPen(Qt::NoPen);
-    p.setBrush(QColor(120, 170, 220, 210));
-    p.drawRect(QRectF(5.0, 12.0, 12.0, 3.4));
-    p.setBrush(QColor(90, 150, 90, 210));
-    p.drawRect(QRectF(5.0, 15.4, 12.0, 2.4));
-    // Script scroll with "JS".
-    p.setPen(QPen(kInk, 1.2));
-    p.setBrush(QColor(255, 250, 230));
-    p.drawRoundedRect(QRectF(4.0, 2.5, 14.0, 10.0), 2.0, 2.0);
-    // Rolled edges.
-    p.setBrush(kAccent);
-    p.drawEllipse(QPointF(4.0, 7.5), 1.6, 1.9);
-    p.drawEllipse(QPointF(18.0, 7.5), 1.6, 1.9);
-    QFont font = p.font();
-    font.setBold(true);
-    font.setPixelSize(7);
-    p.setFont(font);
-    p.setPen(QColor(0x8a, 0x4f, 0x0f));
-    p.drawText(QRectF(4.0, 2.5, 14.0, 10.0), Qt::AlignCenter,
-               QStringLiteral("JS"));
-    return QIcon(pm);
-}
-
-/// Script-editor action glyph: a pencil over a script page.
-QIcon makeScriptEditIcon()
-{
-    QPixmap pm(22, 22);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing);
-    // Page with text lines.
-    p.setPen(QPen(kInk, 1.3));
-    p.setBrush(QColor(252, 252, 248));
-    p.drawRect(QRectF(4.0, 2.5, 12.5, 15.5));
-    p.setPen(QPen(QColor(150, 160, 175), 1.1));
-    for (int i = 0; i < 4; ++i) {
-        p.drawLine(QPointF(6.0, 6.2 + i * 3.0), QPointF(14.5, 6.2 + i * 3.0));
-    }
-    // Pencil across the corner.
-    p.save();
-    p.translate(13.5, 13.0);
-    p.rotate(45.0);
-    p.setPen(QPen(kInk, 0.9));
-    p.setBrush(QColor(255, 200, 60));
-    p.drawRect(QRectF(-1.6, -7.5, 3.2, 11.0));
-    p.setBrush(QColor(240, 230, 210));
-    p.drawPolygon(QPolygonF({QPointF(-1.6, 3.5), QPointF(1.6, 3.5),
-                             QPointF(0.0, 6.5)}));
-    p.setBrush(QColor(60, 60, 60));
-    p.drawPolygon(QPolygonF({QPointF(-0.7, 5.2), QPointF(0.7, 5.2),
-                             QPointF(0.0, 6.5)}));
-    p.restore();
-    return QIcon(pm);
-}
-
-/// Smooth-brush glyph: bumpy ground profile settling into a flat line.
-QIcon makeSmoothBrushIcon()
-{
-    QPixmap pm(22, 22);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing);
-    // Ground base.
-    p.setPen(QPen(kInk, 1.3));
-    p.setBrush(QColor(235, 235, 235));
-    p.drawRect(QRectF(3.0, 12.0, 16.0, 6.5));
-    // Bumpy surface (before).
-    p.setPen(QPen(QColor(100, 140, 180), 1.8, Qt::SolidLine, Qt::RoundCap));
-    QPolygonF bump;
-    bump << QPointF(3.0, 12.0) << QPointF(5.5, 8.5) << QPointF(8.0, 12.5)
-         << QPointF(10.5, 7.5) << QPointF(13.0, 12.5) << QPointF(15.5, 9.0)
-         << QPointF(19.0, 12.0);
-    p.drawPolyline(bump);
-    // Flattening arrow onto the average line.
-    p.setPen(QPen(kAccent, 1.6, Qt::SolidLine, Qt::RoundCap));
-    p.drawLine(QPointF(10.5, 8.2), QPointF(10.5, 3.2));
-    p.setBrush(kAccent);
-    p.setPen(Qt::NoPen);
-    p.drawPolygon(QPolygonF({QPointF(10.5, 1.6), QPointF(8.9, 4.6),
-                             QPointF(12.1, 4.6)}));
-    return QIcon(pm);
-}
-
-/// Flatten-brush glyph: scattered bumps being pulled onto an inclined
-/// plane (the slope survives, the noise dies).
-QIcon makeFlattenBrushIcon()
-{
-    QPixmap pm(22, 22);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing);
-    // The target plane.
-    p.setPen(QPen(kAccent, 2.0, Qt::SolidLine, Qt::RoundCap));
-    p.drawLine(QPointF(3.0, 15.0), QPointF(19.0, 8.0));
-    // Bumps above/below the plane.
-    p.setPen(QPen(QColor(100, 140, 180), 1.6, Qt::SolidLine, Qt::RoundCap));
-    p.drawLine(QPointF(7.0, 11.5), QPointF(7.0, 8.0));    // above
-    p.drawLine(QPointF(13.0, 13.8), QPointF(13.0, 17.0));  // below
-    p.setBrush(QColor(100, 140, 180));
-    p.setPen(Qt::NoPen);
-    p.drawEllipse(QPointF(7.0, 7.2), 1.5, 1.5);
-    p.drawEllipse(QPointF(13.0, 17.8), 1.5, 1.5);
-    // Ground corner.
-    p.setPen(QPen(kInk, 1.2));
-    p.setBrush(QColor(235, 235, 235));
-    p.drawRect(QRectF(3.0, 16.5, 16.0, 2.5));
-    return QIcon(pm);
-}
-
-/// Tricubic-brush glyph: coarse control points with a smooth cubic curve
-/// threading through them (fine wobble removed, the curve survives).
-QIcon makeTricubicBrushIcon()
-{
-    QPixmap pm(22, 22);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing);
-    // Control lattice nodes (coarse, blocky).
-    p.setPen(QPen(kInk, 1.1));
-    p.setBrush(QColor(200, 210, 220));
-    for (const QPointF& node : {QPointF(4.0, 12.0), QPointF(11.0, 8.0),
-                                QPointF(18.0, 11.0)}) {
-        p.drawRect(QRectF(node.x() - 1.6, node.y() - 1.6, 3.2, 3.2));
-    }
-    // Fine noise above the curve (dies).
-    p.setPen(QPen(QColor(100, 140, 180), 1.4, Qt::SolidLine, Qt::RoundCap));
-    p.drawLine(QPointF(7.0, 12.5), QPointF(7.0, 9.5));
-    p.drawLine(QPointF(14.5, 12.0), QPointF(14.5, 14.5));
-    // The smooth interpolated curve through the nodes (survives).
-    QPainterPath curve(QPointF(2.5, 14.5));
-    curve.cubicTo(QPointF(6.0, 6.0), QPointF(9.0, 5.0), QPointF(11.0, 8.0));
-    curve.cubicTo(QPointF(13.0, 11.0), QPointF(16.0, 10.0),
-                  QPointF(19.5, 12.5));
-    p.setPen(QPen(kAccent, 1.9, Qt::SolidLine, Qt::RoundCap));
-    p.drawPath(curve);
-    return QIcon(pm);
-}
-
-/// Inflate-brush glyph: a mound with arrows growing out along its normals.
-QIcon makeInflateBrushIcon()
-{
-    QPixmap pm(22, 22);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing);
-    // The mound profile.
-    p.setPen(QPen(kInk, 1.4));
-    p.setBrush(QColor(235, 235, 235));
-    QPainterPath mound(QPointF(3.0, 18.0));
-    mound.cubicTo(QPointF(6.0, 17.0), QPointF(8.0, 9.0), QPointF(11.0, 8.0));
-    mound.cubicTo(QPointF(14.0, 9.0), QPointF(16.0, 17.0),
-                  QPointF(19.0, 18.0));
-    mound.closeSubpath();
-    p.drawPath(mound);
-    // Normal arrows (vertical on top, tilted on the flanks).
-    p.setPen(QPen(kAccent, 1.6, Qt::SolidLine, Qt::RoundCap));
-    p.setBrush(kAccent);
-    const struct { QPointF a, b; } arrows[] = {
-        {QPointF(11.0, 7.2), QPointF(11.0, 2.4)},
-        {QPointF(7.6, 11.0), QPointF(5.2, 7.2)},
-        {QPointF(14.4, 11.0), QPointF(16.8, 7.2)},
-    };
-    for (const auto& ar : arrows) {
-        p.drawLine(ar.a, ar.b);
-        const QPointF d = ar.b - ar.a;
-        const double l = std::hypot(d.x(), d.y());
-        const QPointF n(d.x() / l, d.y() / l);
-        const QPointF perp(-n.y(), n.x());
-        p.drawPolygon(QPolygonF({ar.b, ar.b - n * 2.6 + perp * 1.3,
-                                 ar.b - n * 2.6 - perp * 1.3}));
-    }
-    return QIcon(pm);
-}
-
-/// Deflate-brush glyph: the same mound caving in (arrows pointing down
-/// along the normals).
-QIcon makeDeflateBrushIcon()
-{
-    QPixmap pm(22, 22);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing);
-    // The pressed-down profile.
-    p.setPen(QPen(kInk, 1.4));
-    p.setBrush(QColor(235, 235, 235));
-    QPainterPath mound(QPointF(3.0, 18.0));
-    mound.cubicTo(QPointF(6.0, 17.0), QPointF(8.0, 14.0),
-                  QPointF(11.0, 13.2));
-    mound.cubicTo(QPointF(14.0, 14.0), QPointF(16.0, 17.0),
-                  QPointF(19.0, 18.0));
-    mound.closeSubpath();
-    p.drawPath(mound);
-    // Inward-pointing normal arrows.
-    p.setPen(QPen(kAccent, 1.6, Qt::SolidLine, Qt::RoundCap));
-    p.setBrush(kAccent);
-    const struct { QPointF a, b; } arrows[] = {
-        {QPointF(11.0, 1.8), QPointF(11.0, 6.6)},
-        {QPointF(4.6, 6.0), QPointF(7.4, 10.2)},
-        {QPointF(17.4, 6.0), QPointF(14.6, 10.2)},
-    };
-    for (const auto& ar : arrows) {
-        p.drawLine(ar.a, ar.b);
-        const QPointF d = ar.b - ar.a;
-        const double l = std::hypot(d.x(), d.y());
-        const QPointF n(d.x() / l, d.y() / l);
-        const QPointF perp(-n.y(), n.x());
-        p.drawPolygon(QPolygonF({ar.b, ar.b - n * 2.6 + perp * 1.3,
-                                 ar.b - n * 2.6 - perp * 1.3}));
-    }
-    return QIcon(pm);
-}
-
-/// Gaussian-blur glyph: a soft bell kernel over a noisy profile.
-QIcon makeGaussianBlurBrushIcon()
-{
-    QPixmap pm(22, 22);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing);
-    // Noisy profile (before).
-    p.setPen(QPen(QColor(100, 140, 180), 1.4, Qt::SolidLine, Qt::RoundCap));
-    QPolygonF noise;
-    noise << QPointF(3.0, 12.0) << QPointF(5.0, 9.0) << QPointF(7.0, 12.5)
-          << QPointF(9.0, 8.5) << QPointF(11.0, 12.0) << QPointF(13.0, 9.0)
-          << QPointF(15.0, 12.5) << QPointF(17.0, 9.5) << QPointF(19.0, 12.0);
-    p.drawPolyline(noise);
-    // The smooth blurred curve (after).
-    p.setPen(QPen(kAccent, 1.9, Qt::SolidLine, Qt::RoundCap));
-    QPainterPath smooth(QPointF(3.0, 12.0));
-    smooth.cubicTo(QPointF(7.0, 10.5), QPointF(9.0, 10.5), QPointF(11.0, 10.8));
-    smooth.cubicTo(QPointF(13.0, 11.0), QPointF(15.0, 10.6),
-                   QPointF(19.0, 12.0));
-    p.drawPath(smooth);
-    // The kernel bell.
-    p.setPen(QPen(kInk, 1.1));
-    p.setBrush(QColor(120, 170, 220, 90));
-    QPainterPath bell(QPointF(4.0, 19.0));
-    bell.cubicTo(QPointF(7.0, 18.6), QPointF(8.0, 15.5), QPointF(11.0, 15.2));
-    bell.cubicTo(QPointF(14.0, 15.5), QPointF(15.0, 18.6), QPointF(18.0, 19.0));
-    bell.closeSubpath();
-    p.drawPath(bell);
-    return QIcon(pm);
-}
-
-/// Height-gate modifier glyphs: the ground profile, a dashed gate level and
-/// an arrow showing which side of the gate the brush works on (up = apply
-/// where the dam is higher than the gate, down = where it is lower).
-QIcon makeGateIcon(bool above)
-{
-    QPixmap pm(22, 22);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing);
-    // The gate level — a dashed horizontal line.
-    QPen gatePen(kAccent);
-    gatePen.setStyle(Qt::DashLine);
-    gatePen.setWidthF(1.5);
-    p.setPen(gatePen);
-    p.drawLine(QPointF(2.0, 8.5), QPointF(20.0, 8.5));
-    // The ground.
-    p.setPen(QPen(kInk, 2.0));
-    drawGroundLine(p, 17.0);
-    // The direction arrow under / above the gate.
-    p.setPen(QPen(kInk, 2.0));
-    const double ax = 11.0;
-    if (above) {
-        p.drawLine(QPointF(ax, 15.0), QPointF(ax, 10.5));
-        drawArrowHead(p, QPointF(ax, 10.5), -90.0);
-    } else {
-        p.drawLine(QPointF(ax, 5.0), QPointF(ax, 14.5));
-        drawArrowHead(p, QPointF(ax, 14.5), 90.0);
-    }
-    return QIcon(pm);
-}
-
-/// T3.5: Convert a QImage to a BrushMask (pixel alpha → influence).
-/// Transparent pixels (alpha = 0) carry no effect; non-transparent ones
-/// influence the brush proportionally to their alpha (anti-aliased edges
-/// get a partial effect) — the color/luminance is deliberately ignored,
-/// the mask is about the shape, not the picture's brightness.
-MapEditor::BrushMask imageToBrushMask(const QImage &img)
-{
-    MapEditor::BrushMask mask;
-    if (img.isNull() || img.width() <= 0 || img.height() <= 0) {
-        return mask;
-    }
-    const QImage fmt = img.convertToFormat(QImage::Format_ARGB32_Premultiplied);
-    const int w = fmt.width();
-    const int h = fmt.height();
-    mask.sx = w;
-    mask.sy = h;
-    mask.x = -(w / 2);
-    mask.y = -(h / 2);
-    mask.influence.resize(static_cast<std::size_t>(w) * h);
-    for (int y = 0; y < h; ++y) {
-        const QRgb *line = reinterpret_cast<const QRgb *>(fmt.constScanLine(y));
-        for (int x = 0; x < w; ++x) {
-            mask.influence[static_cast<std::size_t>(y) * w + x] =
-                static_cast<unsigned char>(qAlpha(line[x]));
-        }
-    }
-    return mask;
-}
-
-/// T3.5 — scale a brush mask by `factor` (bilinear over the influence
-/// values). The result is re-centred on the stamp origin like a freshly
-/// converted image mask. Used by the mask scale control on the Brush
-/// toolbar; the source is always the un-scaled original mask, so repeated
-/// scale changes do not accumulate interpolation blur.
-MapEditor::BrushMask scaleBrushMask(const MapEditor::BrushMask &src, double factor)
-{
-    MapEditor::BrushMask dst;
-    if (src.empty() || factor <= 0.0) {
-        return dst;
-    }
-    const int w = std::max(1, static_cast<int>(std::lround(src.sx * factor)));
-    const int h = std::max(1, static_cast<int>(std::lround(src.sy * factor)));
-    dst.sx = w;
-    dst.sy = h;
-    dst.x = -(w / 2);
-    dst.y = -(h / 2);
-    dst.influence.assign(static_cast<std::size_t>(w) * h, 0);
-    for (int y = 0; y < h; ++y) {
-        // Source coordinate of the destination pixel centre (bilinear).
-        const double sy = (y + 0.5) / factor - 0.5;
-        const int y0 = std::clamp(static_cast<int>(std::floor(sy)), 0, src.sy - 1);
-        const int y1 = std::min(y0 + 1, src.sy - 1);
-        const double fy = std::clamp(sy - y0, 0.0, 1.0);
-        for (int x = 0; x < w; ++x) {
-            const double sx = (x + 0.5) / factor - 0.5;
-            const int x0 = std::clamp(static_cast<int>(std::floor(sx)), 0, src.sx - 1);
-            const int x1 = std::min(x0 + 1, src.sx - 1);
-            const double fx = std::clamp(sx - x0, 0.0, 1.0);
-            const double v =
-                src.at(x0, y0) * (1.0 - fx) * (1.0 - fy) +
-                src.at(x1, y0) * fx * (1.0 - fy) +
-                src.at(x0, y1) * (1.0 - fx) * fy +
-                src.at(x1, y1) * fx * fy;
-            dst.influence[static_cast<std::size_t>(y) * w + x] =
-                static_cast<unsigned char>(std::lround(v));
-        }
-    }
-    return dst;
-}
-
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -982,7 +97,31 @@ MainWindow::MainWindow(QWidget *parent)
     // (filled circle, raise) let the viewport paint right away.
     brushTool_ = new MapEditor::BrushTool(*session_);
 
-    // T3.2 — the type/mode buttons of the Brush toolbar drive the tool.
+    // T3.2 — the whole brush UI (type/mode/stamp actions, the Brush /
+    // Sculpting / Modifiers / Model toolbars, the image/model import flows)
+    // lives in the BrushUiController (docs/architecture.md §5.36) — same
+    // signal pattern as the BattleMapController below.
+    brushUI_ = new MapEditor::BrushUiController(brushTool_, session_, this, this);
+    connect(brushUI_, &MapEditor::BrushUiController::statusMessage, this,
+            [this](const QString &message, int timeoutMs) {
+                statusBar()->showMessage(message, timeoutMs);
+            });
+    connect(brushUI_,
+            &MapEditor::BrushUiController::actionStatesNeedUpdate, this,
+            [this]() { updateActionStates(); });
+    connect(brushUI_, &MapEditor::BrushUiController::palettesNeedRefresh,
+            this, [this]() {
+                refreshPaletteRenderers();
+                if (palettePanel_) {
+                    palettePanel_->refresh();
+                }
+            });
+    connect(brushUI_, &MapEditor::BrushUiController::syncPaletteSelection,
+            this, [this](int index, bool dam) {
+                if (palettePanel_) {
+                    palettePanel_->selectIndex(index, dam);
+                }
+            });
     createBrushActions();
 
     // The scripted brush's showInfoMessageBox/showErrorMessageBox execute in
@@ -1015,12 +154,20 @@ MainWindow::MainWindow(QWidget *parent)
     buildMenuBar();
     buildViewToolbar();
     addToolBarBreak();
-    buildBrushToolbar();
-    buildSculptToolbar();
-    buildModifierToolbar();
-    buildModelToolbar();
+    brushUI_->buildToolbars();
     buildStatusBar();
     buildViewport();
+    // The toolbars were built before the viewport existed — hand it over
+    // now (the brush controls push previews into it).
+    brushUI_->setViewport(viewport_);
+    // T6 — the image import/export flows (docs/architecture.md §5.37).
+    imageIO_ = new MapEditor::ImageIoController(session_, viewport_, this, this);
+    connect(imageIO_, &MapEditor::ImageIoController::statusMessage, this,
+            [this](const QString &message, int timeoutMs) {
+                statusBar()->showMessage(message, timeoutMs);
+            });
+    connect(imageIO_, &MapEditor::ImageIoController::statusBarNeedsUpdate,
+            this, [this]() { updateStatusBar(); });
 
     // The toggle/spinbox states were set before the viewport existed — push
     // them now (they reach the renderer when a world is bound).
@@ -1041,8 +188,15 @@ MainWindow::MainWindow(QWidget *parent)
     updateStatusBar();
 #ifdef MAP_EDITOR_MCP
     // Embedded MCP server for LLM agents (after everything it can touch
-    // exists). A busy port only disables the server, never the editor.
-    setupMcpServer();
+    // exists). A busy port only disables the server, never the editor. The
+    // whole layer lives in the McpBridge (docs/architecture.md §5.37).
+    mcpBridge_ = new MapEditor::McpBridge(session_, viewport_, brushTool_,
+                                          battleMaps_, brushUI_, this);
+    mcpBridge_->setWorldUnloadHook([this]() { onWorldUnload(); });
+    mcpBridge_->setWorldLoadedHook([this]() { onWorldLoaded(); });
+    mcpBridge_->setStatusBarHook([this]() { updateStatusBar(); });
+    mcpBridge_->setPaletteRefreshHook([this]() { refreshPaletteRenderers(); });
+    mcpBridge_->start();
 #endif
     editorTrace("MainWindow: ctor done");
 }
@@ -1051,8 +205,8 @@ MainWindow::~MainWindow()
 {
     editorTrace("MainWindow: dtor start");
 #ifdef MAP_EDITOR_MCP
-    delete mcpServer_; // stops serving and releases the port
-    mcpServer_ = nullptr;
+    delete mcpBridge_; // stops serving (the bridge owns the server) and
+    mcpBridge_ = nullptr; // releases the port
 #endif
     if (g_mainWindowForScriptHook == this) {
         g_mainWindowForScriptHook = nullptr;
@@ -1117,7 +271,7 @@ void MainWindow::buildViewport()
             viewport_->setEditorMode(MapEditor::ViewportWidget::EditorMode::View);
         }
     }
-    syncBrushControls();
+    brushUI_->syncControls();
     viewport_->setBrushPreviewVisible(true);
 
     // Connect cursor position signal to status bar.
@@ -1205,8 +359,27 @@ void MainWindow::buildViewport()
     buildMinimapDock();
     // T4.1 — the palette panel takes its place below the minimap dock.
     buildPaletteDock();
-    // T8 — the battle map panel dock.
-    buildBattleMapDock();
+    // T8 — the battle-map domain (Battle Map / Buildings / Scum Nests /
+    // Nature docks, the .spg flow, .gmp save/load) lives in the
+    // BattleMapController (docs/architecture.md §5.35). The host services it
+    // calls back into are the unsaved-changes guard, the post-world-load
+    // hook, the status bar and the two full-refresh entry points.
+    battleMaps_ = new MapEditor::BattleMapController(session_, viewport_,
+                                                     minimap_, this, viewMenu_,
+                                                     this);
+    battleMaps_->setWorldSwitchGuard(
+        [this]() { return confirmDiscardUnsavedChanges(); });
+    battleMaps_->setWorldLoadedHook([this]() { onWorldLoaded(); });
+    connect(battleMaps_, &MapEditor::BattleMapController::statusMessage, this,
+            [this](const QString &message, int timeoutMs) {
+                statusBar()->showMessage(message, timeoutMs);
+            });
+    connect(battleMaps_,
+            &MapEditor::BattleMapController::actionStatesNeedUpdate, this,
+            [this]() { updateActionStates(); });
+    connect(battleMaps_, &MapEditor::BattleMapController::palettesNeedRefresh,
+            this, [this]() { refreshPaletteRenderers(); });
+    battleMaps_->buildDocks();
 }
 
 void MainWindow::buildMinimapDock()
@@ -1301,13 +474,9 @@ void MainWindow::buildPaletteDock()
             params.colorIndex = paletteIndex;
             brushTool_->setParams(params);
         }
-        if (brushColorIndexSpin_) {
-            brushColorIndexSpin_->blockSignals(true);
-            brushColorIndexSpin_->setValue(paletteIndex);
-            brushColorIndexSpin_->blockSignals(false);
-        }
-        syncBrushControls();
-        syncColorControls();
+        brushUI_->setColorIndex(paletteIndex);
+        brushUI_->syncControls();
+        brushUI_->syncColorControls();
     });
 
     // An edited palette re-tints the whole world: rebuild both render paths.
@@ -1315,7 +484,7 @@ void MainWindow::buildPaletteDock()
             this, [this](int, bool) {
         refreshPaletteRenderers();
         // The current brush color swatch may be the entry that was edited.
-        syncColorControls();
+        brushUI_->syncColorControls();
     });
 
     // Push the session that may already be bound.
@@ -1355,7 +524,7 @@ void MainWindow::onWorldLoaded()
     // The brush-dependent controls (color swatch, spinboxes, cursor preview)
     // were only partially initialized before the world existed — re-read the
     // tool state now that the palettes are available.
-    syncBrushControls();
+    brushUI_->syncControls();
     editorTrace("onWorldLoaded: updating view readout");
     // The camera readout has never fired its signal yet on a fresh session.
     updateViewReadout();
@@ -1382,7 +551,7 @@ void MainWindow::onWorldUnload()
     }
     // The brush controls lose their world-bound state (color swatch RGB,
     // palette selection) — re-read the tool so nothing stale stays on screen.
-    syncBrushControls();
+    brushUI_->syncControls();
     updateWindowTitle();
     updateStatusBar();
 }
@@ -1439,14 +608,6 @@ void MainWindow::onActionGameCamera()
         
         // Used preset from FORTOP, since current can be also not present in world
         static constexpr MapEditor::GameCameraPreset default_preset{ 354.791000,306.425000,89.509186,17.999985,1000.000000,true };
-        /*const MapEditor::GameCameraPreset preset =
-            MapEditor::resolveGameCameraPreset(
-                session_->getGameDir(), session_->currentWorldName(),
-                viewport_->renderer() ? viewport_->renderer()->width() / 2.0
-                                      : 0.0,
-                viewport_->renderer() ? viewport_->renderer()->height() / 2.0
-                                      : 0.0);
-        */
         const MapEditor::GameCameraPreset preset = default_preset;
         presetCenter = QPointF(preset.centerX, preset.centerY);
     }
@@ -1566,13 +727,9 @@ void MainWindow::onEyedropperPicked(int mapX, int mapY, unsigned char surIndex)
     params.mode = dam ? MapEditor::BrushMode::Dam : MapEditor::BrushMode::Geo;
     brushTool_->setParams(params);
 
-    if (brushColorIndexSpin_) {
-        brushColorIndexSpin_->blockSignals(true);
-        brushColorIndexSpin_->setValue(surIndex);
-        brushColorIndexSpin_->blockSignals(false);
-    }
-    syncColorControls();
-    syncBrushControls();
+    brushUI_->setColorIndex(surIndex);
+    brushUI_->syncColorControls();
+    brushUI_->syncControls();
 
     // T4.1 — mirror the pick into the palette panel selection.
     if (palettePanel_) {
@@ -1780,65 +937,10 @@ void MainWindow::buildEditMenu(QMenuBar *menuBar)
     modeMenu->addAction(actModeBrush_);
     modeMenu->addAction(actModeEyedropper_);
 
-    // T3.2 — the same brush type/mode actions as the Brush toolbar,
-    // packed into an Edit-menu submenu for discoverability.
-    QMenu *brushMenu = editMenu->addMenu(tr("Br&ush Type / Mode"));
-    brushMenu->addAction(actBrushRaise_);
-    brushMenu->addAction(actBrushLower_);
-    brushMenu->addAction(actBrushLevelZP_);
-    brushMenu->addAction(actBrushLevelHeight_);
-    brushMenu->addSeparator();
-    brushMenu->addAction(actBrushGeo_);
-    brushMenu->addAction(actBrushDam_);
-    brushMenu->addSeparator();
-    brushMenu->addAction(actBrushColor_);
-    brushMenu->addAction(actBrushPickColor_);
-    brushMenu->addSeparator();
-    brushMenu->addAction(actBrushImageDecal_);
-    brushMenu->addSeparator();
-    brushMenu->addAction(actBrushSoot_);
-    brushMenu->addAction(actBrushVeryLightDam_);
-    brushMenu->addSeparator();
-    brushMenu->addAction(actLoadBrushImage_);
-    brushMenu->addSeparator();
-    // T3.1 — the stamp form, same actions as on the Brush toolbar.
-    brushMenu->addAction(actShapeCircle_);
-    brushMenu->addAction(actShapeSquare_);
-    brushMenu->addAction(actShapeCircleOutline_);
-    brushMenu->addAction(actShapeSquareOutline_);
-    brushMenu->addAction(actShapeLine_);
-
-    // The height-gate modifiers: the same checkable actions as the Brush
-    // Modifiers toolbar, plus the gate height as a menu-hosted spinbox (a
-    // mirror of the toolbar one — both write BrushParams::gateHeight and
-    // syncBrushControls keeps them equal).
-    QMenu *modifiersMenu = editMenu->addMenu(tr("Brush Mod&ifiers"));
-    modifiersMenu->addAction(actGateAbove_);
-    modifiersMenu->addAction(actGateBelow_);
-    modifiersMenu->addSeparator();
-    gateHeightMenuSpin_ = new QSpinBox(this);
-    gateHeightMenuSpin_->setRange(0, 255);
-    gateHeightMenuSpin_->setSuffix(tr(" vox"));
-    gateHeightMenuSpin_->setToolTip(
-        tr("Gate height (whole voxels; 1 voxel = 1/32 m): the active "
-           "above/below modifier applies the brush effect only to the voxels "
-           "whose dam height is on its side of this height."));
-    connect(gateHeightMenuSpin_, &QSpinBox::valueChanged, this,
-            [this](int value) {
-                MapEditor::BrushParams params = brushTool_->params();
-                params.gateHeight = MapEditor::BrushTool::clampGateHeight(value);
-                brushTool_->setParams(params);
-                if (gateHeightSpin_ &&
-                    gateHeightSpin_->value() != params.gateHeight) {
-                    gateHeightSpin_->blockSignals(true);
-                    gateHeightSpin_->setValue(params.gateHeight);
-                    gateHeightSpin_->blockSignals(false);
-                }
-            });
-    QWidgetAction *gateHeightAction = new QWidgetAction(this);
-    gateHeightAction->setDefaultWidget(gateHeightMenuSpin_);
-    gateHeightAction->setText(tr("Gate Height"));
-    modifiersMenu->addAction(gateHeightAction);
+    // T3.2 — the brush type/mode + modifiers submenus carry the same actions
+    // as the toolbars; the BrushUiController owns them (the gate-height menu
+    // spin mirror lives there too).
+    brushUI_->addEditMenuSubMenus(editMenu);
 }
 
 void MainWindow::buildViewMenu(QMenuBar *menuBar)
@@ -1881,7 +983,7 @@ void MainWindow::buildViewMenu(QMenuBar *menuBar)
 
     actZoomToFit_ = create();
     actZoomToFit_->setText(tr("Zoom to &Fit"));
-    actZoomToFit_->setIcon(makeResetIcon());
+    actZoomToFit_->setIcon(MapEditor::brushui::makeResetIcon());
     actZoomToFit_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_0));
     connect(actZoomToFit_, &QAction::triggered, this, &MainWindow::onZoomToFit);
 
@@ -1892,7 +994,7 @@ void MainWindow::buildViewMenu(QMenuBar *menuBar)
     // ------------------------------------------------------------------
     actView3D_ = create();
     actView3D_->setText(tr("&3D View"));
-    actView3D_->setIcon(makeModeIcon(true));
+    actView3D_->setIcon(MapEditor::brushui::makeModeIcon(true));
     actView3D_->setToolTip(
         tr("Switch the viewport between the flat 2D palette and the tilted "
            "3D voxel view (F9)"));
@@ -1923,12 +1025,12 @@ void MainWindow::buildViewMenu(QMenuBar *menuBar)
     // in-game camera look). Both actions share one exclusive group.
     // ------------------------------------------------------------------
     QActionGroup *styleGroup = new QActionGroup(this);
-    actChunkyRender_ = new QAction(makeChunkyIcon(), tr("&Chunky Renderer"), this);
+    actChunkyRender_ = new QAction(MapEditor::brushui::makeChunkyIcon(), tr("&Chunky Renderer"), this);
     actChunkyRender_->setToolTip(
         tr("Pixel-exact rendering: one map cell = one solid block, hard cell "
            "edges (the classic look; the 2D view stays at or below 1:1)."));
     actChunkyRender_->setCheckable(true);
-    actSmoothRender_ = new QAction(makeSmoothIcon(), tr("&Smooth Renderer"), this);
+    actSmoothRender_ = new QAction(MapEditor::brushui::makeSmoothIcon(), tr("&Smooth Renderer"), this);
     actSmoothRender_->setToolTip(
         tr("Bilinear rendering like the in-game camera: neighboring cells "
            "blend into smooth gradients; the 2D view may zoom above 1:1."));
@@ -1948,7 +1050,7 @@ void MainWindow::buildViewMenu(QMenuBar *menuBar)
 
     actRotateLeft_ = create();
     actRotateLeft_->setText(tr("Rotate &Left"));
-    actRotateLeft_->setIcon(makeRotateIcon(false));
+    actRotateLeft_->setIcon(MapEditor::brushui::makeRotateIcon(false));
     actRotateLeft_->setToolTip(tr("Rotate the 3D camera 15\u00B0 left (Ctrl+Left)"));
     actRotateLeft_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Left));
     connect(actRotateLeft_, &QAction::triggered, this, [this] {
@@ -1957,7 +1059,7 @@ void MainWindow::buildViewMenu(QMenuBar *menuBar)
 
     actRotateRight_ = create();
     actRotateRight_->setText(tr("Rotate &Right"));
-    actRotateRight_->setIcon(makeRotateIcon(true));
+    actRotateRight_->setIcon(MapEditor::brushui::makeRotateIcon(true));
     actRotateRight_->setToolTip(tr("Rotate the 3D camera 15\u00B0 right (Ctrl+Right)"));
     actRotateRight_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Right));
     connect(actRotateRight_, &QAction::triggered, this, [this] {
@@ -1966,7 +1068,7 @@ void MainWindow::buildViewMenu(QMenuBar *menuBar)
 
     actTiltUp_ = create();
     actTiltUp_->setText(tr("Tilt &Up"));
-    actTiltUp_->setIcon(makeTiltIcon(true));
+    actTiltUp_->setIcon(MapEditor::brushui::makeTiltIcon(true));
     actTiltUp_->setToolTip(
         tr("Look further along the horizon (Ctrl+Up); "
            "Ctrl+Up/Ctrl+Down change the camera pitch"));
@@ -1977,7 +1079,7 @@ void MainWindow::buildViewMenu(QMenuBar *menuBar)
 
     actTiltDown_ = create();
     actTiltDown_->setText(tr("Tilt &Down"));
-    actTiltDown_->setIcon(makeTiltIcon(false));
+    actTiltDown_->setIcon(MapEditor::brushui::makeTiltIcon(false));
     actTiltDown_->setToolTip(tr("Look more down onto the surface (Ctrl+Down)"));
     actTiltDown_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Down));
     connect(actTiltDown_, &QAction::triggered, this, [this] {
@@ -1986,7 +1088,7 @@ void MainWindow::buildViewMenu(QMenuBar *menuBar)
 
     actLiftUp_ = create();
     actLiftUp_->setText(tr("Camera &Higher"));
-    actLiftUp_->setIcon(makeLiftIcon(true));
+    actLiftUp_->setIcon(MapEditor::brushui::makeLiftIcon(true));
     actLiftUp_->setToolTip(tr("Lift the 3D camera one step (Page Up)"));
     actLiftUp_->setShortcut(QKeySequence(Qt::Key_PageUp));
     connect(actLiftUp_, &QAction::triggered, this, [this] {
@@ -1995,7 +1097,7 @@ void MainWindow::buildViewMenu(QMenuBar *menuBar)
 
     actLiftDown_ = create();
     actLiftDown_->setText(tr("Camera &Lower"));
-    actLiftDown_->setIcon(makeLiftIcon(false));
+    actLiftDown_->setIcon(MapEditor::brushui::makeLiftIcon(false));
     actLiftDown_->setToolTip(tr("Lower the 3D camera one step (Page Down)"));
     actLiftDown_->setShortcut(QKeySequence(Qt::Key_PageDown));
     connect(actLiftDown_, &QAction::triggered, this, [this] {
@@ -2006,7 +1108,7 @@ void MainWindow::buildViewMenu(QMenuBar *menuBar)
 
     actZoomIn_ = create();
     actZoomIn_->setText(tr("Zoom &In"));
-    actZoomIn_->setIcon(makeZoomIcon(true));
+    actZoomIn_->setIcon(MapEditor::brushui::makeZoomIcon(true));
     actZoomIn_->setToolTip(tr("Zoom in (Ctrl+=; the 3D view moves the camera closer)"));
     actZoomIn_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Equal));
     connect(actZoomIn_, &QAction::triggered, this, [this] {
@@ -2015,7 +1117,7 @@ void MainWindow::buildViewMenu(QMenuBar *menuBar)
 
     actZoomOut_ = create();
     actZoomOut_->setText(tr("Zoom &Out"));
-    actZoomOut_->setIcon(makeZoomIcon(false));
+    actZoomOut_->setIcon(MapEditor::brushui::makeZoomIcon(false));
     actZoomOut_->setToolTip(tr("Zoom out (Ctrl+-; the 3D view moves the camera away)"));
     actZoomOut_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Minus));
     connect(actZoomOut_, &QAction::triggered, this, [this] {
@@ -2205,1028 +1307,26 @@ void MainWindow::buildViewToolbar()
     bar->addWidget(viewReadout_);
 }
 
-void MainWindow::buildSculptToolbar()
-{
-    // The toolbar break must come BEFORE the toolbar is inserted: it forces
-    // this toolbar onto its own row below the View/Brush toolbars.
-    addToolBarBreak();
-
-    QToolBar *bar = addToolBar(tr("Sculpting"));
-    bar->setObjectName(QStringLiteral("SculptToolbar"));
-    bar->setMovable(false);
-    bar->setFloatable(false);
-    bar->setIconSize(QSize(22, 22));
-    bar->setStyleSheet(
-        QStringLiteral("QToolButton:enabled:hover, QToolButton:enabled:checked "
-                       "{ background: rgba(0, 96, 170, 35); border-radius: 4px; }"));
-
-    bar->addAction(actBrushSmooth_);
-    bar->addAction(actBrushFlatten_);
-    bar->addAction(actBrushTricubic_);
-    bar->addAction(actBrushInflate_);
-    bar->addAction(actBrushDeflate_);
-    bar->addAction(actBrushGaussianBlur_);
-
-    // The fraction spinbox (0..1) shared by both sculpting brushes: the part
-    // of the distance towards the reference (average / fitted plane) that
-    // ONE stamp moves a covered cell.
-    sculptEffectSpin_ = new QDoubleSpinBox(bar);
-    sculptEffectSpin_->setObjectName(QStringLiteral("sculptEffectSpin"));
-    sculptEffectSpin_->setRange(0.0, 1.0);
-    sculptEffectSpin_->setDecimals(2);
-    sculptEffectSpin_->setSingleStep(0.05);
-    sculptEffectSpin_->setValue(0.5);
-    sculptEffectSpin_->setToolTip(
-        tr("Sculpting fraction (0..1) shared by Smooth and Flatten: the "
-           "part of the distance towards the reference (average height / "
-           "fitted plane) that ONE stamp moves each covered cell. 1.0 "
-           "reaches the reference in a single stamp."));
-    connect(sculptEffectSpin_, &QDoubleSpinBox::valueChanged, this,
-            [this](double value) {
-                MapEditor::BrushParams params = brushTool_->params();
-                params.sculptEffect = value;
-                brushTool_->setParams(params);
-            });
-    bar->addWidget(new QLabel(tr("Fraction:"), bar));
-    bar->addWidget(sculptEffectSpin_);
-
-    // The Gaussian-blur convolution radius: strictly less than the stamp
-    // radius — the maximum follows the brush-radius spinbox (synced in
-    // syncBrushControls, like the stroke width does).
-    blurRadiusSpin_ = new QSpinBox(bar);
-    blurRadiusSpin_->setObjectName(QStringLiteral("blurRadiusSpin"));
-    blurRadiusSpin_->setRange(1, MapEditor::BrushTool::maxRadius() - 1);
-    blurRadiusSpin_->setValue(4);
-    blurRadiusSpin_->setSuffix(tr(" c"));
-    blurRadiusSpin_->setToolTip(
-        tr("Gaussian-blur kernel radius in cells (strictly less than the "
-           "stamp radius; sigma = radius/2). Only active with the Gaussian "
-           "Blur brush."));
-    connect(blurRadiusSpin_, &QSpinBox::valueChanged, this, [this](int value) {
-        MapEditor::BrushParams params = brushTool_->params();
-        params.blurRadius = value;
-        brushTool_->setParams(params);
-        syncBrushControls();
-    });
-    bar->addWidget(new QLabel(tr("Blur:"), bar));
-    bar->addWidget(blurRadiusSpin_);
-
-    // --- 3D shape brushes --------------------------------------------------
-    bar->addSeparator();
-    bar->addAction(actBrush3DCone_);
-    bar->addAction(actBrush3DPyramid_);
-    bar->addAction(actBrush3DTruncCone_);
-    bar->addAction(actBrush3DTruncPyramid_);
-    bar->addAction(actBrush3DTorus_);
-    bar->addAction(actBrush3DEllipsoid_);
-
-    // Shape Height: the amplitude of the 3D shapes — the per-cell target is
-    // Height + profile * Shape Height. 0 flattens the footprint down to the
-    // Height base in Lower / Set-to-Height modes (the dam is removed there).
-    shapeHeightSpin_ = new QSpinBox(bar);
-    shapeHeightSpin_->setObjectName(QStringLiteral("shapeHeightSpin"));
-    shapeHeightSpin_->setRange(0, 255);
-    shapeHeightSpin_->setValue(32);
-    shapeHeightSpin_->setSuffix(tr(" v"));
-    shapeHeightSpin_->setToolTip(
-        tr("Shape Height of the 3D brushes: the amplitude of the solid — "
-           "every covered cell moves towards Height + the shape profile * "
-           "Shape Height (whole voxels). 0 flattens the footprint to the "
-           "Height base (Lower / Set-to-Height remove the dam)."));
-    connect(shapeHeightSpin_, &QSpinBox::valueChanged, this, [this](int value) {
-        MapEditor::BrushParams params = brushTool_->params();
-        params.shapeHeight = value;
-        brushTool_->setParams(params);
-        syncBrushControls();
-    });
-    bar->addWidget(new QLabel(tr("Height:"), bar));
-    bar->addWidget(shapeHeightSpin_);
-
-    // Upper part offset: the top circle/polygon centre shift (cells) — tilts
-    // the cone/pyramid/frusta. The clamp keeps the top strictly inside the
-    // base (applied in Shape3D.h).
-    shapeTopOffsetXSpin_ = new QSpinBox(bar);
-    shapeTopOffsetXSpin_->setObjectName(QStringLiteral("shapeTopOffsetXSpin"));
-    shapeTopOffsetXSpin_->setRange(-MapEditor::BrushTool::maxRadius(),
-                                   MapEditor::BrushTool::maxRadius());
-    shapeTopOffsetXSpin_->setSuffix(tr(" c"));
-    shapeTopOffsetXSpin_->setToolTip(
-        tr("Upper part X offset (cells): the top circle/polygon centre shift "
-           "— tilts the cone, pyramid, truncated cone and truncated pyramid. "
-           "The offset is clamped to keep the top inside the base."));
-    connect(shapeTopOffsetXSpin_, &QSpinBox::valueChanged, this,
-            [this](int value) {
-                MapEditor::BrushParams params = brushTool_->params();
-                params.shapeTopOffsetX = value;
-                brushTool_->setParams(params);
-                syncBrushControls();
-            });
-    bar->addWidget(new QLabel(tr("Top X:"), bar));
-    bar->addWidget(shapeTopOffsetXSpin_);
-
-    shapeTopOffsetYSpin_ = new QSpinBox(bar);
-    shapeTopOffsetYSpin_->setObjectName(QStringLiteral("shapeTopOffsetYSpin"));
-    shapeTopOffsetYSpin_->setRange(-MapEditor::BrushTool::maxRadius(),
-                                   MapEditor::BrushTool::maxRadius());
-    shapeTopOffsetYSpin_->setSuffix(tr(" c"));
-    shapeTopOffsetYSpin_->setToolTip(
-        tr("Upper part Y offset (cells): the top circle/polygon centre shift "
-           "— tilts the cone, pyramid, truncated cone and truncated pyramid. "
-           "The offset is clamped to keep the top inside the base."));
-    connect(shapeTopOffsetYSpin_, &QSpinBox::valueChanged, this,
-            [this](int value) {
-                MapEditor::BrushParams params = brushTool_->params();
-                params.shapeTopOffsetY = value;
-                brushTool_->setParams(params);
-                syncBrushControls();
-            });
-    bar->addWidget(new QLabel(tr("Top Y:"), bar));
-    bar->addWidget(shapeTopOffsetYSpin_);
-
-    // Upper part radius: the truncated cone's top radius, or the torus'
-    // inner radius. Clamped below the base radius (Shape3D.h).
-    shapeTopRadiusSpin_ = new QSpinBox(bar);
-    shapeTopRadiusSpin_->setObjectName(QStringLiteral("shapeTopRadiusSpin"));
-    shapeTopRadiusSpin_->setRange(0, MapEditor::BrushTool::maxRadius());
-    shapeTopRadiusSpin_->setSuffix(tr(" c"));
-    shapeTopRadiusSpin_->setToolTip(
-        tr("Upper part radius (cells): the truncated cone's top radius, or "
-           "the inner radius of the half torus. Must stay below the base "
-           "radius (clamped)."));
-    connect(shapeTopRadiusSpin_, &QSpinBox::valueChanged, this,
-            [this](int value) {
-                MapEditor::BrushParams params = brushTool_->params();
-                params.shapeTopRadius = value;
-                brushTool_->setParams(params);
-                syncBrushControls();
-            });
-    bar->addWidget(new QLabel(tr("Top R:"), bar));
-    bar->addWidget(shapeTopRadiusSpin_);
-
-    // Upper part side length: the truncated pyramid's top edge length (the
-    // top polygon stays similar to the base). Clamped below the base.
-    shapeTopSideSpin_ = new QSpinBox(bar);
-    shapeTopSideSpin_->setObjectName(QStringLiteral("shapeTopSideSpin"));
-    shapeTopSideSpin_->setRange(0, 2 * MapEditor::BrushTool::maxRadius());
-    shapeTopSideSpin_->setSuffix(tr(" c"));
-    shapeTopSideSpin_->setToolTip(
-        tr("Upper part side length (cells): the top edge length of the "
-           "truncated pyramid (the top polygon is similar to the base). "
-           "Must stay below the base (clamped)."));
-    connect(shapeTopSideSpin_, &QSpinBox::valueChanged, this,
-            [this](int value) {
-                MapEditor::BrushParams params = brushTool_->params();
-                params.shapeTopSide = value;
-                brushTool_->setParams(params);
-                syncBrushControls();
-            });
-    bar->addWidget(new QLabel(tr("Top side:"), bar));
-    bar->addWidget(shapeTopSideSpin_);
-
-    // Type buttons are created in createBrushActions() — mirror the rest of
-    // the initial control state into the new toolbar.
-    updateActionStates();
-}
-
-void MainWindow::buildModifierToolbar()
-{
-    // The toolbar break must come BEFORE the toolbar is inserted: it forces
-    // this toolbar onto its own row below the Sculpting toolbar (same rule
-    // the Sculpting toolbar uses against the View/Brush toolbars).
-    addToolBarBreak();
-
-    QToolBar *bar = addToolBar(tr("Brush Modifiers"));
-    bar->setObjectName(QStringLiteral("ModifierToolbar"));
-    bar->setMovable(false);
-    bar->setFloatable(false);
-    bar->setIconSize(QSize(22, 22));
-    bar->setStyleSheet(
-        QStringLiteral("QToolButton:enabled:hover, QToolButton:enabled:checked "
-                       "{ background: rgba(0, 96, 170, 35); border-radius: 4px; }"));
-
-    // The two mutually exclusive height-gate conditions (created in
-    // createBrushActions() — the same actions the Edit menu carries).
-    bar->addAction(actGateAbove_);
-    bar->addAction(actGateBelow_);
-
-    // The gate comparison height (whole voxels). Enabled only while a gate
-    // is active; its mirror in the Edit → Brush Modifiers menu stays in
-    // sync (see buildEditMenu / syncBrushControls).
-    gateHeightSpin_ = new QSpinBox(bar);
-    gateHeightSpin_->setObjectName(QStringLiteral("gateHeightSpin"));
-    gateHeightSpin_->setRange(0, 255);
-    gateHeightSpin_->setSuffix(tr(" vox"));
-    gateHeightSpin_->setToolTip(
-        tr("Gate height (whole voxels; 1 voxel = 1/32 m): the active "
-           "above/below modifier applies the brush effect only to the voxels "
-           "whose dam height is on its side of this height. Voxels exactly at "
-           "the gate height are never edited. Dam mode only."));
-    connect(gateHeightSpin_, &QSpinBox::valueChanged, this, [this](int value) {
-        MapEditor::BrushParams params = brushTool_->params();
-        params.gateHeight = MapEditor::BrushTool::clampGateHeight(value);
-        brushTool_->setParams(params);
-        if (gateHeightMenuSpin_ &&
-            gateHeightMenuSpin_->value() != params.gateHeight) {
-            gateHeightMenuSpin_->blockSignals(true);
-            gateHeightMenuSpin_->setValue(params.gateHeight);
-            gateHeightMenuSpin_->blockSignals(false);
-        }
-    });
-    bar->addWidget(new QLabel(tr("Gate:"), bar));
-    bar->addWidget(gateHeightSpin_);
-
-    updateActionStates();
-}
-
-void MainWindow::buildModelToolbar()
-{
-    // The toolbar break must come BEFORE the toolbar is inserted: it forces
-    // this toolbar onto its own row below the Sculpting/Modifier toolbars
-    // (same rule the others use).
-    addToolBarBreak();
-
-    QToolBar *bar = addToolBar(tr("Model"));
-    bar->setObjectName(QStringLiteral("ModelToolbar"));
-    bar->setMovable(false);
-    bar->setFloatable(false);
-    bar->setIconSize(QSize(22, 22));
-    bar->setStyleSheet(
-        QStringLiteral("QToolButton:enabled:hover, QToolButton:enabled:checked "
-                       "{ background: rgba(0, 96, 170, 35); border-radius: 4px; }"));
-
-    actImportModel_ = new QAction(makeLoadImageIcon(), tr("Import &Model..."),
-                                  this);
-    actImportModel_->setToolTip(
-        tr("Import a PLY model (ASCII or binary) as the heightmap brush: the "
-           "model's XY rectangle becomes the stamp, each cell takes the max "
-           "vertex height (scaled by the Height spinbox) and the top vertex "
-           "colour (quantized into the Dam palette like the Image Decal). A "
-           "texture named by a PLY header comment is sampled through the "
-           "UVs."));
-    connect(actImportModel_, &QAction::triggered, this,
-            &MainWindow::onImportModel);
-    bar->addAction(actImportModel_);
-
-    actModelBrush_ = new QAction(makeBrushIcon(), tr("Use &Model Brush"),
-                                 this);
-    actModelBrush_->setToolTip(
-        tr("Stamp the imported model as a heightmap (Dam layer only). "
-           "Place sets the dam to the scaled model height and paints the "
-           "palette colours; Add raises the covered average by the local "
-           "model height; Subtract lowers it (removing the dam where the "
-           "result drops to the terrain)."));
-    actModelBrush_->setCheckable(true);
-    actModelBrush_->setEnabled(false); // enabled by a successful import
-    connect(actModelBrush_, &QAction::triggered, this, [this](bool checked) {
-        if (checked && !brushTool_->hasModelBrushData()) {
-            actModelBrush_->setChecked(false);
-            return;
-        }
-        if (checked && (!session_ || !session_->isWorldLoaded())) {
-            statusBar()->showMessage(
-                tr("Load a world first — the model brush needs the Dam "
-                   "palette of the loaded world."),
-                5000);
-            actModelBrush_->setChecked(false);
-            return;
-        }
-        MapEditor::BrushParams params = brushTool_->params();
-        params.modelBrush = checked;
-        if (checked) {
-            params.mode = MapEditor::BrushMode::Dam;
-            params.shape3d = MapEditor::Shape3DKind::None;
-            params.useImageMask = false;
-            if (params.effect != MapEditor::BrushEffect::ChangeHeight &&
-                params.effect != MapEditor::BrushEffect::AlignVariableH) {
-                params.effect = MapEditor::BrushEffect::ChangeHeight;
-                params.direction = 1;
-            }
-            quantizeModelBrush();
-        }
-        brushTool_->setParams(params);
-        if (viewport_) {
-            viewport_->setEditorMode(
-                checked ? MapEditor::ViewportWidget::EditorMode::Brush
-                        : MapEditor::ViewportWidget::EditorMode::Brush);
-        }
-        syncBrushControls();
-    });
-    bar->addAction(actModelBrush_);
-
-    bar->addSeparator();
-
-    // Place / Add / Subtract — the exclusive mode group of the model brush.
-    QActionGroup *modelModeGroup = new QActionGroup(this);
-    const auto addModelMode = [this, modelModeGroup, bar](
-            QAction *&slot, int mode, const QString &text,
-            const QString &toolTip) {
-        QAction *action = new QAction(text, this);
-        action->setToolTip(toolTip);
-        action->setCheckable(true);
-        action->setChecked(brushTool_->params().modelMode == mode);
-        connect(action, &QAction::triggered, this, [this, mode] {
-            MapEditor::BrushParams params = brushTool_->params();
-            params.modelMode = mode;
-            brushTool_->setParams(params);
-            syncBrushControls();
-        });
-        modelModeGroup->addAction(action);
-        slot = action;
-        bar->addAction(action);
-        return action;
-    };
-    addModelMode(actModelPlace_, 0, tr("Place"),
-                 tr("Place mode: the stamp SETS the dam to the scaled model "
-                    "height and paints the quantized Dam palette colours "
-                    "(a Set-to-Height style stamp)."));
-    addModelMode(actModelAdd_, 1, tr("Add"),
-                 tr("Add mode: the covered area's average height is RAISED "
-                    "by the local model height (cells below the target move "
-                    "up only)."));
-    addModelMode(actModelSubtract_, 2, tr("Subtract"),
-                 tr("Subtract mode: the covered area's average height is "
-                    "LOWERED by the local model height; where the result "
-                    "drops to the terrain the dam is removed."));
-    actModelPlace_->setChecked(true);
-
-    // Height: the model's z range is scaled proportionally onto 0..Height
-    // (whole voxels).
-    modelHeightSpin_ = new QSpinBox(bar);
-    modelHeightSpin_->setObjectName(QStringLiteral("modelHeightSpin"));
-    modelHeightSpin_->setRange(0, 255);
-    modelHeightSpin_->setValue(32);
-    modelHeightSpin_->setSuffix(tr(" v"));
-    modelHeightSpin_->setToolTip(
-        tr("Model brush height: the model's z range maps onto 0..Height "
-           "(whole voxels), proportionally scaled."));
-    connect(modelHeightSpin_, &QSpinBox::valueChanged, this, [this](int value) {
-        MapEditor::BrushParams params = brushTool_->params();
-        params.modelHeight = value;
-        brushTool_->setParams(params);
-        syncBrushControls();
-    });
-    bar->addWidget(new QLabel(tr("Height:"), bar));
-    bar->addWidget(modelHeightSpin_);
-
-    // X/Y scales: the placement rectangle as a fraction of the model size.
-    modelScaleXSpin_ = new QDoubleSpinBox(bar);
-    modelScaleXSpin_->setObjectName(QStringLiteral("modelScaleXSpin"));
-    modelScaleXSpin_->setRange(0.0, 1.0);
-    modelScaleXSpin_->setDecimals(2);
-    modelScaleXSpin_->setSingleStep(0.05);
-    modelScaleXSpin_->setValue(1.0);
-    modelScaleXSpin_->setToolTip(
-        tr("X scale of the placement rectangle (0..1, fraction of the "
-           "imported model width)."));
-    connect(modelScaleXSpin_, &QDoubleSpinBox::valueChanged, this,
-            [this](double value) {
-                MapEditor::BrushParams params = brushTool_->params();
-                params.modelScaleX = value;
-                brushTool_->setParams(params);
-                syncBrushControls();
-            });
-    bar->addWidget(new QLabel(tr("Scale X:"), bar));
-    bar->addWidget(modelScaleXSpin_);
-
-    modelScaleYSpin_ = new QDoubleSpinBox(bar);
-    modelScaleYSpin_->setObjectName(QStringLiteral("modelScaleYSpin"));
-    modelScaleYSpin_->setRange(0.0, 1.0);
-    modelScaleYSpin_->setDecimals(2);
-    modelScaleYSpin_->setSingleStep(0.05);
-    modelScaleYSpin_->setValue(1.0);
-    modelScaleYSpin_->setToolTip(
-        tr("Y scale of the placement rectangle (0..1, fraction of the "
-           "imported model height/length)."));
-    connect(modelScaleYSpin_, &QDoubleSpinBox::valueChanged, this,
-            [this](double value) {
-                MapEditor::BrushParams params = brushTool_->params();
-                params.modelScaleY = value;
-                brushTool_->setParams(params);
-                syncBrushControls();
-            });
-    bar->addWidget(new QLabel(tr("Scale Y:"), bar));
-    bar->addWidget(modelScaleYSpin_);
-
-    updateActionStates();
-}
-
-void MainWindow::onImportModel()
-{
-    const QString filePath = QFileDialog::getOpenFileName(
-        this, tr("Import PLY Model"), QString(),
-        tr("PLY models (*.ply);;All Files (*)"));
-    if (filePath.isEmpty()) {
-        return;
-    }
-    const MapEditor::ModelBrush::ImportResult imported =
-        MapEditor::ModelBrush::importPly(
-            std::filesystem::u8path(filePath.toStdString()));
-    const QString name = QFileInfo(filePath).fileName();
-    if (!imported.ok) {
-        QMessageBox::warning(
-            this, tr("Import Model"),
-            tr("Unable to import from PLY the model %1\n%2")
-                .arg(name, QString::fromStdString(imported.error)));
-        return;
-    }
-
-    modelImportPath_ = filePath;
-    // Store the raster first; the palette quantization (it needs the loaded
-    // world's Dam palette) fills the indices in right after when possible.
-    brushTool_->setModelBrushData(imported.model, MapEditor::ImageDecal::DecalImage());
-    bool quantized = false;
-    if (session_ && session_->isWorldLoaded()) {
-        quantized = quantizeModelBrush();
-    }
-    if (actModelBrush_) {
-        actModelBrush_->setEnabled(true);
-    }
-    statusBar()->showMessage(
-        tr("Model imported: %1x%2 cells (%3). %4")
-            .arg(imported.model.width)
-            .arg(imported.model.height)
-            .arg(name)
-            .arg(quantized ? tr("Ready — toggle \"Use Model Brush\".")
-                           : tr("Load a world, then toggle \"Use Model "
-                                "Brush\".")),
-        8000);
-}
-
-bool MainWindow::quantizeModelBrush()
-{
-    if (!session_ || !session_->isWorldLoaded() ||
-        !brushTool_->hasModelBrushData()) {
-        return false;
-    }
-    const MapEditor::ModelBrush::ModelRaster& raster =
-        brushTool_->modelRaster();
-    // The raster colours as an RGBA image (all cells opaque — the holes were
-    // filled with the model's average colour at import).
-    std::vector<unsigned char> rgba(
-        static_cast<std::size_t>(raster.width) * raster.height * 4, 255);
-    for (std::size_t i = 0; i < raster.rgb.size(); ++i) {
-        rgba[i * 4 + 0] = static_cast<unsigned char>((raster.rgb[i] >> 16) & 0xFF);
-        rgba[i * 4 + 1] = static_cast<unsigned char>((raster.rgb[i] >> 8) & 0xFF);
-        rgba[i * 4 + 2] = static_cast<unsigned char>(raster.rgb[i] & 0xFF);
-    }
-    const std::vector<unsigned char> palette =
-        session_->paletteBytes(MapEditor::EditorSession::PaletteLayer::Dam);
-    const std::vector<unsigned char> usage = session_->damPaletteUsage();
-    const MapEditor::ImageDecal::PrepareResult prepared =
-        MapEditor::ImageDecal::prepare(rgba.data(), raster.width,
-                                       raster.height, palette.data(),
-                                       usage.data());
-    if (!prepared.ok) {
-        statusBar()->showMessage(
-            tr("Model brush colours cannot be quantized: %1")
-                .arg(QString::fromStdString(prepared.error)),
-            8000);
-        return false;
-    }
-    // The new colours go into the Dam palette like the decal flow does.
-    for (const MapEditor::ImageDecal::PaletteWrite &write :
-         prepared.paletteWrites) {
-        session_->setPaletteRgb(MapEditor::EditorSession::PaletteLayer::Dam,
-                                write.index, write.rgb);
-    }
-    session_->applyPalettes();
-    if (palettePanel_) {
-        palettePanel_->refresh();
-    }
-    refreshPaletteRenderers();
-    brushTool_->setModelBrushData(raster, prepared.image);
-    return true;
-}
+// ---------------------------------------------------------------------------
+// Brush actions — one creator per UI section, split out of the former
+// 600-line createBrushActions monolith (see the code review in
+// docs/architecture.md).
+// ---------------------------------------------------------------------------
 
 void MainWindow::createBrushActions()
 {
-    using Viewport = MapEditor::ViewportWidget;
-    using EditorMode = Viewport::EditorMode;
+    brushUI_->createActions();
+    // T4.2 — the editor interaction modes stay with the window (the Edit
+    // menu, updateActionStates and the autotest hooks keep them); the Brush
+    // toolbar only embeds them.
+    createEditorModeActions();
+    brushUI_->setEditorModeActions(actModeView_, actModeBrush_,
+                                   actModeEyedropper_, actModePlaceSpawn_);
+}
 
-    const MapEditor::BrushParams &brush = brushTool_->params();
-
-    // --- Type: what the brush does -----------------------------------
-    QActionGroup *typeGroup = new QActionGroup(this);
-    const auto addType = [this, typeGroup](QIcon icon, const QString &text,
-                                           const QString &toolTip,
-                                           MapEditor::BrushEffect effect,
-                                           int direction) {
-        QAction *action = new QAction(icon, text, this);
-        action->setToolTip(toolTip);
-        action->setCheckable(true);
-
-        const MapEditor::BrushParams &current = brushTool_->params();
-        action->setChecked(current.effect == effect &&
-                           (effect != MapEditor::BrushEffect::ChangeHeight ||
-                            current.direction == direction));
-
-        connect(action, &QAction::triggered, this, [this, effect, direction] {
-            MapEditor::BrushParams params = brushTool_->params();
-            params.effect = effect;
-            params.direction = direction;
-            // A common brush type paints a flat mask — the 3D shape solid
-            // and the model-heightmap stamp belong to their own buttons
-            // (same rule as the image mask).
-            params.shape3d = MapEditor::Shape3DKind::None;
-            params.modelBrush = false;
-            brushTool_->setParams(params);
-            // T4.2 — keep the interaction mode in step with the brush type:
-            // the picking type (eyedropper) drives the Eyedropper mode, every
-            // painting type drives the Brush mode. The View mode stays as the
-            // user left it (the type buttons themselves are Edit actions).
-            if (viewport_) {
-                viewport_->setEditorMode(
-                    effect == MapEditor::BrushEffect::PickColor
-                        ? MapEditor::ViewportWidget::EditorMode::Eyedropper
-                        : MapEditor::ViewportWidget::EditorMode::Brush);
-            }
-            syncBrushControls();
-        });
-        typeGroup->addAction(action);
-        return action;
-    };
-
-    actBrushRaise_ = addType(
-        makeHeightArrowIcon(true), tr("Raise Terrain"),
-        tr("The brush raises the terrain under it (left drag in the 2D view)."),
-        MapEditor::BrushEffect::ChangeHeight, 1);
-    actBrushLower_ = addType(
-        makeHeightArrowIcon(false), tr("Lower Terrain"),
-        tr("The brush digs the terrain under it. Hard terrain slows the dig "
-           "down just like in the game."),
-        MapEditor::BrushEffect::ChangeHeight, -1);
-    actBrushLevelZP_ = addType(
-        makeGroundLetterIcon(QStringLiteral("Z"), kInk),
-        tr("Level to Zeroplast"),
-        tr("The brush levels the terrain to the world zeroplast height in "
-           "one stamp (strength has no effect on it) and marks the reached "
-           "cells as zeroplast (Dam mode only — the zeroplast belongs to "
-           "the dam domain)."),
-        MapEditor::BrushEffect::Align4ZP, 1);
-    actBrushLevelHeight_ = addType(
-        makeGroundLetterIcon(QStringLiteral("H"), kInk),
-        tr("Level to Height"),
-        tr("The brush levels the terrain to the height chosen next to it "
-           "(whole voxels, 1 voxel = 1/32 m)."),
-        MapEditor::BrushEffect::AlignVariableH, 1);
-
-    // T3.3 — color brush: paints SurBuf with the selected palette index.
-    actBrushColor_ = addType(
-        makeColorBrushIcon(), tr("Paint Color"),
-        tr("The brush paints the surface color (SurBuf) with the selected "
-           "palette index. Height is not changed.\n"
-           "Geo palette: indices 0..127; Dam palette: 128..255."),
-        MapEditor::BrushEffect::SetColor, 0);
-
-    // T4.2 — the eyedropper as a brush type: the PickColor effect samples the
-    // Geo/Dam pixel (SurBuf index) at the click cell into the color brush —
-    // no buffer is written, the pick is a BrushTool point operation like any
-    // other type (the interaction runs in the editor mode Eyedropper).
-    actBrushPickColor_ = addType(
-        makeEyedropperIcon(), tr("Pick Color"),
-        tr("The brush samples the surface color under the cursor (the Geo/Dam "
-           "palette pixel) into the color brush instead of painting. A click "
-           "or a drag over the map in the 2D and the 3D view; use the editor "
-           "mode \"Eyedropper\" (E) as the switch."),
-        MapEditor::BrushEffect::PickColor, 0);
-
-    // T3.4 — plot soot (burn marks on the terrain).
-    actBrushSoot_ = addType(
-        makeGroundLetterIcon(QStringLiteral("S"), QColor(80, 50, 20)),
-        tr("Plot Soot"),
-        tr("The brush marks cells as soot (burn residue). Zeroplast cells "
-           "are never marked as soot — the game's rule."),
-        MapEditor::BrushEffect::PlotSoot, 0);
-
-    // T3.4 — very light dam: seed a thin dam layer at geo height.
-    actBrushVeryLightDam_ = addType(
-        makeGroundLetterIcon(QStringLiteral("V"), QColor(100, 140, 180)),
-        tr("Very Light Dam"),
-        tr("The brush seeds a very light dam layer at the geo height and "
-           "paints the surface with the very light dam texture index. "
-           "Equivalent to the game's initial dam deployment."),
-         MapEditor::BrushEffect::VeryLightDam, 0);
-
-    // Scripted brush (JavaScript via duktape, Dam mode only). Selecting the
-    // type forces the Dam layer; the pencil button next to it opens the
-    // script editor window.
-    actBrushScript_ = addType(
-        makeScriptBrushIcon(), tr("Scripted Brush"),
-        tr("Runs a JavaScript (duktape) script at every stamp: the script "
-           "drives the editor brush API — raiseHeight/lowerHeight/setHeight/"
-           "setToZP/paintSoot/paintVeryLightDam at explicit positions and "
-           "radii, paintColor with an RGB colour (nearest Dam palette "
-           "entry), and the sculpting brushes applyBlur/applySmooth. Dam "
-           "layer only. The whole stamp evaluation is ONE undo "
-           "step; a 20 s time limit applies. Edit the script with the "
-           "pencil button next to this one."),
-        MapEditor::BrushEffect::Script, 0);
-    // The scripted brush operates on the Dam layer only: selecting it
-    // switches the mode, mirroring the zeroplast brushes.
-    connect(actBrushScript_, &QAction::triggered, this, [this] {
-        MapEditor::BrushParams params = brushTool_->params();
-        params.mode = MapEditor::BrushMode::Dam;
-        brushTool_->setParams(params);
-        syncBrushControls();
-    });
-
-    actBrushScriptEdit_ = new QAction(makeScriptEditIcon(),
-                                      tr("Edit Scri&pt..."), this);
-    actBrushScriptEdit_->setToolTip(
-        tr("Open the script editor: write the JavaScript the scripted brush "
-           "runs per stamp, pick the stamp preview shape. OK compiles the "
-           "script (syntax check) and keeps the dialog open on errors."));
-    connect(actBrushScriptEdit_, &QAction::triggered, this, [this] {
-        // Seed a starter example the first time the window opens.
-        QString seed = brushScript_;
-        if (seed.isEmpty()) {
-            seed = QStringLiteral(
-                "// Scripted brush: runs once per stamp at the cursor.\n"
-                "// Available API (Dam layer only):\n"
-                "//   getCurrentPos() -> {x, y}\n"
-                "//   getCurrentRadius() / getCurrentThickness() / getCurrentHeight()\n"
-                "//   raiseHeight(pos, height, radius, square)\n"
-                "//   lowerHeight(pos, height, radius, square)\n"
-                "//   setHeight(pos, height, radius, square)\n"
-                "//   setToZP(pos, radius, square)\n"
-                "//   paintSoot(pos, radius, square)\n"
-                "//   paintVeryLightDam(pos, radius, square)\n"
-                "//   paintColor(pos, red, green, blue, radius, square)\n"
-                "//   applyBlur(pos, radius, blurRadius, effect, square)\n"
-                "//   applySmooth(pos, radius, effect, square)\n"
-                "\n"
-                "var p = getCurrentPos();\n"
-                "var r = getCurrentRadius();\n"
-                "// Example: a zeroplast pad with a coloured rim.\n"
-                "setToZP({x: p.x, y: p.y}, r, false);\n"
-                "paintColor({x: p.x, y: p.y - r - 2}, 255, 200, 0, 2, false);\n");
-        }
-        MapEditor::ScriptEditorDialog dialog(this, seed, scriptStampShape_);
-        if (dialog.exec() != QDialog::Accepted) {
-            return;
-        }
-        brushScript_ = dialog.script();
-        scriptStampShape_ = dialog.stampShape();
-        // Keep the tool in step: the script the stamp will run.
-        MapEditor::BrushParams params = brushTool_->params();
-        params.script = brushScript_.toStdString();
-        brushTool_->setParams(params);
-        syncBrushControls();
-        statusBar()->showMessage(tr("Scripted brush script updated "
-                                    "(%1 characters).")
-                                     .arg(brushScript_.size()),
-                                 5000);
-    });
-
-    // --- Sculpting (Smooth / Flatten) ------------------------------------
-    // Dam-mode only; selecting either forces the Dam layer like the other
-    // Dam-only types. The fraction spinbox lives on the toolbar between the
-    // two buttons (sculpting section, after the delimiter).
-    const auto addSculptType = [this, typeGroup, &addType](
-            QIcon icon, const QString& text, const QString& toolTip,
-            MapEditor::BrushEffect effect) {
-        QAction* action = addType(icon, text, toolTip, effect, 0);
-        // Dam layer only — mirror the scripted brush mode forcing.
-        connect(action, &QAction::triggered, this, [this] {
-            MapEditor::BrushParams params = brushTool_->params();
-            params.mode = MapEditor::BrushMode::Dam;
-            brushTool_->setParams(params);
-            syncBrushControls();
-        });
-        return action;
-    };
-    actBrushSmooth_ = addSculptType(
-        makeSmoothBrushIcon(), tr("Smooth"),
-        tr("Sculpting (Dam layer only): averages the surface height under "
-           "the stamp and moves every covered cell a fraction towards that "
-           "average — bumps and dips blend away while the overall level "
-           "stays. The fraction spinbox next to it controls the blend "
-           "(1.0 = full average in one stamp)."),
-        MapEditor::BrushEffect::Smooth);
-    actBrushFlatten_ = addSculptType(
-        makeFlattenBrushIcon(), tr("Flatten"),
-        tr("Sculpting (Dam layer only): fits a least-squares plane through "
-           "the surface under the stamp and moves every covered cell a "
-           "fraction towards that plane — large-scale slopes survive, local "
-           "bumps die. Uses the same fraction spinbox as Smooth."),
-        MapEditor::BrushEffect::Flatten);
-    actBrushTricubic_ = addSculptType(
-        makeTricubicBrushIcon(), tr("Tricubic"),
-        tr("Sculpting (Dam layer only): block-averages the surface under "
-           "the stamp into a coarse lattice and moves every covered cell a "
-           "fraction towards the tricubic (bicubic Catmull-Rom) "
-           "interpolation of that lattice — detail smaller than the lattice "
-           "stride is smoothed away while curved large-scale forms survive "
-           "smoothly. Uses the same fraction spinbox as Smooth/Flatten."),
-        MapEditor::BrushEffect::Tricubic);
-    actBrushInflate_ = addSculptType(
-        makeInflateBrushIcon(), tr("Inflate"),
-        tr("Sculpting (Dam layer only): offsets the surface along its "
-           "voxel normals — every covered cell moves a fraction along the "
-           "outward normal, so bumps grow outward-and-up. Where displaced "
-           "parts intersect, the HIGHER height wins. Uses the same "
-           "fraction spinbox as Smooth/Flatten."),
-        MapEditor::BrushEffect::Inflate);
-    actBrushDeflate_ = addSculptType(
-        makeDeflateBrushIcon(), tr("Deflate"),
-        tr("Sculpting (Dam layer only): the inverse of Inflate — offsets "
-           "the surface along the inward voxel normals, so forms shrink "
-           "inward-and-down. Where displaced parts intersect, the LOWER "
-           "height wins. Uses the same fraction spinbox as Smooth/Flatten."),
-        MapEditor::BrushEffect::Deflate);
-    actBrushGaussianBlur_ = addSculptType(
-        makeGaussianBlurBrushIcon(), tr("Gaussian Blur"),
-        tr("Sculpting (Dam layer only): convolves the surface under the "
-           "stamp with a Gaussian kernel (radius = the blur-radius "
-           "spinbox, sigma = radius/2) and moves every covered cell a "
-           "fraction towards its blurred height — planes reproduce "
-           "exactly, noise smaller than the radius dies. Uses the same "
-           "fraction spinbox as the other sculpting brushes."),
-        MapEditor::BrushEffect::GaussianBlur);
-
-    // --- 3D shape brushes --------------------------------------------------
-    // Dam-mode solids stamped instead of a flat mask (Shape3D.h). They layer
-    // on the COMMON brush types: with Raise/Lower Terrain the cells close on
-    // the shape from below/above only, with Set-to-Height the Height spin is
-    // the shape's base and the move goes both ways. Selecting a 3D shape
-    // forces the Dam layer and drops any non-height brush type back to a
-    // raise; selecting any other brush type or stamp shape clears the 3D
-    // shape (mirrors the image-mask rule).
-    QActionGroup *shape3dGroup = new QActionGroup(this);
-    const auto addShape3D = [this, shape3dGroup](
-            MapEditor::Shape3DKind kind, const QString &text,
-            const QString &toolTip) {
-        QAction *action = new QAction(makeShape3DIcon(kind), text, this);
-        action->setToolTip(toolTip);
-        action->setCheckable(true);
-        action->setChecked(brushTool_->params().shape3d == kind);
-        connect(action, &QAction::triggered, this, [this, kind] {
-            MapEditor::BrushParams params = brushTool_->params();
-            params.shape3d = kind;
-            params.mode = MapEditor::BrushMode::Dam;
-            params.useImageMask = false;
-            params.modelBrush = false;
-            if (params.effect != MapEditor::BrushEffect::ChangeHeight &&
-                params.effect != MapEditor::BrushEffect::AlignVariableH) {
-                params.effect = MapEditor::BrushEffect::ChangeHeight;
-                params.direction = 1;
-            }
-            brushTool_->setParams(params);
-            if (viewport_) {
-                viewport_->setEditorMode(
-                    MapEditor::ViewportWidget::EditorMode::Brush);
-            }
-            syncBrushControls();
-        });
-        shape3dGroup->addAction(action);
-        return action;
-    };
-    actBrush3DCone_ = addShape3D(
-        MapEditor::Shape3DKind::Cone, tr("Cone"),
-        tr("3D shape brush (Dam layer only): stamps a cone — the base is the "
-           "stamp footprint, every covered cell moves towards Height + the "
-           "cone profile * Shape Height. Combine with Raise / Lower / "
-           "Set-to-Height; the upper part offset tilts the apex."));
-    actBrush3DPyramid_ = addShape3D(
-        MapEditor::Shape3DKind::Pyramid, tr("Pyramid"),
-        tr("3D shape brush (Dam layer only): stamps a pyramid on a regular "
-           "polygon base (the polygon side count and angle spins shape the "
-           "base). Otherwise like the cone."));
-    actBrush3DTruncCone_ = addShape3D(
-        MapEditor::Shape3DKind::TruncatedCone, tr("Truncated Cone"),
-        tr("3D shape brush (Dam layer only): stamps a cone truncated at the "
-           "upper part radius (top circle), optionally tilted with the upper "
-           "part offset."));
-    actBrush3DTruncPyramid_ = addShape3D(
-        MapEditor::Shape3DKind::TruncatedPyramid, tr("Truncated Pyramid"),
-        tr("3D shape brush (Dam layer only): stamps a pyramid truncated at "
-           "the upper part side length (a smaller similar polygon on top), "
-           "optionally shifted with the upper part offset."));
-    actBrush3DTorus_ = addShape3D(
-        MapEditor::Shape3DKind::Torus, tr("Half Torus"),
-        tr("3D shape brush (Dam layer only): stamps the upper half of a "
-           "torus — a ring ridge. The upper part radius is the ring's INNER "
-           "radius; the base radius is the outer one."));
-    actBrush3DEllipsoid_ = addShape3D(
-        MapEditor::Shape3DKind::HalfEllipsoid, tr("Half Ellipsoid"),
-        tr("3D shape brush (Dam layer only): stamps a half ellipsoid — a "
-           "dome with a circular base."));
-
-    // T3.5 — load brush image from file. The loaded image becomes the stamp
-    // mask of the CURRENT brush type (raise/lower/level/... — the image
-    // pixel value is the per-cell influence) until a stamp shape is picked
-    // explicitly.
-    actLoadBrushImage_ = new QAction(makeLoadImageIcon(), tr("&Load Image..."),
-                                      this);
-    actLoadBrushImage_->setToolTip(
-        tr("Load a TGA/PNG/BMP image as the brush stamp mask: the pixel "
-           "brightness (0..255) controls the per-cell influence of the "
-           "current brush type. Picking a stamp shape switches back to it."));
-    connect(actLoadBrushImage_, &QAction::triggered,
-            this, &MainWindow::onLoadBrushImage);
-
-    // ImageDecal — a palette-limited image stamp. The button is both the brush
-    // type and the image picker: selecting it switches to the decal brush,
-    // forces the Dam layer (the decal colours come from the Dam palette) and
-    // opens the file dialog. Cancelling keeps the previously loaded decal.
-    actBrushImageDecal_ = addType(
-        makeDecalIcon(), tr("Image Decal"),
-        tr("Stamps a picture into the dam surface colours: the image is "
-           "converted to a limited set of Dam palette colours (k-means), the "
-           "new colours are added to the Dam palette and every pixel paints "
-           "its palette index. Dam layer only; transparent pixels are never "
-           "painted. Click to choose a PNG/TGA/BMP image (max 512x512)."),
-        MapEditor::BrushEffect::ImageDecal, 0);
-    connect(actBrushImageDecal_, &QAction::triggered, this, [this] {
-        MapEditor::BrushParams params = brushTool_->params();
-        params.effect = MapEditor::BrushEffect::ImageDecal;
-        params.mode = MapEditor::BrushMode::Dam; // the decal owns the Dam layer
-        params.useImageMask = false;
-        params.shape3d = MapEditor::Shape3DKind::None;
-        params.modelBrush = false;
-        brushTool_->setParams(params);
-        if (viewport_) {
-            viewport_->setEditorMode(
-                MapEditor::ViewportWidget::EditorMode::Brush);
-        }
-        onLoadDecalImage();
-        // Cancelled with no decal loaded: do not leave a brush that paints
-        // nothing selected.
-        if (!brushTool_->hasDecalImage()) {
-            params.effect = MapEditor::BrushEffect::ChangeHeight;
-            params.direction = 1;
-            brushTool_->setParams(params);
-        }
-        syncBrushControls();
-    });
-
-    // --- Mode: which terrain layer the height tools drive -------------
-    QActionGroup *modeGroup = new QActionGroup(this);
-    const auto addMode = [this, modeGroup](QIcon icon, const QString &text,
-                                           const QString &toolTip,
-                                           MapEditor::BrushMode mode) {
-        QAction *action = new QAction(icon, text, this);
-        action->setToolTip(toolTip);
-        action->setCheckable(true);
-        action->setChecked(brushTool_->params().mode == mode);
-        connect(action, &QAction::triggered, this, [this, mode] {
-            MapEditor::BrushParams params = brushTool_->params();
-            params.mode = mode;
-            // The zeroplast brushes are a Dam-mode tool (the zeroplast
-            // belongs to the dam domain) — the UI keeps them disabled in the
-            // Geo mode, so a type left active by the switch falls back to a
-            // plain raise. Same for the scripted and sculpting brushes
-            // (Dam mode only).
-            if (mode == MapEditor::BrushMode::Geo &&
-                (params.effect == MapEditor::BrushEffect::Align4ZP ||
-                 params.effect == MapEditor::BrushEffect::ImageDecal ||
-                 params.effect == MapEditor::BrushEffect::Script ||
-                 params.effect == MapEditor::BrushEffect::Smooth ||
-                 params.effect == MapEditor::BrushEffect::Flatten ||
-                 params.effect == MapEditor::BrushEffect::Tricubic ||
-                 params.effect == MapEditor::BrushEffect::Inflate ||
-                 params.effect == MapEditor::BrushEffect::Deflate ||
-                 params.effect == MapEditor::BrushEffect::GaussianBlur)) {
-                params.effect = MapEditor::BrushEffect::ChangeHeight;
-                params.direction = 1;
-            }
-            // The 3D shape brushes own the Dam layer like the sculpting
-            // types — switching to Geo drops the solid back to a plain
-            // raise. Same for the model-heightmap stamp.
-            if (mode == MapEditor::BrushMode::Geo &&
-                params.shape3d != MapEditor::Shape3DKind::None) {
-                params.shape3d = MapEditor::Shape3DKind::None;
-            }
-            if (mode == MapEditor::BrushMode::Geo && params.modelBrush) {
-                params.modelBrush = false;
-            }
-            brushTool_->setParams(params);
-            syncBrushControls();
-        });
-        modeGroup->addAction(action);
-        return action;
-    };
-
-    actBrushGeo_ = addMode(
-        makeGroundLetterIcon(QStringLiteral("G"), kInk), tr("Geo Layer"),
-        tr("The height tools drive the geo layer (VxGBuf) only — a dam above "
-           "the surface is never created or removed."),
-        MapEditor::BrushMode::Geo);
-    actBrushDam_ = addMode(
-        makeGroundLetterIcon(QStringLiteral("D"), kAccent), tr("Dam Layer"),
-        tr("The height tools drive the dam layer: raising seeds the dam, "
-           "digging it down to the geo height removes it. The dam is always "
-           "at or above the geo."),
-        MapEditor::BrushMode::Dam);
-
-    // --- Height-gate modifiers (Dam mode only) -------------------------
-    // Two mutually exclusive PER-VOXEL conditions on top of any brush type:
-    // the effect touches a covered voxel only when its own dam height is
-    // above / below the gate height. Both unchecked = no gate. Enabling a
-    // gate forces the Dam layer (the gate reads the dam height). The same
-    // actions live on the Brush Modifiers toolbar and in the Edit menu.
-    const auto addGate = [this](bool above) {
-        QAction *action =
-            new QAction(makeGateIcon(above),
-                        above ? tr("Apply Above Height")
-                              : tr("Apply Below Height"),
-                        this);
-        action->setToolTip(
-            above
-                ? tr("Height-gate modifier (Dam mode only): apply the brush "
-                     "effect only to the voxels whose dam height is ABOVE the "
-                     "gate height set next to it. Combines with every brush "
-                     "type; each voxel is checked individually, so one stamp "
-                     "can edit some cells and skip their neighbours. Enabling "
-                     "it switches to the Dam layer.")
-                : tr("Height-gate modifier (Dam mode only): apply the brush "
-                     "effect only to the voxels whose dam height is BELOW the "
-                     "gate height set next to it. Combines with every brush "
-                     "type; each voxel is checked individually, so one stamp "
-                     "can edit some cells and skip their neighbours. Enabling "
-                     "it switches to the Dam layer."));
-        action->setCheckable(true);
-        connect(action, &QAction::triggered, this,
-                [this, above](bool checked) {
-                    MapEditor::BrushParams params = brushTool_->params();
-                    if (checked) {
-                        params.heightGate =
-                            above ? MapEditor::BrushHeightGate::Above
-                                  : MapEditor::BrushHeightGate::Below;
-                        // The gate reads the dam height — it only makes
-                        // sense on the Dam layer.
-                        params.mode = MapEditor::BrushMode::Dam;
-                    } else {
-                        params.heightGate = MapEditor::BrushHeightGate::None;
-                    }
-                    brushTool_->setParams(params);
-                    // Mutual exclusivity: the two conditions are alternatives
-                    // (a voxel exactly at the gate height fails both, so both
-                    // checked would not mean "apply everywhere").
-                    QAction *other = above ? actGateBelow_ : actGateAbove_;
-                    if (other && other->isChecked()) {
-                        other->setChecked(false);
-                    }
-                    syncBrushControls();
-                });
-        return action;
-    };
-    actGateAbove_ = addGate(true);
-    actGateBelow_ = addGate(false);
-
-    // --- Form: the stamp silhouette (T3.1 BrushShape) -----------------
-    // T3.5 — picking a shape switches the stamp geometry back from a loaded
-    // image mask to the generated shape mask (useImageMask = false).
-    QActionGroup *shapeGroup = new QActionGroup(this);
-    const auto addShape = [this, shapeGroup](MapEditor::BrushShape shape,
-                                             const QString &text,
-                                             const QString &toolTip) {
-        QAction *action = new QAction(makeShapeIcon(shape), text, this);
-        action->setToolTip(toolTip);
-        action->setCheckable(true);
-        action->setChecked(brushTool_->params().shape == shape);
-        connect(action, &QAction::triggered, this, [this, shape] {
-            MapEditor::BrushParams params = brushTool_->params();
-            params.shape = shape;
-            params.useImageMask = false;
-            // A 2D stamp shape replaces the 3D solid and the model stamp.
-            params.shape3d = MapEditor::Shape3DKind::None;
-            params.modelBrush = false;
-            brushTool_->setParams(params);
-            syncBrushControls();
-        });
-        shapeGroup->addAction(action);
-        return action;
-    };
-
-    actShapeCircle_ = addShape(
-        MapEditor::BrushShape::FilledCircle, tr("Circle"),
-        tr("Filled circle stamp — the shape the game's terraformers influence. "
-           "Radius is the disc half-size in map cells."));
-    actShapeSquare_ = addShape(
-        MapEditor::BrushShape::FilledSquare, tr("Square"),
-        tr("Filled square stamp covering |dx| <= radius and |dy| <= radius."));
-    actShapeCircleOutline_ = addShape(
-        MapEditor::BrushShape::CircleOutline, tr("Circle Outline"),
-        tr("One-cell ring exactly at the radius — draws circular borders."));
-    actShapeSquareOutline_ = addShape(
-        MapEditor::BrushShape::SquareOutline, tr("Square Outline"),
-        tr("One-cell square border at the radius — draws rectangular borders."));
-    actShapePolygon_ = addShape(
-        MapEditor::BrushShape::FilledPolygon, tr("Polygon"),
-        tr("Filled regular-polygon stamp inscribed into the radius circle. "
-           "The vertex count and the first-vertex angle are set with the "
-           "spinboxes next to it."));
-    actShapePolygonOutline_ = addShape(
-        MapEditor::BrushShape::PolygonOutline, tr("Polygon Outline"),
-        tr("Regular-polygon border at the radius — the band grows inward "
-           "with the stroke width, like the circle/square outlines."));
-    actShapeLine_ = addShape(
-        MapEditor::BrushShape::Line, tr("Line"),
-        tr("Two-point stroke: press marks the start, release draws a "
-           "Bresenham line stamped with the filled circle of the current "
-           "radius — one undo entry per line. Works in both view modes."));
-
+void MainWindow::createEditorModeActions()
+{
+    using EditorMode = MapEditor::ViewportWidget::EditorMode;
     // --- Editor interaction mode: View / Brush / Eyedropper -------------
     // What a click in the world does (T4.2), in both the 2D and the 3D view:
     //   View  — full camera control (left drag pans/orbits);
@@ -3249,7 +1349,7 @@ void MainWindow::createBrushActions()
             // The Place Spawn mode needs a loaded battle map — there is no
             // spawn to place otherwise (updateActionStates also disables the
             // action; this guards the shortcut path).
-            if (mode == EditorMode::PlaceSpawn && !battleMap_.loaded()) {
+            if (mode == EditorMode::PlaceSpawn && !battleMaps_->isLoaded()) {
                 return;
             }
             // The brush type carries which tool the interaction works with:
@@ -3266,31 +1366,31 @@ void MainWindow::createBrushActions()
                 brushTool_->setParams(params);
             }
             viewport_->setEditorMode(mode);
-            syncBrushControls();
+            brushUI_->syncControls();
         });
         interactionGroup->addAction(action);
         return action;
     };
 
     actModeView_ = addEditorMode(
-        makeViewModeIcon(), tr("&View Mode"),
+        MapEditor::brushui::makeViewModeIcon(), tr("&View Mode"),
         tr("Navigate only: left drag pans the 2D view / orbits the 3D view, "
            "middle/right drag pans, wheel zooms (V). The brush does nothing."),
         QKeySequence(Qt::Key_V), EditorMode::View);
     actModeBrush_ = addEditorMode(
-        makeBrushIcon(), tr("&Brush"),
+        MapEditor::brushui::makeBrushIcon(), tr("&Brush"),
         tr("Apply the brush with a left click/drag in the 2D and the 3D view "
            "(T). Camera changes stay limited: pan and zoom are always "
            "available, Alt+left still orbits in the 3D view."),
         QKeySequence(Qt::Key_T), EditorMode::Brush);
     actModeEyedropper_ = addEditorMode(
-        makeEyedropperIcon(), tr("&Eyedropper"),
+        MapEditor::brushui::makeEyedropperIcon(), tr("&Eyedropper"),
         tr("Sample the surface color instead of painting: a click/drag picks "
            "the Geo/Dam palette pixel under the cursor through the PickColor "
            "brush type (E). Same limited camera as the Brush mode."),
         QKeySequence(Qt::Key_E), EditorMode::Eyedropper);
     actModePlaceSpawn_ = addEditorMode(
-        makePlaceSpawnIcon(), tr("Place &Spawn"),
+        MapEditor::brushui::makePlaceSpawnIcon(), tr("Place &Spawn"),
         tr("Move the selected battle-map player's spawn to the clicked cell: "
            "frame, squad, units and camera relocate together, the height is "
            "corrected by the terrain difference, and the move is one undo "
@@ -3298,618 +1398,6 @@ void MainWindow::createBrushActions()
            "is not touched."),
         QKeySequence(Qt::Key_S), EditorMode::PlaceSpawn);
     actModeBrush_->setChecked(true);
-}
-
-void MainWindow::buildBrushToolbar()
-{
-    QToolBar *bar = addToolBar(tr("Brush"));
-    bar->setObjectName(QStringLiteral("BrushToolbar"));
-    bar->setMovable(false);
-    bar->setFloatable(false);
-    bar->setIconSize(QSize(22, 22));
-    bar->setStyleSheet(
-        QStringLiteral("QToolButton:enabled:hover, QToolButton:enabled:checked "
-                       "{ background: rgba(0, 96, 170, 35); border-radius: 4px; }"));
-
-    // T4.2 — the editor interaction mode switch (View / Brush / Eyedropper);
-    // picking the Eyedropper mode selects the PickColor brush type, picking
-    // the Brush mode swaps it back to the painting color brush.
-    bar->addAction(actModeView_);
-    bar->addAction(actModeBrush_);
-    bar->addAction(actModeEyedropper_);
-    bar->addAction(actModePlaceSpawn_);
-    bar->addSeparator();
-
-    // T3.1 form buttons: the stamp silhouette + the stamp half-size. The
-    // silhouette is what the cursor preview shows and what a stamp paints.
-    bar->addAction(actShapeCircle_);
-    bar->addAction(actShapeSquare_);
-    bar->addAction(actShapeCircleOutline_);
-    bar->addAction(actShapeSquareOutline_);
-    bar->addAction(actShapePolygon_);
-    bar->addAction(actShapePolygonOutline_);
-    bar->addAction(actShapeLine_);
-
-    // Stamp half-size in map cells (BrushParams::radius, clamped by the tool
-    // to BrushTool::maxRadius() = 512).
-    brushRadiusSpin_ = new QSpinBox(bar);
-    brushRadiusSpin_->setRange(0, MapEditor::BrushTool::maxRadius());
-    brushRadiusSpin_->setSuffix(tr(" c"));
-    brushRadiusSpin_->setToolTip(
-        tr("Brush radius in map cells (the stamp half-size)."));
-    connect(brushRadiusSpin_, &QSpinBox::valueChanged, this, [this](int value) {
-        MapEditor::BrushParams params = brushTool_->params();
-        params.radius = value;
-        brushTool_->setParams(params);
-        syncBrushControls();
-    });
-    bar->addWidget(new QLabel(tr("Radius:"), bar));
-    bar->addWidget(brushRadiusSpin_);
-
-    // Stroke width in cells for the unfilled shapes (CircleOutline,
-    // SquareOutline, Line). The band is inset from the outer edge, so it never
-    // exceeds the stamp footprint. 0 = full stamp (the pre-thickness behaviour);
-    // UI shows 1..maxThickness where 1 = original one-cell ring/border.
-    brushThicknessSpin_ = new QSpinBox(bar);
-    brushThicknessSpin_->setSuffix(tr(" c"));
-    brushThicknessSpin_->setToolTip(
-        tr("Stroke width in cells of the unfilled shapes (CircleOutline, "
-           "SquareOutline, Line). The band grows inward from the outer edge, "
-           "so a thicker stroke never edits outside the brush footprint. "
-           "Ignored by the filled shapes. 0 = full stamp."));
-    connect(brushThicknessSpin_, &QSpinBox::valueChanged, this, [this](int value) {
-        MapEditor::BrushParams params = brushTool_->params();
-        params.thickness = value;
-        brushTool_->setParams(params);
-        syncBrushControls();
-    });
-    bar->addWidget(new QLabel(tr("Width:"), bar));
-    bar->addWidget(brushThicknessSpin_);
-
-    // Regular-polygon stamp params (FilledPolygon / PolygonOutline): the
-    // vertex count and the first-vertex angle. Enabled only with a polygon
-    // shape, like the stroke width is only enabled for the unfilled shapes.
-    polygonSidesSpin_ = new QSpinBox(bar);
-    polygonSidesSpin_->setObjectName(QStringLiteral("polygonSidesSpin"));
-    polygonSidesSpin_->setRange(MapEditor::kMinPolygonSides,
-                                MapEditor::kMaxPolygonSides);
-    polygonSidesSpin_->setValue(6);
-    polygonSidesSpin_->setToolTip(
-        tr("Vertex count of the regular-polygon stamp (3..20). The polygon "
-           "is inscribed into the radius circle, so the brush radius is the "
-           "circumradius, exactly like the circle brush."));
-    connect(polygonSidesSpin_, &QSpinBox::valueChanged, this, [this](int value) {
-        MapEditor::BrushParams params = brushTool_->params();
-        params.polygonSides = value;
-        brushTool_->setParams(params);
-        syncBrushControls();
-    });
-    bar->addWidget(new QLabel(tr("Sides:"), bar));
-    bar->addWidget(polygonSidesSpin_);
-
-    polygonAngleSpin_ = new QDoubleSpinBox(bar);
-    polygonAngleSpin_->setObjectName(QStringLiteral("polygonAngleSpin"));
-    polygonAngleSpin_->setRange(0.0, 360.0);
-    polygonAngleSpin_->setDecimals(1);
-    polygonAngleSpin_->setSingleStep(15.0);
-    polygonAngleSpin_->setWrapping(true);
-    polygonAngleSpin_->setSuffix(tr("\u00B0"));
-    polygonAngleSpin_->setToolTip(
-        tr("Angle offset of the first polygon vertex in degrees (0..360, "
-           "wraps 360\u00B0 \u2192 0\u00B0). 0\u00B0 points the vertex at map "
-           "east (+x); the angle grows clockwise on screen."));
-    connect(polygonAngleSpin_, &QDoubleSpinBox::valueChanged, this,
-            [this](double value) {
-                MapEditor::BrushParams params = brushTool_->params();
-                params.polygonAngleDeg = value;
-                brushTool_->setParams(params);
-                syncBrushControls();
-            });
-    bar->addWidget(new QLabel(tr("Angle:"), bar));
-    bar->addWidget(polygonAngleSpin_);
-    bar->addSeparator();
-
-    // T3.2 type buttons: raise / lower / the two levellers.
-    bar->addAction(actBrushRaise_);
-    bar->addAction(actBrushLower_);
-    bar->addAction(actBrushLevelZP_);
-    bar->addAction(actBrushLevelHeight_);
-
-    // The height value of the height tools — whole voxels (0..255). One
-    // control, meaning per type: the raise/lower step (per stamp at full
-    // influence) for Raise/Lower Terrain, the target height for "Level to
-    // Height" and the value getCurrentHeight() reports for the scripted
-    // brush (the domain BrushTool::clampHeightLevel enforces too).
-    brushLevelSpin_ = new QSpinBox(bar);
-    brushLevelSpin_->setRange(0, 255);
-    brushLevelSpin_->setSuffix(tr(" vox"));
-    connect(brushLevelSpin_, &QSpinBox::valueChanged, this, [this](int value) {
-        MapEditor::BrushParams params = brushTool_->params();
-        if (params.effect == MapEditor::BrushEffect::AlignVariableH ||
-            params.effect == MapEditor::BrushEffect::Script) {
-            params.heightLevel = value;
-        } else {
-            params.strength = MapEditor::BrushTool::clampStrength(value);
-        }
-        brushTool_->setParams(params);
-    });
-    bar->addWidget(new QLabel(tr("Level:"), bar));
-    bar->addWidget(brushLevelSpin_);
-
-    bar->addSeparator();
-
-    // T3.2 mode buttons: Geo / Dam.
-    bar->addAction(actBrushGeo_);
-    bar->addAction(actBrushDam_);
-
-    bar->addSeparator();
-
-    // T3.3/T4.3 — color palette index spinbox (0..255): the index into the
-    // palette of the brush's current layer (T4.1 model).
-    brushColorIndexSpin_ = new QSpinBox(bar);
-    brushColorIndexSpin_->setRange(0, 255);
-    brushColorIndexSpin_->setToolTip(
-        tr("Palette index for the \"Paint Color\" brush — an entry of the "
-           "palette of the brush's current layer (Geo or Dam)."));
-    connect(brushColorIndexSpin_, &QSpinBox::valueChanged, this, [this](int value) {
-        MapEditor::BrushParams params = brushTool_->params();
-        params.colorIndex = value;
-        brushTool_->setParams(params);
-        syncColorControls();
-    });
-    bar->addWidget(new QLabel(tr("Color:"), bar));
-    bar->addWidget(brushColorIndexSpin_);
-
-    // Color swatch: a label with a colored rectangle showing the current
-    // palette index color (read from the geo/dam palette).
-    brushColorSwatch_ = new QLabel(bar);
-    brushColorSwatch_->setFixedSize(24, 24);
-    brushColorSwatch_->setStyleSheet(
-        QStringLiteral("QLabel { border: 1px solid #808080; }"));
-    brushColorSwatch_->setAlignment(Qt::AlignCenter);
-    brushColorSwatch_->setToolTip(
-        tr("Current color index preview."));
-    bar->addWidget(brushColorSwatch_);
-
-    // T3.3/T4.2 — the paint/pick color types next to their color controls
-    // (the same actions the Edit menu carries).
-    bar->addAction(actBrushColor_);
-    bar->addAction(actBrushPickColor_);
-
-    // ImageDecal — the palette-limited image stamp (Dam layer only).
-    bar->addAction(actBrushImageDecal_);
-
-    bar->addSeparator();
-
-    // T3.4 — soot/very-light-dam buttons.
-    bar->addAction(actBrushSoot_);
-    bar->addAction(actBrushVeryLightDam_);
-
-    // Scripted brush (type + script editor window).
-    bar->addAction(actBrushScript_);
-    bar->addAction(actBrushScriptEdit_);
-
-    bar->addSeparator();
-
-    // T3.5 — load-image button: the image becomes the stamp mask of the
-    // current brush type.
-    bar->addAction(actLoadBrushImage_);
-
-    // T3.5 — the image mask scale (percent of the loaded image size). The
-    // scaled mask is recomputed from the stored original on every change.
-    brushMaskScaleSpin_ = new QSpinBox(bar);
-    brushMaskScaleSpin_->setRange(10, 800);
-    brushMaskScaleSpin_->setValue(100);
-    brushMaskScaleSpin_->setSuffix(tr(" %"));
-    brushMaskScaleSpin_->setToolTip(
-        tr("Scale of the loaded brush image relative to its original pixel "
-           "size (the mask stays centred under the cursor)."));
-    connect(brushMaskScaleSpin_, &QSpinBox::valueChanged, this, [this](int value) {
-        if (!brushTool_) {
-            return;
-        }
-        const double factor = value / 100.0;
-        // The same control scales whichever image stamp is active: the
-        // influence mask of the terrain tools (T3.5) or the palette-index
-        // decal image (ImageDecal). Both are recomputed from the un-scaled
-        // original, so repeated changes never accumulate blur.
-        if (brushTool_->params().effect == MapEditor::BrushEffect::ImageDecal) {
-            if (!decalOriginal_.empty()) {
-                brushTool_->setDecalImage(
-                    MapEditor::ImageDecal::scaleNearest(decalOriginal_, factor));
-            }
-        } else if (!brushMaskOriginal_.empty()) {
-            brushTool_->setImageMask(scaleBrushMask(brushMaskOriginal_, factor));
-        }
-        syncBrushControls();
-    });
-    bar->addWidget(new QLabel(tr("Mask:"), bar));
-    bar->addWidget(brushMaskScaleSpin_);
-
-    syncBrushControls();
-    syncColorControls();
-}
-
-void MainWindow::syncBrushControls()
-{
-    const MapEditor::BrushParams params = brushTool_->params();
-
-    // T4.2 — brush type buttons: the exclusive action group only auto-checks
-    // user-triggered actions, so every programmatic effect change (eyedropper
-    // pick, Eyedropper/Brush mode switch, ...) mirrors into the buttons here.
-    const auto syncType = [params](QAction *action, bool active) {
-        if (action) {
-            action->setChecked(active);
-        }
-    };
-    syncType(actBrushRaise_, params.effect == MapEditor::BrushEffect::ChangeHeight
-                                 && params.direction > 0);
-    syncType(actBrushLower_, params.effect == MapEditor::BrushEffect::ChangeHeight
-                                 && params.direction < 0);
-    syncType(actBrushLevelZP_, params.effect == MapEditor::BrushEffect::Align4ZP);
-    syncType(actBrushLevelHeight_,
-             params.effect == MapEditor::BrushEffect::AlignVariableH);
-    syncType(actBrushColor_, params.effect == MapEditor::BrushEffect::SetColor);
-    syncType(actBrushImageDecal_,
-             params.effect == MapEditor::BrushEffect::ImageDecal);
-    syncType(actBrushPickColor_,
-             params.effect == MapEditor::BrushEffect::PickColor);
-    syncType(actBrushSoot_, params.effect == MapEditor::BrushEffect::PlotSoot);
-    syncType(actBrushVeryLightDam_,
-             params.effect == MapEditor::BrushEffect::VeryLightDam);
-    syncType(actBrushScript_, params.effect == MapEditor::BrushEffect::Script);
-    syncType(actBrushSmooth_, params.effect == MapEditor::BrushEffect::Smooth);
-    syncType(actBrushFlatten_, params.effect == MapEditor::BrushEffect::Flatten);
-    syncType(actBrushTricubic_,
-             params.effect == MapEditor::BrushEffect::Tricubic);
-    syncType(actBrushInflate_,
-             params.effect == MapEditor::BrushEffect::Inflate);
-    syncType(actBrushDeflate_,
-             params.effect == MapEditor::BrushEffect::Deflate);
-    syncType(actBrushGaussianBlur_,
-             params.effect == MapEditor::BrushEffect::GaussianBlur);
-    syncType(actBrush3DCone_,
-             params.shape3d == MapEditor::Shape3DKind::Cone);
-    syncType(actBrush3DPyramid_,
-             params.shape3d == MapEditor::Shape3DKind::Pyramid);
-    syncType(actBrush3DTruncCone_,
-             params.shape3d == MapEditor::Shape3DKind::TruncatedCone);
-    syncType(actBrush3DTruncPyramid_,
-             params.shape3d == MapEditor::Shape3DKind::TruncatedPyramid);
-    syncType(actBrush3DTorus_, params.shape3d == MapEditor::Shape3DKind::Torus);
-    syncType(actBrush3DEllipsoid_,
-             params.shape3d == MapEditor::Shape3DKind::HalfEllipsoid);
-    if (actModelBrush_) {
-        actModelBrush_->setChecked(params.modelBrush);
-    }
-    if (actModelPlace_) {
-        actModelPlace_->setChecked(params.modelMode == 0);
-    }
-    if (actModelAdd_) {
-        actModelAdd_->setChecked(params.modelMode == 1);
-    }
-    if (actModelSubtract_) {
-        actModelSubtract_->setChecked(params.modelMode == 2);
-    }
-
-    // 3D shape settings mirror the tool.
-    const auto syncSpin = [](QSpinBox *spin, int shown) {
-        if (spin && spin->value() != shown) {
-            spin->blockSignals(true);
-            spin->setValue(shown);
-            spin->blockSignals(false);
-        }
-    };
-    syncSpin(shapeHeightSpin_, params.shapeHeight);
-    syncSpin(shapeTopOffsetXSpin_, qRound(params.shapeTopOffsetX));
-    syncSpin(shapeTopOffsetYSpin_, qRound(params.shapeTopOffsetY));
-    syncSpin(shapeTopRadiusSpin_, qRound(params.shapeTopRadius));
-    syncSpin(shapeTopSideSpin_, qRound(params.shapeTopSide));
-    // Model brush settings mirror the tool.
-    syncSpin(modelHeightSpin_, params.modelHeight);
-    const auto syncDoubleSpin = [](QDoubleSpinBox *spin, double shown) {
-        if (spin && std::abs(spin->value() - shown) > 1e-9) {
-            spin->blockSignals(true);
-            spin->setValue(shown);
-            spin->blockSignals(false);
-        }
-    };
-    syncDoubleSpin(modelScaleXSpin_, params.modelScaleX);
-    syncDoubleSpin(modelScaleYSpin_, params.modelScaleY);
-
-    // Blur radius mirrors the tool; its maximum follows the stamp radius
-    // (it must stay strictly smaller).
-    if (blurRadiusSpin_) {
-        const int maxBlur =
-            MapEditor::BrushTool::clampBlurRadius(INT_MAX, params.radius);
-        blurRadiusSpin_->setMaximum(maxBlur);
-        if (blurRadiusSpin_->value() != params.blurRadius) {
-            blurRadiusSpin_->blockSignals(true);
-            blurRadiusSpin_->setValue(params.blurRadius);
-            blurRadiusSpin_->blockSignals(false);
-        }
-    }
-
-    // Sculpting fraction spinbox mirrors the tool (shared by both types).
-    if (sculptEffectSpin_) {
-        const double shown = MapEditor::BrushTool::clampSculptEffect(
-            params.sculptEffect);
-        if (std::abs(sculptEffectSpin_->value() - shown) > 1e-9) {
-            sculptEffectSpin_->blockSignals(true);
-            sculptEffectSpin_->setValue(shown);
-            sculptEffectSpin_->blockSignals(false);
-        }
-    }
-
-    // Height-gate modifiers: mirror the condition into the checkable actions
-    // (the exclusive group only auto-checks user-triggered actions) and the
-    // comparison height into the toolbar + menu spinboxes.
-    if (actGateAbove_) {
-        actGateAbove_->setChecked(params.heightGate ==
-                                  MapEditor::BrushHeightGate::Above);
-    }
-    if (actGateBelow_) {
-        actGateBelow_->setChecked(params.heightGate ==
-                                  MapEditor::BrushHeightGate::Below);
-    }
-    for (QSpinBox *spin : {gateHeightSpin_, gateHeightMenuSpin_}) {
-        if (spin && spin->value() != params.gateHeight) {
-            spin->blockSignals(true);
-            spin->setValue(params.gateHeight);
-            spin->blockSignals(false);
-        }
-    }
-
-    if (brushLevelSpin_) {
-        // One height control for the height tools: the raise/lower step for
-        // ChangeHeight, the target height for AlignVariableH (and the value
-        // getCurrentHeight() reports for the scripted brush; every other
-        // type does not consume it — the value display keeps the last
-        // choice of the height tools).
-        const bool showsTarget =
-            params.effect == MapEditor::BrushEffect::AlignVariableH ||
-            params.effect == MapEditor::BrushEffect::Script;
-        const int shown = showsTarget ? params.heightLevel : params.strength;
-        brushLevelSpin_->setToolTip(
-            params.effect == MapEditor::BrushEffect::Script
-                ? tr("Height value the scripted brush script reads through "
-                     "getCurrentHeight() (whole voxels; 1 voxel = 1/32 m).")
-                : showsTarget
-                    ? tr("Target height of the \"Level to Height\" brush "
-                         "(whole voxels; 1 voxel = 1/32 m).")
-                    : tr("Height change per stamp of the Raise/Lower Terrain "
-                         "brush, at full mask influence (whole voxels; "
-                         "1 voxel = 1/32 m)."));
-        if (brushLevelSpin_->value() != shown) {
-            brushLevelSpin_->blockSignals(true);
-            brushLevelSpin_->setValue(shown);
-            brushLevelSpin_->blockSignals(false);
-        }
-    }
-
-    // The brush mode buttons are mirrored too: some brush types force a layer
-    // (the zeroplast brushes and the ImageDecal decal are Dam-only), so a
-    // programmatic mode change has to reach the exclusive group.
-    if (actBrushGeo_) {
-        actBrushGeo_->setChecked(params.mode == MapEditor::BrushMode::Geo);
-    }
-    if (actBrushDam_) {
-        actBrushDam_->setChecked(params.mode == MapEditor::BrushMode::Dam);
-    }
-
-    // T3.1 — the stamp form drives the cursor preview silhouette; T3.5 — a
-    // loaded image mask replaces the shapes (no shape button is checked
-    // then); ImageDecal has its own rectangular geometry; T4.2 — the
-    // eyedropper is a point operation, the radius then does not matter.
-    if (brushRadiusSpin_) {
-        if (brushRadiusSpin_->value() != params.radius) {
-            brushRadiusSpin_->blockSignals(true);
-            brushRadiusSpin_->setValue(params.radius);
-            brushRadiusSpin_->blockSignals(false);
-        }
-    }
-
-    // Thickness: only enabled for the unfilled shapes; the range is the stamp's
-    // own extent (2*radius+1 cells) so a thicker band never leaves the stamp.
-    // Internal 0 = "auto" (full stamp); UI maps 0 to 1 for outlines and to
-    // maxThickness for the Line shape.
-    const bool thicknessEnabled =
-        MapEditor::BrushMasks::isUnfilledShape(params.shape) &&
-        !params.useImageMask &&
-        params.effect != MapEditor::BrushEffect::ImageDecal &&
-        params.effect != MapEditor::BrushEffect::PickColor;
-    if (brushThicknessSpin_) {
-        const int maxThick = MapEditor::BrushTool::maxThickness(params.radius);
-        brushThicknessSpin_->setRange(1, maxThick);
-        brushThicknessSpin_->setEnabled(thicknessEnabled);
-        // Map the internal 0 ("auto") to the shape's natural default.
-        int shownThick = params.thickness;
-        if (shownThick <= 0) {
-            shownThick = params.shape == MapEditor::BrushShape::Line ? maxThick : 1;
-        }
-        shownThick = std::clamp(shownThick, 1, maxThick);
-        if (brushThicknessSpin_->value() != shownThick) {
-            brushThicknessSpin_->blockSignals(true);
-            brushThicknessSpin_->setValue(shownThick);
-            brushThicknessSpin_->blockSignals(false);
-        }
-    }
-    const bool imageMaskActive = params.useImageMask && brushTool_->hasImageMask();
-    const bool decalActive = params.effect == MapEditor::BrushEffect::ImageDecal &&
-                             brushTool_->hasDecalImage();
-    const bool shape3dActive = params.shape3d != MapEditor::Shape3DKind::None;
-    const bool modelStampActive = params.modelBrush;
-    if (actShapeCircle_) actShapeCircle_->setChecked(!imageMaskActive && !decalActive &&
-        !shape3dActive && !modelStampActive && params.shape == MapEditor::BrushShape::FilledCircle);
-    if (actShapeSquare_) actShapeSquare_->setChecked(!imageMaskActive && !decalActive &&
-        !shape3dActive && !modelStampActive && params.shape == MapEditor::BrushShape::FilledSquare);
-    if (actShapeCircleOutline_) actShapeCircleOutline_->setChecked(!imageMaskActive && !decalActive &&
-        !shape3dActive && !modelStampActive && params.shape == MapEditor::BrushShape::CircleOutline);
-    if (actShapeSquareOutline_) actShapeSquareOutline_->setChecked(!imageMaskActive && !decalActive &&
-        !shape3dActive && !modelStampActive && params.shape == MapEditor::BrushShape::SquareOutline);
-    if (actShapePolygon_) actShapePolygon_->setChecked(!imageMaskActive && !decalActive &&
-        !shape3dActive && !modelStampActive && params.shape == MapEditor::BrushShape::FilledPolygon);
-    if (actShapePolygonOutline_) actShapePolygonOutline_->setChecked(!imageMaskActive && !decalActive &&
-        !shape3dActive && !modelStampActive && params.shape == MapEditor::BrushShape::PolygonOutline);
-    if (actShapeLine_) actShapeLine_->setChecked(!imageMaskActive && !decalActive &&
-        !shape3dActive && !modelStampActive && params.shape == MapEditor::BrushShape::Line);
-
-    // Regular-polygon params mirror the tool (the shape buttons' exclusive
-    // group only carries the shape itself).
-    if (polygonSidesSpin_ && polygonSidesSpin_->value() != params.polygonSides) {
-        polygonSidesSpin_->blockSignals(true);
-        polygonSidesSpin_->setValue(params.polygonSides);
-        polygonSidesSpin_->blockSignals(false);
-    }
-    if (polygonAngleSpin_) {
-        const double shownAngle =
-            std::round(MapEditor::BrushTool::clampPolygonAngleDeg(
-                           params.polygonAngleDeg) *
-                       10.0) /
-            10.0;
-        if (std::abs(polygonAngleSpin_->value() - shownAngle) > 1e-9) {
-            polygonAngleSpin_->blockSignals(true);
-            polygonAngleSpin_->setValue(shownAngle);
-            polygonAngleSpin_->blockSignals(false);
-        }
-    }
-
-    // T3.3/T4.2 — the color index spinbox paints (SetColor) and displays the
-    // last sampled pixel (PickColor).
-    if (brushColorIndexSpin_) {
-        if (brushColorIndexSpin_->value() != params.colorIndex) {
-            brushColorIndexSpin_->blockSignals(true);
-            brushColorIndexSpin_->setValue(params.colorIndex);
-            brushColorIndexSpin_->blockSignals(false);
-        }
-    }
-
-    // Mirror the tool into the viewport cursor preview: the square silhouette
-    // for the square forms and for the image mask (a rectangle), the circle
-    // otherwise; the radius is the mask half-size for the image mask. The
-    // preview only follows the brush — the View/Eyedropper modes hide it in
-    // the viewport (drawBrushPreview) anyway.
-    if (viewport_) {
-        const bool scriptPreview = !imageMaskActive && !decalActive &&
-            params.effect == MapEditor::BrushEffect::Script;
-        // 3D shapes preview as their BASEMENT (both view modes): the circle
-        // or polygon footprint, the half torus with its inner ring.
-        const bool shape3dPolygon = shape3dActive &&
-            MapEditor::shape3DIsPolygonal(params.shape3d);
-        const bool polygonPreview = !imageMaskActive && !decalActive &&
-            (shape3dPolygon ||
-             params.shape == MapEditor::BrushShape::FilledPolygon ||
-             params.shape == MapEditor::BrushShape::PolygonOutline);
-        const bool squarePreview = !shape3dActive &&
-            (imageMaskActive || decalActive ||
-             params.shape == MapEditor::BrushShape::FilledSquare ||
-             params.shape == MapEditor::BrushShape::SquareOutline);
-        int previewRadius = params.radius;
-        if (imageMaskActive) {
-            previewRadius = std::max(brushTool_->imageMask().sx,
-                                     brushTool_->imageMask().sy) / 2;
-        } else if (decalActive) {
-            previewRadius = std::max(brushTool_->decalImage().width,
-                                     brushTool_->decalImage().height) / 2;
-        }
-        // Inner ring of the band for the outline shapes; 0 = no inner ring.
-        // thickness 0 ("auto") → the original one-cell ring, so no inner ring;
-        // the Line shape's stroke is centred on the path, not a concentric
-        // band, so its preview keeps the outer footprint only. The polygon
-        // inner contour is the same polygon at the reduced radius — the
-        // polygon band is distance-based, so that is the closest simple
-        // inset the preview can draw. The half torus draws the ring's inner
-        // circle as its basement hole.
-        int previewInner = 0;
-        if (!imageMaskActive && !decalActive && params.thickness > 0 &&
-            (params.shape == MapEditor::BrushShape::CircleOutline ||
-             params.shape == MapEditor::BrushShape::SquareOutline ||
-             params.shape == MapEditor::BrushShape::PolygonOutline)) {
-            previewInner = std::max(0, params.radius - params.thickness + 1);
-        }
-        if (shape3dActive && params.shape3d == MapEditor::Shape3DKind::Torus &&
-            params.shapeTopRadius > 0) {
-            previewInner = qRound(params.shapeTopRadius);
-        }
-        // The model brush previews its placement RECTANGLE (asymmetric half
-        // extents in cells); 0/0 hands the preview back to the shapes.
-        int previewRectX = 0;
-        int previewRectY = 0;
-        if (params.modelBrush && brushTool_->hasModelBrushData()) {
-            const MapEditor::ModelBrush::ModelRaster& raster =
-                brushTool_->modelRaster();
-            previewRectX = std::max(
-                1, static_cast<int>(
-                       std::lround(raster.width * params.modelScaleX))) / 2;
-            previewRectY = std::max(
-                1, static_cast<int>(
-                       std::lround(raster.height * params.modelScaleY))) / 2;
-        }
-        viewport_->setBrushPreview(
-            scriptPreview
-                ? (scriptStampShape_ == MapEditor::ScriptStampShape::Square
-                       ? MapEditor::BrushPreviewShape::Square
-                       : MapEditor::BrushPreviewShape::Circle)
-            : (params.modelBrush && brushTool_->hasModelBrushData())
-                    ? MapEditor::BrushPreviewShape::Square
-            : polygonPreview ? MapEditor::BrushPreviewShape::Polygon
-            : squarePreview ? MapEditor::BrushPreviewShape::Square
-                            : MapEditor::BrushPreviewShape::Circle,
-            previewRadius, previewInner);
-        viewport_->setBrushPreviewPolygon(params.polygonSides,
-                                          params.polygonAngleDeg);
-        viewport_->setBrushPreviewRect(previewRectX, previewRectY);
-    }
-
-    // Enabled/disabled states depend on the effect AND on the session state
-    // (a world must be loaded) — updateActionStates() is the single source
-    // of truth for both.
-    updateActionStates();
-
-    // The palette panel highlight follows the brush: the entry the brush
-    // paints with, in the grid of the brush's current layer. (selectIndex
-    // only restyles swatches — no feedback loop into the brush.)
-    if (palettePanel_) {
-        palettePanel_->selectIndex(
-            params.colorIndex, params.mode == MapEditor::BrushMode::Dam);
-    }
-
-    syncColorControls();
-}
-
-void MainWindow::syncColorControls()
-{
-    if (!brushTool_ || !brushColorIndexSpin_) {
-        return;
-    }
-
-    // Build the color swatch from the palette via the session helper.
-    // The colorIndex is a SurBuf value: it indexes the palette of the
-    // brush's current layer (T4.1 model, docs/architecture.md §5.13).
-    if (!session_ || !session_->isWorldLoaded()) {
-        // No palette to resolve the index through — drop any color left
-        // over from a previously loaded world instead of keeping it stale.
-        brushColorSwatch_->setStyleSheet(
-            QStringLiteral("QLabel { border: 1px solid #808080; }"));
-        return;
-    }
-    {
-        const int idx = brushColorIndexSpin_->value();
-        const bool dam = brushTool_->params().mode == MapEditor::BrushMode::Dam;
-        const unsigned int rgb =
-            session_->paletteRgb(dam ? MapEditor::EditorSession::PaletteLayer::Dam
-                                     : MapEditor::EditorSession::PaletteLayer::Geo,
-                                 idx);
-        QColor color(static_cast<int>((rgb >> 16) & 0xFF),
-                     static_cast<int>((rgb >> 8) & 0xFF),
-                     static_cast<int>(rgb & 0xFF));
-        if (rgb != 0 || idx == 0) {
-            brushColorSwatch_->setStyleSheet(
-                QStringLiteral("QLabel { border: 1px solid #808080; "
-                               "background-color: %1; }")
-                    .arg(color.name()));
-        }
-    }
 }
 
 void MainWindow::refreshPaletteRenderers()
@@ -3981,7 +1469,7 @@ void MainWindow::onActionSelectGameDir()
 
     gameDirMgr_->saveGameDir(dir);
     // The nature model list comes from the game folder — rescan on switch.
-    natureModelsScanned_ = false;
+    battleMaps_->invalidateNatureModels();
     // The session unloaded the world when the directory switched — drop the
     // viewport raster binding and the minimap image with it.
     onWorldUnload();
@@ -4211,240 +1699,33 @@ void MainWindow::onActionWorldParams()
 }
 
 // ---------------------------------------------------------------------------
-// T6 — image import/export.
+// T6 — image import/export: thin wrappers over ImageIoController (the flows
+// moved there — docs/architecture.md §5.37).
 // ---------------------------------------------------------------------------
 
 void MainWindow::onActionImportMapImage()
 {
-    if (!session_->isWorldLoaded()) {
-        return;
-    }
-    const QString path = QFileDialog::getOpenFileName(
-        this, tr("Import Image onto Map"), QString(),
-        tr("Images (*.png *.jpg *.jpeg *.bmp *.tga);;All files (*)"));
-    if (path.isEmpty()) {
-        return;
-    }
-
-    // Options: which layers take the paint.
-    QDialog optionsDialog(this);
-    optionsDialog.setWindowTitle(tr("Import Options"));
-    auto *form = new QFormLayout(&optionsDialog);
-    auto *geoBox = new QCheckBox(tr("Paint geo cells (no dam)"), &optionsDialog);
-    auto *damBox = new QCheckBox(tr("Paint dam cells"), &optionsDialog);
-    geoBox->setChecked(true);
-    damBox->setChecked(true);
-    form->addRow(geoBox);
-    form->addRow(damBox);
-    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok |
-                                         QDialogButtonBox::Cancel,
-                                         &optionsDialog);
-    connect(buttons, &QDialogButtonBox::accepted, &optionsDialog, &QDialog::accept);
-    connect(buttons, &QDialogButtonBox::rejected, &optionsDialog, &QDialog::reject);
-    form->addRow(buttons);
-    if (optionsDialog.exec() != QDialog::Accepted) {
-        return;
-    }
-    MapEditor::EditorSession::SurfaceImportOptions options;
-    options.geoCells = geoBox->isChecked();
-    options.damCells = damBox->isChecked();
-    if (!options.geoCells && !options.damCells) {
-        return;
-    }
-
-    bool ok = false;
-    // Indexed TGA: the indices go into SurBuf as-is (any size — the core
-    // samples nearest). Everything else: RGB -> nearest palette entry.
-    if (path.endsWith(QStringLiteral(".tga"), Qt::CaseInsensitive)) {
-        unsigned width = 0;
-        unsigned height = 0;
-        std::vector<unsigned char> indices;
-        std::vector<unsigned char> palette;
-        if (MapEditor::WorldImages::readIndexedTga(
-                path.toStdWString(), width, height, indices, palette)) {
-            ok = session_->importSurfaceImageIndexed(width, height, indices,
-                                                     options);
-        }
-    }
-    if (!ok) {
-        QImage image(path);
-        if (image.isNull()) {
-            QMessageBox::warning(this, tr("Import Image onto Map"),
-                                 tr("Cannot read the image file."));
-            return;
-        }
-        image = image.convertToFormat(QImage::Format_RGB888)
-                    .scaled(static_cast<int>(session_->mapWidth()),
-                            static_cast<int>(session_->mapHeight()),
-                            Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
-        const int w = image.width();
-        const int h = image.height();
-        std::vector<unsigned char> bgr(static_cast<size_t>(w) * h * 3);
-        for (int y = 0; y < h; ++y) {
-            const uchar *line = image.constScanLine(y);
-            for (int x = 0; x < w; ++x) {
-                // RGB888 -> BGR (the game/TGA byte order).
-                bgr[(static_cast<size_t>(y) * w + x) * 3 + 0] = line[x * 3 + 2];
-                bgr[(static_cast<size_t>(y) * w + x) * 3 + 1] = line[x * 3 + 1];
-                bgr[(static_cast<size_t>(y) * w + x) * 3 + 2] = line[x * 3 + 0];
-            }
-        }
-        ok = session_->importSurfaceImageRgb(static_cast<unsigned>(w),
-                                             static_cast<unsigned>(h), bgr,
-                                             options);
-    }
-    if (!ok) {
-        QMessageBox::warning(this, tr("Import Image onto Map"),
-                             tr("The image could not be applied to the map."));
-        return;
-    }
-    if (viewport_) {
-        viewport_->setNeeds3DRedraw();
-        viewport_->update();
-    }
-    updateStatusBar();
+    imageIO_->importMapImage();
 }
 
 void MainWindow::onActionImportUpTga()
 {
-    if (!session_->isWorldLoaded()) {
-        return;
-    }
-    const QString path = QFileDialog::getOpenFileName(
-        this, tr("Import up.tga (Cover Image)"), QString(),
-        tr("Images (*.png *.jpg *.jpeg *.bmp *.tga);;All files (*)"));
-    if (path.isEmpty()) {
-        return;
-    }
-    QImage image(path);
-    if (image.isNull()) {
-        QMessageBox::warning(this, tr("Import up.tga"),
-                             tr("Cannot read the image file."));
-        return;
-    }
-    image = image.convertToFormat(QImage::Format_RGB888)
-                .scaled(static_cast<int>(MapEditor::WorldImages::kUpTgaSize),
-                        static_cast<int>(MapEditor::WorldImages::kUpTgaSize),
-                        Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
-    std::vector<unsigned char> bgr(static_cast<size_t>(
-        MapEditor::WorldImages::kUpTgaSize *
-        MapEditor::WorldImages::kUpTgaSize * 3));
-    for (int y = 0; y < image.height(); ++y) {
-        const uchar *line = image.constScanLine(y);
-        for (int x = 0; x < image.width(); ++x) {
-            bgr[(static_cast<size_t>(y) * image.width() + x) * 3 + 0] =
-                line[x * 3 + 2];
-            bgr[(static_cast<size_t>(y) * image.width() + x) * 3 + 1] =
-                line[x * 3 + 1];
-            bgr[(static_cast<size_t>(y) * image.width() + x) * 3 + 2] =
-                line[x * 3 + 0];
-        }
-    }
-    const auto files = session_->currentWorldFiles();
-    if (!files || !MapEditor::WorldImages::writeUpTga(files->worldDir(), bgr)) {
-        QMessageBox::warning(this, tr("Import up.tga"),
-                             tr("Failed to write up.tga."));
-        return;
-    }
-    statusBar()->showMessage(tr("up.tga imported (512x512, 24-bit)."), 5000);
+    imageIO_->importUpTga();
 }
 
 void MainWindow::onActionImportLeveledTexture()
 {
-    if (!session_->isWorldLoaded()) {
-        return;
-    }
-    const QString path = QFileDialog::getOpenFileName(
-        this, tr("Import leveledSurfaceTexture.tga"), QString(),
-        tr("TGA images (*.tga);;All files (*)"));
-    if (path.isEmpty()) {
-        return;
-    }
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        QMessageBox::warning(this, tr("Import leveledSurfaceTexture"),
-                             tr("Cannot read the file."));
-        return;
-    }
-    const QByteArray bytes = file.readAll();
-    const auto files = session_->currentWorldFiles();
-    if (!files) {
-        return;
-    }
-    const std::vector<std::string> errors =
-        MapEditor::WorldFiles::validateLeveledTexture(
-            std::vector<unsigned char>(bytes.constData(),
-                                       bytes.constData() + bytes.size()),
-            static_cast<int>(session_->mapWidth()),
-            static_cast<int>(session_->mapHeight()));
-    if (!errors.empty()) {
-        QString message = tr("The texture is not valid:\n");
-        for (const std::string &error : errors) {
-            message += QStringLiteral("\n- ") + QString::fromStdString(error);
-        }
-        QMessageBox::warning(this, tr("Import leveledSurfaceTexture"), message);
-        return;
-    }
-    if (!files->writeLeveledTexture(
-            std::vector<unsigned char>(bytes.constData(),
-                                       bytes.constData() + bytes.size()),
-            static_cast<int>(session_->mapWidth()),
-            static_cast<int>(session_->mapHeight()))) {
-        QMessageBox::warning(this, tr("Import leveledSurfaceTexture"),
-                             tr("Failed to write the texture."));
-        return;
-    }
-    // Reload the texture into the running world so the viewport shows it.
-    if (session_->reloadLeveledTextureLive()) {
-        statusBar()->showMessage(
-            tr("leveledSurfaceTexture.tga imported and reloaded."), 5000);
-    } else {
-        statusBar()->showMessage(
-            tr("leveledSurfaceTexture.tga imported (reload the world to see "
-               "it)."), 5000);
-    }
-    if (viewport_) {
-        viewport_->setNeeds3DRedraw();
-        viewport_->update();
-    }
+    imageIO_->importLeveledTexture();
 }
 
 void MainWindow::onActionExportHeightmap()
 {
-    if (!session_->isWorldLoaded()) {
-        return;
-    }
-    const QString path = QFileDialog::getSaveFileName(
-        this, tr("Export Heightmap"), QStringLiteral("heightmap.tga"),
-        tr("TGA images (*.tga)"));
-    if (path.isEmpty()) {
-        return;
-    }
-    if (MapEditor::WorldImages::exportHeightmapTga(path.toStdWString())) {
-        statusBar()->showMessage(tr("Heightmap exported to %1.").arg(path), 5000);
-    } else {
-        QMessageBox::warning(this, tr("Export Heightmap"),
-                             tr("Failed to write the heightmap."));
-    }
+    imageIO_->exportHeightmap();
 }
 
 void MainWindow::onActionExportTopView()
 {
-    if (!session_->isWorldLoaded()) {
-        return;
-    }
-    const QString path = QFileDialog::getSaveFileName(
-        this, tr("Export Top View"), QStringLiteral("topview.tga"),
-        tr("TGA images (*.tga)"));
-    if (path.isEmpty()) {
-        return;
-    }
-    if (session_->exportTopView(path.toStdString())) {
-        statusBar()->showMessage(tr("Top view exported to %1.").arg(path), 5000);
-    } else {
-        QMessageBox::warning(this, tr("Export Top View"),
-                             tr("Failed to write the top view."));
-    }
+    imageIO_->exportTopView();
 }
 
 // ---------------------------------------------------------------------------
@@ -4511,6 +1792,41 @@ void MainWindow::showValidationReport(const QString &title,
     }
 }
 
+// ---------------------------------------------------------------------------
+// T8 — battle maps (.spg): thin wrappers over BattleMapController (the whole
+// domain moved there — docs/architecture.md §5.35).
+// ---------------------------------------------------------------------------
+
+void MainWindow::onActionOpenBattleMap()
+{
+    battleMaps_->openBattleMap();
+}
+
+void MainWindow::onActionSaveBattleMap()
+{
+    battleMaps_->saveBattleMap();
+}
+
+void MainWindow::onActionSaveBattleMapAs()
+{
+    battleMaps_->saveBattleMapAs();
+}
+
+void MainWindow::onActionNewBattleMap()
+{
+    battleMaps_->newBattleMap();
+}
+
+void MainWindow::onActionSaveDiff()
+{
+    battleMaps_->saveDiffData();
+}
+
+void MainWindow::onActionLoadDiff()
+{
+    battleMaps_->loadDiffData();
+}
+
 void MainWindow::onActionValidateWorld()
 {
     const auto files = session_ ? session_->currentWorldFiles() : std::nullopt;
@@ -4532,23 +1848,23 @@ void MainWindow::onActionValidateWorld()
 
 void MainWindow::onActionValidateBattleMap()
 {
-    if (!battleMap_.loaded() || !session_ || !session_->hasGameDir()) {
+    if (!battleMaps_->isLoaded() || !session_ || !session_->hasGameDir()) {
         return;
     }
     const fs::path worldsRoot =
         fs::u8path(session_->getGameDir()) / "RESOURCE" / "Worlds";
     showValidationReport(
         tr("Battle Map Validation"),
-        MapEditor::validateBattleMap(battleMap_, worldsRoot));
+        MapEditor::validateBattleMap(battleMaps_->spgFile(), worldsRoot));
 }
 
 void MainWindow::onActionAutofixShuffling()
 {
-    if (!battleMap_.loaded()) {
+    if (!battleMaps_->isLoaded()) {
         return;
     }
-    if (MapEditor::autofixShufflingIndices(battleMap_)) {
-        refreshBattleMapUI();
+    if (MapEditor::autofixShufflingIndices(battleMaps_->spgFile())) {
+        battleMaps_->refreshUI();
         statusBar()->showMessage(
             tr("playersShufflingIndices normalized."), 5000);
     }
@@ -4556,12 +1872,12 @@ void MainWindow::onActionAutofixShuffling()
 
 void MainWindow::onActionAutofixZeroLayerHeight()
 {
-    if (!battleMap_.loaded() || !session_->isWorldLoaded()) {
+    if (!battleMaps_->isLoaded() || !session_->isWorldLoaded()) {
         return;
     }
-    if (MapEditor::autofixZeroLayerHeight(battleMap_,
+    if (MapEditor::autofixZeroLayerHeight(battleMaps_->spgFile(),
                                           session_->zeroLayerHeight())) {
-        refreshBattleMapUI();
+        battleMaps_->refreshUI();
         statusBar()->showMessage(
             tr("zeroLayerHeight set to the world hZeroPlast (%1).")
                 .arg(session_->zeroLayerHeight()),
@@ -4671,12 +1987,11 @@ void MainWindow::onActionRunScript()
 void MainWindow::onActionUndo()
 {
     bool undone = session_->undo();
-    if (!undone && battleMap_.canUndoPlayerMove() &&
-        battleMap_.undoPlayerMove()) {
-        // A spawn relocation (Place Spawn mode): the panel list and the
-        // viewport overlay read the anchors — refresh both.
-        battleMapPanel_->refresh();
-        syncSpawnOverlay();
+    if (!undone && battleMaps_->canUndoPlayerMove() &&
+        battleMaps_->undoPlayerMove()) {
+        // A spawn relocation (Place Spawn mode) — BattleMapController::
+        // undoPlayerMove() already refreshed the panel list and the
+        // viewport overlay (they read the anchors).
         undone = true;
     }
     if (undone) {
@@ -4694,10 +2009,8 @@ void MainWindow::onActionUndo()
 void MainWindow::onActionRedo()
 {
     bool redone = session_->redo();
-    if (!redone && battleMap_.canRedoPlayerMove() &&
-        battleMap_.redoPlayerMove()) {
-        battleMapPanel_->refresh();
-        syncSpawnOverlay();
+    if (!redone && battleMaps_->canRedoPlayerMove() &&
+        battleMaps_->redoPlayerMove()) {
         redone = true;
     }
     if (redone) {
@@ -4717,186 +2030,6 @@ void MainWindow::onActionClearUndoHistory()
     }
     session_->clearUndoHistory();
     updateStatusBar();
-}
-
-void MainWindow::onLoadBrushImage()
-{
-    const QString filter = tr("Images (*.png *.tga *.bmp *.jpg *.jpeg);;All Files (*)");
-    const QString filePath = QFileDialog::getOpenFileName(
-        this, tr("Load Brush Image"), QString(), filter);
-    if (filePath.isEmpty()) {
-        return;
-    }
-
-    // Load via QImageReader for explicit format control.
-    QImageReader reader(filePath);
-    reader.setAutoTransform(true);
-    const QImage img = reader.read();
-    if (img.isNull()) {
-        QMessageBox::warning(this, tr("Image Load Failed"),
-            tr("Cannot load image '%1':\n%2")
-                .arg(filePath, reader.errorString()));
-        return;
-    }
-
-    // Convert to brush mask.
-    const MapEditor::BrushMask mask = imageToBrushMask(img);
-    if (mask.empty()) {
-        QMessageBox::warning(this, tr("Empty Image"),
-            tr("The loaded image produced an empty brush mask."));
-        return;
-    }
-
-    // Keep the un-scaled original: the scale control recomputes the mask
-    // from it, so repeated scale changes never blur the source.
-    brushMaskOriginal_ = mask;
-    brushTool_->setImageMask(mask);
-    if (brushMaskScaleSpin_) {
-        brushMaskScaleSpin_->blockSignals(true);
-        brushMaskScaleSpin_->setValue(100);
-        brushMaskScaleSpin_->blockSignals(false);
-    }
-
-    // The image becomes the stamp mask of the current brush type (T3.5
-    // rework): raise/lower/level/... keep working, only the stamp geometry
-    // switches from the shape to the image. The eyedropper is a point
-    // operation — fall back to a raise so the mask has an immediate effect,
-    // and make sure the editor mode actually paints (a Load Image from the
-    // View mode would otherwise do nothing on click).
-    MapEditor::BrushParams params = brushTool_->params();
-    params.useImageMask = true;
-    params.shape3d = MapEditor::Shape3DKind::None;
-    params.modelBrush = false;
-    if (params.effect == MapEditor::BrushEffect::PickColor ||
-        params.effect == MapEditor::BrushEffect::None) {
-        params.effect = MapEditor::BrushEffect::ChangeHeight;
-        params.direction = 1;
-    }
-    brushTool_->setParams(params);
-    if (viewport_) {
-        viewport_->setEditorMode(MapEditor::ViewportWidget::EditorMode::Brush);
-    }
-    syncBrushControls();
-
-    statusBar()->showMessage(
-        tr("Brush image loaded: %1 (%2x%3)")
-            .arg(QFileInfo(filePath).fileName())
-            .arg(mask.sx)
-            .arg(mask.sy),
-        5000);
-}
-
-void MainWindow::onLoadDecalImage()
-{
-    if (!session_ || !session_->isWorldLoaded() || !brushTool_) {
-        return;
-    }
-
-    const QString filter =
-        tr("Images (*.png *.tga *.bmp);;All Files (*)");
-    const QString filePath = QFileDialog::getOpenFileName(
-        this, tr("Load Image Decal"), QString(), filter);
-    if (filePath.isEmpty()) {
-        return;
-    }
-
-    QImageReader reader(filePath);
-    reader.setAutoTransform(true);
-    const QImage img = reader.read();
-    if (img.isNull()) {
-        QMessageBox::warning(this, tr("Image Load Failed"),
-            tr("Cannot load image '%1':\n%2")
-                .arg(filePath, reader.errorString()));
-        return;
-    }
-
-    // The decal is a brush stamp, not a map import: a huge image would make
-    // one click repaint a large part of the map, so the size is capped.
-    if (img.width() > MapEditor::ImageDecal::kMaxImageSize ||
-        img.height() > MapEditor::ImageDecal::kMaxImageSize) {
-        QMessageBox::warning(this, tr("Image Too Large"),
-            tr("The image is too large (%1x%2 px).\n"
-               "The maximum size of an image is %3 px on each side.")
-                .arg(img.width())
-                .arg(img.height())
-                .arg(MapEditor::ImageDecal::kMaxImageSize));
-        return;
-    }
-
-    // Exact, un-premultiplied RGBA: the conversion matches the colours
-    // against the palette and skips anything that is not fully opaque.
-    const QImage rgbaImage = img.convertToFormat(QImage::Format_ARGB32);
-    const int width = rgbaImage.width();
-    const int height = rgbaImage.height();
-    std::vector<unsigned char> rgba(
-        static_cast<std::size_t>(width) * height * 4, 0);
-    for (int y = 0; y < height; ++y) {
-        const QRgb *line =
-            reinterpret_cast<const QRgb *>(rgbaImage.constScanLine(y));
-        for (int x = 0; x < width; ++x) {
-            const std::size_t base =
-                (static_cast<std::size_t>(y) * width + x) * 4;
-            rgba[base + 0] = static_cast<unsigned char>(qRed(line[x]));
-            rgba[base + 1] = static_cast<unsigned char>(qGreen(line[x]));
-            rgba[base + 2] = static_cast<unsigned char>(qBlue(line[x]));
-            rgba[base + 3] = static_cast<unsigned char>(qAlpha(line[x]));
-        }
-    }
-
-    const std::vector<unsigned char> palette =
-        session_->paletteBytes(MapEditor::EditorSession::PaletteLayer::Dam);
-    const std::vector<unsigned char> usage = session_->damPaletteUsage();
-    const MapEditor::ImageDecal::PrepareResult prepared =
-        MapEditor::ImageDecal::prepare(rgba.data(), width, height,
-                                       palette.data(), usage.data());
-    if (!prepared.ok) {
-        QMessageBox::warning(this, tr("Image Decal"),
-                             QString::fromStdString(prepared.error));
-        return;
-    }
-
-    // Step 5 — the new colours go into the Dam palette and every palette view
-    // (panel, renderer) is refreshed with them.
-    for (const MapEditor::ImageDecal::PaletteWrite &write :
-         prepared.paletteWrites) {
-        session_->setPaletteRgb(MapEditor::EditorSession::PaletteLayer::Dam,
-                                write.index, write.rgb);
-    }
-    session_->applyPalettes();
-    if (palettePanel_) {
-        palettePanel_->refresh();
-    }
-    refreshPaletteRenderers();
-
-    // Step 8 — the decal becomes the stamp of the ImageDecal brush.
-    decalOriginal_ = prepared.image;
-    brushTool_->setDecalImage(prepared.image);
-    if (brushMaskScaleSpin_) {
-        brushMaskScaleSpin_->blockSignals(true);
-        brushMaskScaleSpin_->setValue(100);
-        brushMaskScaleSpin_->blockSignals(false);
-    }
-
-    MapEditor::BrushParams params = brushTool_->params();
-    params.effect = MapEditor::BrushEffect::ImageDecal;
-    params.mode = MapEditor::BrushMode::Dam;
-    params.useImageMask = false;
-    brushTool_->setParams(params);
-    if (viewport_) {
-        viewport_->setEditorMode(MapEditor::ViewportWidget::EditorMode::Brush);
-    }
-    syncBrushControls();
-
-    statusBar()->showMessage(
-        tr("Image decal ready: %1x%2 px, %3 palette colour(s), %4 new, "
-           "%5 free Dam entr(y/ies).")
-            .arg(width)
-            .arg(height)
-            .arg(prepared.resultColors)
-            .arg(prepared.paletteWrites.size())
-            .arg(prepared.unusedDamColors -
-                 static_cast<int>(prepared.paletteWrites.size())),
-        8000);
 }
 
 // ---------------------------------------------------------------------------
@@ -5005,34 +2138,48 @@ void MainWindow::closeEvent(QCloseEvent *event)
 void MainWindow::updateActionStates()
 {
     const bool worldLoaded = session_ != nullptr && session_->isWorldLoaded();
-    if (actSave_) {
-        actSave_->setEnabled(worldLoaded);
-    }
-    if (actSaveAs_) {
-        actSaveAs_->setEnabled(worldLoaded);
-    }
-    if (actWorldParams_) {
-        actWorldParams_->setEnabled(worldLoaded);
-    }
     // T8/T9 — battle map and validation actions: opening a battle map needs
     // a game directory only (its world may be loaded later or not at all);
     // the battle-map tools need a loaded .spg, the world-dependent ones both.
     const bool gameDirSet = session_ != nullptr && session_->hasGameDir();
-    const bool battleMapLoaded = battleMap_.loaded();
-    if (actOpenBattleMap_) {
-        actOpenBattleMap_->setEnabled(gameDirSet);
+    const bool battleMapLoaded = battleMaps_->isLoaded();
+
+    // The bulk of the actions is gated on a single session predicate —
+    // group them into tables instead of an if-chain per action (the
+    // brush-action table lives in the BrushUiController).
+    const auto setEnabled = [](QAction *action, bool enabled) {
+        if (action) {
+            action->setEnabled(enabled);
+        }
+    };
+    for (QAction *action : {actSave_, actSaveAs_, actWorldParams_,
+                            actValidateWorld_, actRegenerateImages_, actRunScript_,
+                            actSaveDiff_, actLoadDiff_,
+                            importMapImageAction_, importUpTgaAction_,
+                            importLeveledAction_, exportHeightmapAction_,
+                            exportTopViewAction_, actClearUndoHistory_}) {
+        setEnabled(action, worldLoaded);
     }
-    if (actSaveBattleMap_) {
-        actSaveBattleMap_->setEnabled(battleMapLoaded &&
-                                      !battleMapPath_.isEmpty());
+    // View actions make sense only when there is something to look at.
+    for (QAction *action : {actZoomToFit_, actView3D_, actDimGeo_,
+                            actFreezeDam_, actRotateLeft_, actRotateRight_,
+                            actTiltUp_, actTiltDown_, actLiftUp_, actLiftDown_,
+                            actZoomIn_, actZoomOut_, actResetView_}) {
+        setEnabled(action, worldLoaded);
     }
-    if (actSaveBattleMapAs_) {
-        actSaveBattleMapAs_->setEnabled(battleMapLoaded);
+    // Battle-map tools need a loaded .spg.
+    for (QAction *action : {actSaveBattleMapAs_, actValidateBattleMap_,
+                            actFixShuffling_}) {
+        setEnabled(action, battleMapLoaded);
     }
-    if (actNewBattleMap_) {
-        // Creating a battle map builds it for the currently loaded world.
-        actNewBattleMap_->setEnabled(gameDirSet && worldLoaded);
-    }
+    setEnabled(actOpenBattleMap_, gameDirSet);
+    // Saving writes to the loaded map's own file — a freshly created map
+    // (new_battle_map) has none until "Save Battle Map As".
+    setEnabled(actSaveBattleMap_, battleMapLoaded &&
+                                      !battleMaps_->path().isEmpty());
+    // Creating a battle map builds it for the currently loaded world.
+    setEnabled(actNewBattleMap_, gameDirSet && worldLoaded);
+    setEnabled(actFixZeroLayer_, battleMapLoaded && worldLoaded);
     // Difference mode (.gmp): the toggle and the gmp save/load need a loaded
     // world; the checked state mirrors the session.
     if (actDiffMode_) {
@@ -5042,12 +2189,6 @@ void MainWindow::updateActionStates()
             actDiffMode_->setChecked(session_->isDiffMode());
             actDiffMode_->blockSignals(false);
         }
-    }
-    if (actSaveDiff_) {
-        actSaveDiff_->setEnabled(worldLoaded);
-    }
-    if (actLoadDiff_) {
-        actLoadDiff_->setEnabled(worldLoaded);
     }
     if (actModePlaceSpawn_) {
         actModePlaceSpawn_->setEnabled(battleMapLoaded);
@@ -5059,53 +2200,15 @@ void MainWindow::updateActionStates()
             viewport_->setEditorMode(MapEditor::ViewportWidget::EditorMode::Brush);
         }
     }
-    if (actValidateBattleMap_) {
-        actValidateBattleMap_->setEnabled(battleMapLoaded);
-    }
-    if (actFixShuffling_) {
-        actFixShuffling_->setEnabled(battleMapLoaded);
-    }
-    if (actValidateWorld_) {
-        actValidateWorld_->setEnabled(worldLoaded);
-    }
-    if (actRegenerateImages_) {
-        actRegenerateImages_->setEnabled(worldLoaded);
-    }
-    if (actRunScript_) {
-        actRunScript_->setEnabled(worldLoaded);
-    }
-    if (actFixZeroLayer_) {
-        actFixZeroLayer_->setEnabled(battleMapLoaded && worldLoaded);
-    }
-    for (QAction *action : {importMapImageAction_, importUpTgaAction_,
-                            importLeveledAction_, exportHeightmapAction_,
-                            exportTopViewAction_}) {
-        if (action) {
-            action->setEnabled(worldLoaded);
-        }
-    }
     if (actUndo_) {
         // Terrain history first, then the battle-map spawn-move history
         // (both are reverted by the same Ctrl+Z).
         actUndo_->setEnabled((worldLoaded && session_->canUndo()) ||
-                             battleMap_.canUndoPlayerMove());
+                             battleMaps_->canUndoPlayerMove());
     }
     if (actRedo_) {
         actRedo_->setEnabled((worldLoaded && session_->canRedo()) ||
-                             battleMap_.canRedoPlayerMove());
-    }
-    if (actClearUndoHistory_) {
-        actClearUndoHistory_->setEnabled(worldLoaded);
-    }
-    // View actions make sense only when there is something to look at.
-    for (QAction *action : {actZoomToFit_, actView3D_, actDimGeo_,
-                            actFreezeDam_, actRotateLeft_,
-                            actRotateRight_, actTiltUp_, actTiltDown_,
-                            actLiftUp_, actLiftDown_, actZoomIn_,
-                            actZoomOut_, actResetView_}) {
-        if (action) {
-            action->setEnabled(worldLoaded);
-        }
+                             battleMaps_->canRedoPlayerMove());
     }
     // The grid cell size drives the grid overlay — needs a world too.
     if (gridStepWSpin_) {
@@ -5116,214 +2219,14 @@ void MainWindow::updateActionStates()
     }
     // T3.1/T4.2 — the editor interaction mode: navigation works everywhere,
     // painting and picking need a world.
-    if (actModeView_) {
-        actModeView_->setEnabled(true);
-    }
-    if (actModeBrush_) {
-        actModeBrush_->setEnabled(worldLoaded);
-    }
-    if (actModeEyedropper_) {
-        actModeEyedropper_->setEnabled(worldLoaded);
-    }
-    // T3.2 — the brush type/mode buttons follow the same rule. The
-    // zeroplast brushes are a Dam-mode tool (the zeroplast belongs to the
-    // dam domain) — not accessible in the Geo mode.
-    const bool damMode = brushTool_ &&
-        brushTool_->params().mode == MapEditor::BrushMode::Dam;
-    for (QAction *action : {actBrushRaise_, actBrushLower_, actBrushLevelZP_,
-                            actBrushLevelHeight_, actBrushColor_,
-                            actBrushImageDecal_,
-                            actBrushPickColor_,
-                            actBrushGeo_, actBrushDam_,
-                            actBrushSoot_, actBrushVeryLightDam_,
-                            actBrushScript_, actBrushScriptEdit_,
-                            actBrushSmooth_, actBrushFlatten_,
-                            actBrushTricubic_, actBrushInflate_,
-                            actBrushDeflate_, actBrushGaussianBlur_,
-                            actLoadBrushImage_,
-                            actShapeCircle_, actShapeSquare_,
-                            actShapeCircleOutline_, actShapeSquareOutline_,
-                            actShapePolygon_, actShapePolygonOutline_,
-                            actShapeLine_}) {
-        if (action) {
-            action->setEnabled(worldLoaded);
-        }
-    }
-    for (QAction *action : {actBrushLevelZP_}) {
-        if (action) {
-            action->setEnabled(worldLoaded && damMode);
-        }
-    }
-    // ImageDecal paints Dam palette indices only; the scripted and the
-    // sculpting brushes operate on the Dam layer: the Geo layer is not
-    // available while any of them is selected (switching to Geo falls back
-    // to a plain raise, see the mode action).
-    const bool decalEffect = brushTool_ &&
-        brushTool_->params().effect == MapEditor::BrushEffect::ImageDecal;
-    const bool scriptEffect = brushTool_ &&
-        brushTool_->params().effect == MapEditor::BrushEffect::Script;
-    const bool sculptEffect = brushTool_ &&
-        (brushTool_->params().effect == MapEditor::BrushEffect::Smooth ||
-         brushTool_->params().effect == MapEditor::BrushEffect::Flatten ||
-         brushTool_->params().effect == MapEditor::BrushEffect::Tricubic ||
-         brushTool_->params().effect == MapEditor::BrushEffect::Inflate ||
-         brushTool_->params().effect == MapEditor::BrushEffect::Deflate ||
-         brushTool_->params().effect == MapEditor::BrushEffect::GaussianBlur);
-    // The 3D shape brushes own the Dam layer like the sculpting types — the
-    // Geo mode button is disabled while a shape is selected.
-    const MapEditor::Shape3DKind activeShape3d =
-        brushTool_ ? brushTool_->params().shape3d
-                   : MapEditor::Shape3DKind::None;
-    const bool shape3dActive = activeShape3d != MapEditor::Shape3DKind::None;
-    const bool modelBrushActive =
-        brushTool_ && brushTool_->params().modelBrush;
-    if (actBrushGeo_) {
-        actBrushGeo_->setEnabled(worldLoaded && !decalEffect && !scriptEffect &&
-                                 !sculptEffect && !shape3dActive &&
-                                 !modelBrushActive);
-    }
-    // The sculpting fraction applies only with a sculpting type selected
-    // (same image/decal/pick exclusions the radius has).
-    if (sculptEffectSpin_) {
-        sculptEffectSpin_->setEnabled(worldLoaded && brushTool_ && sculptEffect &&
-                                      !brushTool_->params().useImageMask &&
-                                      !decalEffect &&
-                                      brushTool_->params().effect !=
-                                          MapEditor::BrushEffect::PickColor);
-    }
-    // The blur radius applies only with the Gaussian-blur brush selected.
-    if (blurRadiusSpin_) {
-        blurRadiusSpin_->setEnabled(worldLoaded && brushTool_ &&
-                                    brushTool_->params().effect ==
-                                        MapEditor::BrushEffect::GaussianBlur);
-    }
-    // The height-gate modifiers are clickable in any mode — enabling one
-    // switches to the Dam layer itself (the gate reads dam heights) — but
-    // the gate height spinboxes apply only while a gate is active.
-    if (actGateAbove_) {
-        actGateAbove_->setEnabled(worldLoaded);
-    }
-    if (actGateBelow_) {
-        actGateBelow_->setEnabled(worldLoaded);
-    }
-    const bool gateActive = brushTool_ &&
-        brushTool_->params().heightGate != MapEditor::BrushHeightGate::None;
-    for (QSpinBox *spin : {gateHeightSpin_, gateHeightMenuSpin_}) {
-        if (spin) {
-            spin->setEnabled(worldLoaded && gateActive);
-        }
-    }
-    // T3.1 — the stamp radius applies to every form except the image stamps
-    // (the brush image and the decal carry their own size) and the
-    // point-operated pick, and only with a loaded world.
-    if (brushRadiusSpin_) {
-        brushRadiusSpin_->setEnabled(
-            worldLoaded && brushTool_ &&
-            !brushTool_->params().useImageMask && !decalEffect &&
-            brushTool_->params().effect != MapEditor::BrushEffect::PickColor);
-    }
-    // The polygon params apply with a polygon shape selected OR with a 3D
-    // polygonal solid (pyramid / truncated pyramid base) — and the same
-    // image/decal/pick exclusions the radius has.
-    if (polygonSidesSpin_ || polygonAngleSpin_) {
-        const bool polygonShape =
-            brushTool_ &&
-            (brushTool_->params().shape == MapEditor::BrushShape::FilledPolygon ||
-             brushTool_->params().shape == MapEditor::BrushShape::PolygonOutline);
-        const bool polygon3d = shape3dActive &&
-            MapEditor::shape3DIsPolygonal(activeShape3d);
-        const bool polygonEnabled =
-            worldLoaded && brushTool_ && (polygonShape || polygon3d) &&
-            !brushTool_->params().useImageMask && !decalEffect &&
-            brushTool_->params().effect != MapEditor::BrushEffect::PickColor;
-        if (polygonSidesSpin_) {
-            polygonSidesSpin_->setEnabled(polygonEnabled);
-        }
-        if (polygonAngleSpin_) {
-            polygonAngleSpin_->setEnabled(polygonEnabled);
-        }
-    }
-    // 3D shape settings apply only while a 3D shape is selected; each field
-    // only with the shapes that consume it (Shape3D.h predicates).
-    if (shapeHeightSpin_) {
-        shapeHeightSpin_->setEnabled(worldLoaded && shape3dActive);
-    }
-    if (shapeTopOffsetXSpin_) {
-        shapeTopOffsetXSpin_->setEnabled(
-            worldLoaded && MapEditor::shape3DHasTopOffset(activeShape3d));
-    }
-    if (shapeTopOffsetYSpin_) {
-        shapeTopOffsetYSpin_->setEnabled(
-            worldLoaded && MapEditor::shape3DHasTopOffset(activeShape3d));
-    }
-    if (shapeTopRadiusSpin_) {
-        shapeTopRadiusSpin_->setEnabled(
-            worldLoaded && MapEditor::shape3DHasTopRadius(activeShape3d));
-    }
-    if (shapeTopSideSpin_) {
-        shapeTopSideSpin_->setEnabled(
-            worldLoaded && MapEditor::shape3DHasTopSide(activeShape3d));
-    }
-    // Model brush: the use-toggle is enabled once a model is imported; the
-    // mode buttons and the scales apply while the brush is active.
-    if (actModelBrush_) {
-        actModelBrush_->setEnabled(brushTool_ &&
-                                   brushTool_->hasModelBrushData());
-    }
-    if (actModelPlace_) {
-        actModelPlace_->setEnabled(worldLoaded && modelBrushActive);
-    }
-    if (actModelAdd_) {
-        actModelAdd_->setEnabled(worldLoaded && modelBrushActive);
-    }
-    if (actModelSubtract_) {
-        actModelSubtract_->setEnabled(worldLoaded && modelBrushActive);
-    }
-    if (modelHeightSpin_) {
-        modelHeightSpin_->setEnabled(worldLoaded && modelBrushActive);
-    }
-    if (modelScaleXSpin_) {
-        modelScaleXSpin_->setEnabled(worldLoaded && modelBrushActive);
-    }
-    if (modelScaleYSpin_) {
-        modelScaleYSpin_->setEnabled(worldLoaded && modelBrushActive);
-    }
-    // T3.5 — the image scale applies to whichever image stamp is active: the
-    // influence mask or the ImageDecal decal.
-    if (brushMaskScaleSpin_) {
-        const bool imageMaskActive = brushTool_ &&
-            brushTool_->params().useImageMask && brushTool_->hasImageMask();
-        const bool decalActive = decalEffect && brushTool_->hasDecalImage();
-        brushMaskScaleSpin_->setEnabled(worldLoaded &&
-                                        (imageMaskActive || decalActive));
-        brushMaskScaleSpin_->setToolTip(
-            decalActive
-                ? tr("Scale of the loaded image decal relative to its original "
-                     "pixel size (the stamp stays centred under the cursor).")
-                : tr("Scale of the loaded brush image relative to its original "
-                     "pixel size (the mask stays centred under the cursor)."));
-    }
-    // T3.3/T4.2 — color spinbox: painting and pick readout.
-    if (brushColorIndexSpin_) {
-        const MapEditor::BrushEffect effect =
-            brushTool_ ? brushTool_->params().effect
-                       : MapEditor::BrushEffect::None;
-        brushColorIndexSpin_->setEnabled(
-            worldLoaded &&
-            (effect == MapEditor::BrushEffect::SetColor ||
-             effect == MapEditor::BrushEffect::PickColor));
-    }
-    // T3.2 — the single height control serves the raise/lower step and the
-    // "Level to Height" target.
-    if (brushLevelSpin_) {
-        const MapEditor::BrushEffect effect =
-            brushTool_ ? brushTool_->params().effect
-                       : MapEditor::BrushEffect::None;
-        brushLevelSpin_->setEnabled(
-            worldLoaded &&
-            (effect == MapEditor::BrushEffect::ChangeHeight ||
-             effect == MapEditor::BrushEffect::AlignVariableH));
-    }
+    setEnabled(actModeView_, true);
+    setEnabled(actModeBrush_, worldLoaded);
+    setEnabled(actModeEyedropper_, worldLoaded);
+    // T3.x — every brush action and spinbox follows the tool parameters
+    // (Dam-only types, the decal/script/sculpt/3D/model exclusions, the
+    // gate/polygon/shape predicates) — the whole block lives in the
+    // BrushUiController.
+    brushUI_->updateEnabledStates(worldLoaded);
 }
 
 // ---------------------------------------------------------------------------

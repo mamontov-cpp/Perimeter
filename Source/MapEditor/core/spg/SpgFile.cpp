@@ -919,6 +919,22 @@ void appendArrayElement(XPrmObject* array, XPrmObject::Field field)
     array->fields[0].edited = true;
 }
 
+
+/// Yaw angle in degrees, normalized to (-180, 180], of the 'orientaion'
+/// quaternion's s/z components - placed buildings, scum mounds and nature
+/// objects all store yaw-only rotations, and each list parser used to carry
+/// its own copy of this math.
+double angleFromQuaternion(const XPrmObject* quat)
+{
+    const double qs = scalarDouble(quat, "s");
+    const double qz = scalarDouble(quat, "z");
+    double angle = 2.0 * std::atan2(qz, qs) * 180.0 /
+                   3.14159265358979323846;
+    while (angle > 180.0) angle -= 360.0;
+    while (angle <= -180.0) angle += 360.0;
+    return angle;
+}
+
 } // namespace
 
 
@@ -957,15 +973,7 @@ std::vector<SpgFile::PlacedBuilding> SpgFile::buildings() const
         b.x = scalarDouble(obj->object("position"), "x");
         b.y = scalarDouble(obj->object("position"), "y");
         b.z = scalarDouble(obj->object("position"), "z");
-        const XPrmObject* quat = obj->object("orientaion");
-        const double qs = scalarDouble(quat, "s");
-        const double qz = scalarDouble(quat, "z");
-        double angle = 2.0 * std::atan2(qz, qs) * 180.0 /
-                       3.14159265358979323846;
-        // Normalize into (-180, 180].
-        while (angle > 180.0) angle -= 360.0;
-        while (angle <= -180.0) angle += 360.0;
-        b.angleDeg = angle;
+        b.angleDeg = angleFromQuaternion(obj->object("orientaion"));
         int hp = 100;
         const XPrmObject* damage = obj->object("damageMolecula");
         if (damage) {
@@ -1505,14 +1513,7 @@ std::vector<SpgFile::ScumSpot> SpgFile::scumSpots() const
         s.x = scalarDouble(pos, "x");
         s.y = scalarDouble(pos, "y");
         s.z = scalarDouble(pos, "z");
-        const XPrmObject* quat = obj->object("orientaion");
-        const double qs = scalarDouble(quat, "s");
-        const double qz = scalarDouble(quat, "z");
-        double angle = 2.0 * std::atan2(qz, qs) * 180.0 /
-                       3.14159265358979323846;
-        while (angle > 180.0) angle -= 360.0;
-        while (angle <= -180.0) angle += 360.0;
-        s.angleDeg = angle;
+        s.angleDeg = angleFromQuaternion(obj->object("orientaion"));
         int deadSum = 0;
         int maxSum = 0;
         for (int k = 0; k < 5; ++k) {
@@ -2125,14 +2126,7 @@ std::vector<SpgFile::NatureObject> SpgFile::natureObjects() const
         n.x = scalarDouble(pos, "x");
         n.y = scalarDouble(pos, "y");
         n.z = scalarDouble(pos, "z");
-        const XPrmObject* quat = obj->object("orientaion");
-        const double qs = scalarDouble(quat, "s");
-        const double qz = scalarDouble(quat, "z");
-        double angle = 2.0 * std::atan2(qz, qs) * 180.0 /
-                       3.14159265358979323846;
-        while (angle > 180.0) angle -= 360.0;
-        while (angle <= -180.0) angle += 360.0;
-        n.angleDeg = angle;
+        n.angleDeg = angleFromQuaternion(obj->object("orientaion"));
         n.radius = scalarDouble(obj, "radius");
         n.label = unquoted(obj->scalar("label"));
         n.modelName = unquote(obj->scalar("modelName"));

@@ -45,6 +45,24 @@ inline double clampd(double v, double lo, double hi) {
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
+/// The game camera matrix construction (terCameraType::update +
+/// CameraManager::SetCameraPosition flips, Source/Game/CameraManager.cpp) —
+/// one place for the matrix + flip recipe shared by the editor camera, the
+/// game camera branch and the icon baker.
+inline MatXf buildCameraMatrix(const Vect3f& position, float theta, float psi)
+{
+    MatXf matrix = MatXf::ID;
+    matrix.rot() = Mat3f(theta, X_AXIS)
+                 * Mat3f(static_cast<float>(MapEditor::kPi / 2.0) - psi, Z_AXIS);
+    matrix *= MatXf(Mat3f::ID, -position);
+    // ml flips the view z axis, mr the x axis of the right transform.
+    MatXf ml = MatXf::ID;
+    MatXf mr = MatXf::ID;
+    ml.rot()[2][2] = -1;
+    mr.rot()[1][1] = -1;
+    return mr * ml * matrix;
+}
+
 /// Clamp a sample coordinate to map range (SGetAlt offsets are unclamped and
 /// an unclamped ofs would read out of the VxDBuf/VxGBuf allocation).
 inline void clampToMap(int& x, int& y) {
@@ -265,18 +283,8 @@ void TerrainGpuView::applyCamera() {
     position.setSpherical(psi, static_cast<float>(theta), static_cast<float>(r));
     position += lookAt;
 
-    MatXf matrix = MatXf::ID;
-    matrix.rot() = Mat3f(static_cast<float>(theta), X_AXIS)
-                 * Mat3f(static_cast<float>(MapEditor::kPi / 2.0 - psi), Z_AXIS);
-    matrix *= MatXf(Mat3f::ID, -position);
-
-    // CameraManager::SetCameraPosition flips (Source/Game/CameraManager.cpp):
-    // ml flips the view z axis, mr the x axis of the right transform.
-    MatXf ml = MatXf::ID;
-    MatXf mr = MatXf::ID;
-    ml.rot()[2][2] = -1;
-    mr.rot()[1][1] = -1;
-    MatXf cameraMatrix = mr * ml * matrix;
+    const MatXf cameraMatrix =
+        buildCameraMatrix(position, static_cast<float>(theta), psi);
     camera_->SetPosition(cameraMatrix);   // calls Update()
 
     // Frustum — same values the game uses (terCameraType::SetFrustumGame),
@@ -335,18 +343,8 @@ void TerrainGpuView::applyGameCamera() {
 
     // The game matrix construction — same as the editor branch, but with the
     // game's psi/theta angles.
-    MatXf matrix = MatXf::ID;
-    matrix.rot() = Mat3f(static_cast<float>(theta), X_AXIS)
-                 * Mat3f(static_cast<float>(MapEditor::kPi / 2.0 - psi), Z_AXIS);
-    matrix *= MatXf(Mat3f::ID, -position);
-
-    // CameraManager::SetCameraPosition flips (Source/Game/CameraManager.cpp):
-    // ml flips the view z axis, mr the x axis of the right transform.
-    MatXf ml = MatXf::ID;
-    MatXf mr = MatXf::ID;
-    ml.rot()[2][2] = -1;
-    mr.rot()[1][1] = -1;
-    MatXf cameraMatrix = mr * ml * matrix;
+    const MatXf cameraMatrix =
+        buildCameraMatrix(position, static_cast<float>(theta), psi);
     camera_->SetPosition(cameraMatrix);   // calls Update()
 
     // terCameraType::SetFrustumGame verbatim: focus = the game's
@@ -486,14 +484,7 @@ bool TerrainGpuView::renderModelIcon(uint32_t framebuffer, int width, int height
     Vect3f position;
     position.setSpherical(psi, theta, dist);
 
-    MatXf matrix = MatXf::ID;
-    matrix.rot() = Mat3f(theta, X_AXIS) * Mat3f(static_cast<float>(kPi / 2.0) - psi, Z_AXIS);
-    matrix *= MatXf(Mat3f::ID, -position);
-    MatXf ml = MatXf::ID;
-    MatXf mr = MatXf::ID;
-    ml.rot()[2][2] = -1;
-    mr.rot()[1][1] = -1;
-    iconCamera_->SetPosition(mr * ml * matrix);
+    iconCamera_->SetPosition(buildCameraMatrix(position, theta, psi));
 
     const float focus = dist / (radius * 2.6f + 1e-3f);
     Vect2f camCenter(0.5f, 0.5f);

@@ -332,7 +332,13 @@ TARGET_LINK_LIBRARIES(MapEditorSupport PUBLIC
 SET(MAP_EDITOR_APP_SRCS
         ui/main.cpp
         ui/MainWindow.cpp
-        ui/MainWindowBattleMap.cpp
+        ui/BattleMapController.cpp
+        ui/BattleMapController.h
+        ui/BrushUiController.cpp
+        ui/BrushUiController.h
+        ui/BrushUiAssets.h
+        ui/ImageIoController.cpp
+        ui/ImageIoController.h
         ui/BattleMapPanel.cpp
         ui/BattleMapPanel.h
         ui/ValidationDialog.cpp
@@ -354,10 +360,9 @@ SET(MAP_EDITOR_APP_SRCS
         ui/NewWorldWizard.h
         ui/BuildingsPanel.cpp
         ui/ScumSpotsPanel.cpp
-        ui/MainWindowScumSpots.cpp
         ui/NaturePanel.cpp
-        ui/MainWindowNature.cpp
-        ui/MainWindowMcp.cpp
+        ui/McpBridge.cpp
+        ui/McpBridge.h
         ui/BuildingsPanel.h
         ui/ScriptEditorDialog.cpp
         ui/ScriptEditorDialog.h

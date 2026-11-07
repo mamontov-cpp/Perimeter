@@ -466,6 +466,16 @@ public:
     /// Index of the object under the map cell (-1 when none).
     int natureIndexAtCell(double mapX, double mapY) const;
 
+    /// Project a world point to widget coordinates: GPU path through the
+    /// real camera (rejecting points behind the near plane), CPU fallback
+    /// through the affine oblique basis. Shared by the building/scum/nature
+    /// overlays.
+    bool projectPointToWidget(double mapX, double mapY, double z,
+                              QPointF& out) const;
+    /// Terrain height under a map point (0 off-map / unloaded) — the z the
+    /// building/scum overlays project their dots at.
+    double terrainZAt(double mapX, double mapY) const;
+
     /// Bake a building model (UnitModelCatalog attributeId) into an icon
     /// through the GPU view's offscreen scene. Returns a null icon when the
     /// GPU view is inactive or the model cannot be loaded — callers keep
