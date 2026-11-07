@@ -2142,7 +2142,11 @@ void MainWindow::updateActionStates()
     // a game directory only (its world may be loaded later or not at all);
     // the battle-map tools need a loaded .spg, the world-dependent ones both.
     const bool gameDirSet = session_ != nullptr && session_->hasGameDir();
-    const bool battleMapLoaded = battleMaps_->isLoaded();
+    // battleMaps_ is created in buildViewport (after the toolbars) — the
+    // toolbar spinboxes fire valueChanged during construction and reach
+    // here through BrushUiController::syncControls before the controller
+    // exists.
+    const bool battleMapLoaded = battleMaps_ && battleMaps_->isLoaded();
 
     // The bulk of the actions is gated on a single session predicate —
     // group them into tables instead of an if-chain per action (the
@@ -2200,15 +2204,18 @@ void MainWindow::updateActionStates()
             viewport_->setEditorMode(MapEditor::ViewportWidget::EditorMode::Brush);
         }
     }
+    // Terrain history first, then the battle-map spawn-move history
+    // (both are reverted by the same Ctrl+Z). battleMaps_ appears during
+    // buildViewport — before that there is no spawn history either.
+    const bool canUndoSpawnMove = battleMapLoaded && battleMaps_->canUndoPlayerMove();
+    const bool canRedoSpawnMove = battleMapLoaded && battleMaps_->canRedoPlayerMove();
     if (actUndo_) {
-        // Terrain history first, then the battle-map spawn-move history
-        // (both are reverted by the same Ctrl+Z).
         actUndo_->setEnabled((worldLoaded && session_->canUndo()) ||
-                             battleMaps_->canUndoPlayerMove());
+                             canUndoSpawnMove);
     }
     if (actRedo_) {
         actRedo_->setEnabled((worldLoaded && session_->canRedo()) ||
-                             battleMaps_->canRedoPlayerMove());
+                             canRedoSpawnMove);
     }
     // The grid cell size drives the grid overlay — needs a world too.
     if (gridStepWSpin_) {
