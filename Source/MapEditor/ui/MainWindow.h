@@ -297,7 +297,8 @@ private:
 
     // View actions — shared between the View menu and the view toolbar.
     QAction *actGrid_ = nullptr;
-    // In-game look: un-dammed cells dim to grey shades (2D + smooth 3D).
+    // In-game look: cells whose surface height is 0 (sunken to the -15
+    // depth by the game mesh) dim to grey shades — 2D + smooth 3D.
     QAction *actDimGeo_ = nullptr;
     // Freeze-dam 3D scroll: repeats render geo-only, the dam stays in place.
     QAction *actFreezeDam_ = nullptr;

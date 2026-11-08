@@ -203,7 +203,7 @@ void View3DRenderer::render(int cx, int cy)
 }
 
 // ---------------------------------------------------------------------------
-// Chunky path — viewV2D with the in-game geo dimming
+// Chunky path — viewV2D with the in-game geo dimming (approximate)
 // ---------------------------------------------------------------------------
 
 void View3DRenderer::viewV2DChunky(int cx, int cy)
@@ -213,11 +213,20 @@ void View3DRenderer::viewV2DChunky(int cx, int cy)
                      buffer_.data(), width_, height_);
         return;
     }
+    // The exact rule (ViewportRenderer::sunkenCell) greys only cells whose
+    // SURFACE HEIGHT is 0 — the game's terrain mesh sinks those to z=-15
+    // (TileMapBumpTile.cpp SetVertexZ). The 16-bit tables cannot split
+    // sunken from raised geo cells (both render through rows 0..127), so
+    // this legacy fallback greys the whole geo half: on the classic maps
+    // (geo floor left at height 0) that matches the game exactly, but a
+    // world with raised dam-less geo (e.g. a flat 20) is over-dimmed here.
+    // The smooth and GPU paths implement the exact per-cell rule.
+    //
     // viewV2D samples Terra's own 16-bit tables (Sur2Col[sur][lighting],
     // Tex2Col[lighting][tex] — the +128 rows are the dam layer,
-    // convertPal2TableSurCol VMAP.cpp:1370-1375). The dimmed game look
-    // greys the geo (non-dam) halves: save both tables, grey rows 0..127,
-    // render, restore byte-exact. Terra itself is never modified.
+    // convertPal2TableSurCol VMAP.cpp:1370-1375). Save both tables, grey
+    // rows 0..127, render, restore byte-exact. Terra itself is never
+    // modified.
     std::vector<unsigned short> surSave(
         &vMap.Sur2Col[0][0],
         &vMap.Sur2Col[0][0] + MAX_SURFACE_TYPE * (MAX_SURFACE_LIGHTING * 2));

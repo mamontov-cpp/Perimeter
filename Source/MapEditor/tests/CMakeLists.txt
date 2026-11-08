@@ -37,6 +37,7 @@ ADD_EXECUTABLE(map_editor_tests
         ScumSpotsTests.cpp
         NatureObjectsTests.cpp
         McpServerTests.cpp
+        GameColorDiagnosticTests.cpp
         ScriptedBrushTests.cpp
         SculptBrushTests.cpp
         BrushHeightGateTests.cpp

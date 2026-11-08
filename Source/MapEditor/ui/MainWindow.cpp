@@ -971,16 +971,17 @@ void MainWindow::buildViewMenu(QMenuBar *menuBar)
         }
     });
 
-    // In-game look: the game dims the un-terraformed geo surface to shades
-    // of grey; the editor renders full palette colors by default. This
-    // toggle switches the composite view (2D raster + smooth 3D) to the
-    // dimmed game look and back.
+    // In-game look: the game sinks surface-height-0 cells to the -15 depth,
+    // which reads as shades of grey; the editor renders full palette colors
+    // by default. This toggle switches the composite view (2D raster +
+    // smooth 3D) to the dimmed game look and back.
     actDimGeo_ = create();
     actDimGeo_->setText(tr("Dim &Geo Layer (Game Look)"));
     actDimGeo_->setToolTip(
-        tr("Render cells without a dam as darkened shades of grey, like the "
-           "game shows the un-terraformed surface (2D view and smooth 3D; "
-           "the dam areas keep their colors)."));
+        tr("Render the sunken terrain — cells whose surface height is 0, "
+           "which the game sinks to the grey -15 depth — as darkened shades "
+           "of grey (2D view and smooth 3D). Raised geo and dam areas keep "
+           "their colors, exactly like in the game."));
     actDimGeo_->setCheckable(true);
     actDimGeo_->setChecked(true);
     connect(actDimGeo_, &QAction::toggled, this, [this](bool checked) {

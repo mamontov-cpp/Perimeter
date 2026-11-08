@@ -53,9 +53,14 @@ unsigned int color32WithLighting(int off, unsigned int lighting)
     return vMap.Sur2Col32[vMap.SurBuf[off]][lighting];
 }
 
-/// The in-game dimming of the un-terraformed surface: desaturate to
-/// luminance and halve it — "shades of grey and black" like the game shows
-/// the geo surface outside the terraformed (dam) areas.
+/// The in-game dimming of the sunken surface: desaturate to luminance and
+/// halve it — "shades of grey and black" like the game shows the terrain
+/// floor. In the game the grey is NOT about the missing dam layer: the
+/// terrain mesh sinks every vertex with a surface height below one voxel
+/// to z=-15 (Source/Render/tilemap/TileMapBumpTile.cpp SetVertexZ), and the
+/// sunken floor reads as the grey depth. Cells with a dam — and geo cells
+/// raised above zero — keep their palette colors (verified against
+/// vMap.WorldRender + getColor32, see GameColorDiagnosticTests).
 unsigned int dimGeoColor(unsigned int col)
 {
     const unsigned int r = (col >> 16) & 0xFFu;
@@ -64,6 +69,15 @@ unsigned int dimGeoColor(unsigned int col)
     const unsigned int lum = (r * 76 + g * 150 + b * 29) >> 8;
     const unsigned int grey = lum >> 1;
     return (grey << 16) | (grey << 8) | grey;
+}
+
+/// True when the cell's visible surface would sink in the game's terrain
+/// mesh: whole-voxel height 0 (dam height when present, otherwise geo).
+inline bool sunkenCell(int off)
+{
+    const unsigned char whole = vMap.VxDBuf[off] ? vMap.VxDBuf[off]
+                                                 : vMap.VxGBuf[off];
+    return whole < 1;
 }
 
 } // namespace
@@ -199,9 +213,10 @@ std::uint32_t ViewportRenderer::colorAt(int x, int y) const
         // the minimap's live re-sample can never drift from this cache.
         std::uint32_t col = 0;
         compositeColorAt(x, y, col);
-        // The in-game look: cells without a dam dim to grey shades (the dam
-        // areas keep their palette colors).
-        if (geoDimmed_ && vMap.VxDBuf[off] == 0) {
+        // The in-game look: sunken cells (surface height 0 — the game mesh
+        // sinks them to the -15 grey depth) dim to grey shades; raised geo
+        // and dam areas keep their palette colors.
+        if (geoDimmed_ && sunkenCell(off)) {
             return kOpaque | dimGeoColor(col);
         }
         return kOpaque | col;
@@ -341,7 +356,7 @@ std::uint32_t ViewportRenderer::mipBaseColor(int x, int y) const
     // the pyramid is view data, not editor-layer data.
     const int off = vMap.offsetBuf(x, y);
     const unsigned int col = color32WithLighting(off, vMap.RnrBuf[off]);
-    if (geoDimmed_ && vMap.VxDBuf[off] == 0) {
+    if (geoDimmed_ && sunkenCell(off)) {
         return kOpaque | dimGeoColor(col);
     }
     return kOpaque | col;

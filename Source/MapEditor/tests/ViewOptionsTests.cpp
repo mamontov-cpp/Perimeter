@@ -70,7 +70,15 @@ bool loadPristineWorld(MapEditor::EditorSession &session)
 }
 
 // ---------------------------------------------------------------------------
-// Test 1: geo dimming.
+// Test 1: geo dimming — the sunken-surface rule.
+//
+// The game sinks every terrain vertex with a surface height below one voxel
+// to z=-15 (Source/Render/tilemap/TileMapBumpTile.cpp SetVertexZ), and that
+// sunken floor reads as grey. The editor's "Dim Geo (Game Look)" therefore
+// greys exactly the cells whose surface height is 0 — NOT every dam-less
+// cell: raised dam-free geo keeps its palette colors, exactly like in the
+// game (verified via GameColorDiagnosticTests against vMap.WorldRender +
+// getColor32).
 // ---------------------------------------------------------------------------
 
 bool runGeoDimTests()
@@ -78,53 +86,90 @@ bool runGeoDimTests()
     MapEditor::EditorSession session;
     TEST_REQUIRE(loadPristineWorld(session), "world load failed.");
 
-    // One dam cell and one dam-free cell anywhere in the map.
-    int damX = -1, damY = -1, geoX = -1, geoY = -1;
+    // One dam cell, one dam-free cell and — if the fixture has one — a
+    // naturally raised dam-free cell (for the "NOT dimmed" half of the rule).
+    int damX = -1, damY = -1, geoX = -1, geoY = -1, raisedX = -1, raisedY = -1;
     for (int y = 0; y < static_cast<int>(vMap.V_SIZE) &&
-                   (damX < 0 || geoX < 0); ++y) {
+                   (damX < 0 || raisedX < 0); ++y) {
         for (int x = 0; x < static_cast<int>(vMap.H_SIZE); ++x) {
             const int off = vMap.offsetBuf(x, y);
             if (vMap.VxDBuf[off] != 0 && damX < 0) {
                 damX = x; damY = y;
-            } else if (vMap.VxDBuf[off] == 0 && geoX < 0) {
-                geoX = x; geoY = y;
+            } else if (vMap.VxDBuf[off] == 0) {
+                if (geoX < 0) { geoX = x; geoY = y; }
+                if (vMap.VxGBuf[off] > 0 && raisedX < 0) {
+                    raisedX = x; raisedY = y;
+                }
             }
         }
     }
     TEST_REQUIRE(damX >= 0 && geoX >= 0,
                  "the world needs both dam and dam-free cells.");
 
+    // Synthesize a sunken cell deterministically: the chosen dam-free cell
+    // is lowered to height 0 for the duration of the check (the game's grey
+    // "dead floor" — the fixture world may not have a natural one). The
+    // buffers are restored byte-exact below.
+    const int geoOff = vMap.offsetBuf(geoX, geoY);
+    const unsigned char savedG = vMap.VxGBuf[geoOff];
+    const unsigned char savedAtr = vMap.AtrBuf[geoOff];
+    vMap.VxGBuf[geoOff] = 0;
+    vMap.AtrBuf[geoOff] = 0;
+
     ViewportRenderer renderer;
     TEST_REQUIRE(renderer.bindWorld(), "bindWorld() failed.");
     renderer.setGeoDimmed(false);
-    const std::uint32_t geoPlain = renderer.colorAt(geoX, geoY);
+    const std::uint32_t sunkenPlain = renderer.colorAt(geoX, geoY);
     const std::uint32_t damPlain = renderer.colorAt(damX, damY);
 
     TEST_REQUIRE(renderer.setGeoDimmed(true), "the toggle must report change.");
-    const std::uint32_t geoDim = renderer.colorAt(geoX, geoY);
+    const std::uint32_t sunkenDim = renderer.colorAt(geoX, geoY);
     const std::uint32_t damDim = renderer.colorAt(damX, damY);
 
     // Grey: R == G == B, and never brighter than the plain pixel's luma.
-    const unsigned r = (geoDim >> 16) & 0xFF, g = (geoDim >> 8) & 0xFF,
-                   b = geoDim & 0xFF;
+    const unsigned r = (sunkenDim >> 16) & 0xFF, g = (sunkenDim >> 8) & 0xFF,
+                   b = sunkenDim & 0xFF;
     TEST_REQUIRE(r == g && g == b,
-                 "a dimmed geo cell must be grey (got %02X%02X%02X).", r, g, b);
-    TEST_REQUIRE(geoDim != geoPlain,
-                 "a dam-free cell must change when geo dimming turns on.");
+                 "a dimmed sunken cell must be grey (got %02X%02X%02X).",
+                 r, g, b);
+    TEST_REQUIRE(sunkenDim != sunkenPlain,
+                 "a sunken cell must change when geo dimming turns on.");
     TEST_REQUIRE(damDim == damPlain,
                  "a dam cell must keep its palette color under geo dimming.");
-    TEST_REQUIRE(r <= ((geoPlain >> 16) & 0xFF) ||
-                     r <= ((geoPlain >> 8) & 0xFF) ||
-                     r <= (geoPlain & 0xFF),
+    TEST_REQUIRE(r <= ((sunkenPlain >> 16) & 0xFF) ||
+                     r <= ((sunkenPlain >> 8) & 0xFF) ||
+                     r <= (sunkenPlain & 0xFF),
                  "the grey must not exceed the plain pixel brightness.");
+
+    // The other half of the rule: raised dam-free geo is NOT dimmed.
+    if (raisedX >= 0) {
+        const std::uint32_t raisedPlain =
+            renderer.colorAt(raisedX, raisedY);
+        renderer.setGeoDimmed(false);
+        const std::uint32_t raisedUndim = renderer.colorAt(raisedX, raisedY);
+        renderer.setGeoDimmed(true);
+        const std::uint32_t raisedDim = renderer.colorAt(raisedX, raisedY);
+        TEST_REQUIRE(raisedDim == raisedPlain &&
+                         raisedUndim == raisedPlain &&
+                         raisedDim != 0,
+                     "raised dam-free geo must keep its colors under the "
+                     "game-look dimming (game sinks only height-0 cells).");
+    } else {
+        std::printf("[SKIP] no raised dam-free cell in the fixture world; "
+                    "the not-dimmed half of the rule is unchecked here.\n");
+    }
 
     // Toggle back: byte-exact restore.
     TEST_REQUIRE(renderer.setGeoDimmed(false), "the toggle must report change.");
-    TEST_REQUIRE(renderer.colorAt(geoX, geoY) == geoPlain &&
+    TEST_REQUIRE(renderer.colorAt(geoX, geoY) == sunkenPlain &&
                      renderer.colorAt(damX, damY) == damPlain,
                  "turning the dimming off must restore the plain pixels.");
     TEST_REQUIRE(!renderer.setGeoDimmed(false),
                  "re-setting the same state must be a no-op.");
+
+    // Restore the synthesized sunken cell.
+    vMap.VxGBuf[geoOff] = savedG;
+    vMap.AtrBuf[geoOff] = savedAtr;
 
     // --- Chunky 3D: the dimming greys Terra's 16-bit tables around the
     // viewV2D call and restores them byte-exact afterwards.
