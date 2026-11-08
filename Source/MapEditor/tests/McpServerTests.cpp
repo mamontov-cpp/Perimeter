@@ -89,15 +89,20 @@ bool runMcpServerTests()
     // 1: catalog sanity.
     // ------------------------------------------------------------------
     const QVector<MapEditor::McpToolSpec> catalog = MapEditor::mcpToolCatalog();
-    TEST_REQUIRE(catalog.size() >= 36,
-                 "the catalog must expose at least 25 tools, got %lld.",
+    TEST_REQUIRE(catalog.size() >= 37,
+                 "the catalog must expose at least 37 tools, got %lld.",
                  static_cast<long long>(catalog.size()));
+    // The complete tool set — kept in sync with the dispatch handlers in
+    // ui/McpBridge.cpp (mcpHandle* kTools sets). The exact-set comparison
+    // below catches a tool wired into the bridge but missing from the
+    // catalog (what hides it from tools/list), and vice versa.
     const QStringList required = {
         QStringLiteral("set_game_path"),   QStringLiteral("list_worlds"),
         QStringLiteral("get_world_properties"), QStringLiteral("create_world"),
         QStringLiteral("open_world"),      QStringLiteral("save_world"),
         QStringLiteral("list_battle_maps"), QStringLiteral("open_battle_map"),
-        QStringLiteral("save_battle_map"), QStringLiteral("list_battle_map_objects"),
+        QStringLiteral("save_battle_map"), QStringLiteral("new_battle_map"),
+        QStringLiteral("list_battle_map_objects"),
         QStringLiteral("place_building"),  QStringLiteral("update_building"),
         QStringLiteral("delete_building"), QStringLiteral("place_scum_spot"),
         QStringLiteral("update_scum_spot"), QStringLiteral("delete_scum_spot"),
@@ -108,7 +113,7 @@ bool runMcpServerTests()
         QStringLiteral("load_decal_image"), QStringLiteral("import_model"),
         QStringLiteral("set_difference_mode"), QStringLiteral("save_difference"),
         QStringLiteral("load_difference"), QStringLiteral("list_players"),
-        QStringLiteral("update_player"), QStringLiteral("remove_player"),
+        QStringLiteral("update_player"),   QStringLiteral("remove_player"),
         QStringLiteral("add_player"),
         QStringLiteral("set_palette_color"), QStringLiteral("undo"),
         QStringLiteral("redo"),
@@ -127,9 +132,16 @@ bool runMcpServerTests()
                      spec.name.toUtf8().constData());
         names << spec.name;
     }
-    for (const QString& want : required) {
-        TEST_REQUIRE(names.contains(want), "required tool missing: %s.",
-                     want.toUtf8().constData());
+    {
+        QStringList sortedNames = names;
+        QStringList sortedRequired = required;
+        sortedNames.sort();
+        sortedRequired.sort();
+        TEST_REQUIRE(sortedNames == sortedRequired,
+                     "catalog/handler drift: the catalog and the expected "
+                     "tool set differ — add the new tool to BOTH "
+                     "mcp/McpTools.h and ui/McpBridge.cpp, or remove it "
+                     "from both.");
     }
     // The 500 ms undo-grouping note must reach the agent.
     const auto undoTool = std::find_if(

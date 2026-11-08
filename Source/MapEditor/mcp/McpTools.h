@@ -153,6 +153,29 @@ inline QVector<McpToolSpec> mcpToolCatalog()
               obj({{QStringLiteral("type"), QStringLiteral("object")},
                    {QStringLiteral("properties"), QJsonObject()}})});
 
+    t.append({QStringLiteral("new_battle_map"),
+              QStringLiteral("Creates a NEW battle map for the currently "
+                             "loaded world (dialog-free equivalent of File - "
+                             "New Battle Map / the panel button): built from "
+                             "a template .spg (default: the first from "
+                             "list_battle_maps), the requested player count "
+                             "(1-8), spawn anchors spread on an ellipse "
+                             "around the map centre with terrain-height "
+                             "correction, saved into RESOURCE/Battle as "
+                             "<name>.spg and opened right away. Fails when "
+                             "no world is loaded or no template exists."),
+              obj({{QStringLiteral("type"), QStringLiteral("object")},
+                   {QStringLiteral("properties"),
+                    obj({{QStringLiteral("name"),
+                          obj({{QStringLiteral("type"), str}})},
+                         {QStringLiteral("template"),
+                          obj({{QStringLiteral("type"), str}})},
+                         {QStringLiteral("players"),
+                          obj({{QStringLiteral("type"), integer},
+                               {QStringLiteral("default"), 2}})}})},
+                   {QStringLiteral("required"),
+                    QJsonArray{QStringLiteral("name")}}})});
+
     t.append({QStringLiteral("list_battle_map_objects"),
               QStringLiteral("Lists the objects placed on the loaded battle "
                              "map: pre-placed buildings (attribute id/type, "
