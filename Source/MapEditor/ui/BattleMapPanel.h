@@ -9,6 +9,7 @@
 class QComboBox;
 class QLabel;
 class QListWidget;
+class QPushButton;
 class QSpinBox;
 
 namespace MapEditor {
@@ -71,6 +72,13 @@ signals:
     /// A new battle map wizard finished: name + player count requested.
     void newBattleMapRequested(const QString &name, const QString &templateMap,
                                int playerCount);
+    /// "Remove Player" clicked with a selected list row — the caller removes
+    /// the player from the SpgFile and refreshes (SpgFile keeps at least
+    /// one player; the signal is not emitted for the empty selection).
+    void removePlayerRequested();
+    /// "Place Spawn" clicked — the caller activates the Place Spawn editor
+    /// mode (the panel only requests; the editor-mode state lives there).
+    void placeSpawnRequested();
 
 private slots:
     void onGoTo();
@@ -84,6 +92,7 @@ private:
     QLabel *header_ = nullptr;
     QComboBox *newTemplateCombo_ = nullptr;
     QSpinBox *newPlayerCountSpin_ = nullptr;
+    QPushButton *placeSpawnButton_ = nullptr;
     std::function<QRect()> viewCenterProvider_;
 };
 

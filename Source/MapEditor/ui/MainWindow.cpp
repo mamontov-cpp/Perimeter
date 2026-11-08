@@ -379,6 +379,11 @@ void MainWindow::buildViewport()
             [this]() { updateActionStates(); });
     connect(battleMaps_, &MapEditor::BattleMapController::palettesNeedRefresh,
             this, [this]() { refreshPaletteRenderers(); });
+    connect(battleMaps_, &MapEditor::BattleMapController::placeSpawnRequested,
+            this, [this]() {
+                activateEditorMode(static_cast<int>(
+                    MapEditor::ViewportWidget::EditorMode::PlaceSpawn));
+            });
     battleMaps_->buildDocks();
 }
 
@@ -936,6 +941,9 @@ void MainWindow::buildEditMenu(QMenuBar *menuBar)
     modeMenu->addAction(actModeView_);
     modeMenu->addAction(actModeBrush_);
     modeMenu->addAction(actModeEyedropper_);
+    // Place Spawn is a battle-map tool (enabled with a loaded .spg) — same
+    // action as the Brush toolbar button.
+    modeMenu->addAction(actModePlaceSpawn_);
 
     // T3.2 — the brush type/mode + modifiers submenus carry the same actions
     // as the toolbars; the BrushUiController owns them (the gate-height menu
@@ -1343,30 +1351,7 @@ void MainWindow::createEditorModeActions()
         action->setCheckable(true);
         action->setShortcut(shortcut);
         connect(action, &QAction::triggered, this, [this, mode] {
-            if (!viewport_) {
-                return;
-            }
-            // The Place Spawn mode needs a loaded battle map — there is no
-            // spawn to place otherwise (updateActionStates also disables the
-            // action; this guards the shortcut path).
-            if (mode == EditorMode::PlaceSpawn && !battleMaps_->isLoaded()) {
-                return;
-            }
-            // The brush type carries which tool the interaction works with:
-            // entering the Eyedropper mode selects the PickColor type, and
-            // returning to the Brush mode turns it back into an actually
-            // painting color brush (SetBrush params note in BrushTool.h).
-            MapEditor::BrushParams params = brushTool_->params();
-            if (mode == EditorMode::Eyedropper) {
-                params.effect = MapEditor::BrushEffect::PickColor;
-                brushTool_->setParams(params);
-            } else if (mode == EditorMode::Brush
-                       && params.effect == MapEditor::BrushEffect::PickColor) {
-                params.effect = MapEditor::BrushEffect::SetColor;
-                brushTool_->setParams(params);
-            }
-            viewport_->setEditorMode(mode);
-            brushUI_->syncControls();
+            activateEditorMode(static_cast<int>(mode));
         });
         interactionGroup->addAction(action);
         return action;
@@ -1398,6 +1383,36 @@ void MainWindow::createEditorModeActions()
            "is not touched."),
         QKeySequence(Qt::Key_S), EditorMode::PlaceSpawn);
     actModeBrush_->setChecked(true);
+}
+
+void MainWindow::activateEditorMode(int mode)
+{
+    using EditorMode = MapEditor::ViewportWidget::EditorMode;
+    const EditorMode editorMode = static_cast<EditorMode>(mode);
+    if (!viewport_) {
+        return;
+    }
+    // The Place Spawn mode needs a loaded battle map — there is no
+    // spawn to place otherwise (updateActionStates also disables the
+    // action; this guards the shortcut and the panel-button paths).
+    if (editorMode == EditorMode::PlaceSpawn && !battleMaps_->isLoaded()) {
+        return;
+    }
+    // The brush type carries which tool the interaction works with:
+    // entering the Eyedropper mode selects the PickColor type, and
+    // returning to the Brush mode turns it back into an actually
+    // painting color brush (SetBrush params note in BrushTool.h).
+    MapEditor::BrushParams params = brushTool_->params();
+    if (editorMode == EditorMode::Eyedropper) {
+        params.effect = MapEditor::BrushEffect::PickColor;
+        brushTool_->setParams(params);
+    } else if (editorMode == EditorMode::Brush
+               && params.effect == MapEditor::BrushEffect::PickColor) {
+        params.effect = MapEditor::BrushEffect::SetColor;
+        brushTool_->setParams(params);
+    }
+    viewport_->setEditorMode(editorMode);
+    brushUI_->syncControls();
 }
 
 void MainWindow::refreshPaletteRenderers()

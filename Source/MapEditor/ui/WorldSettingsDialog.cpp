@@ -24,8 +24,11 @@ const char *const kF3dFunctionNames[] = {
     "Tree Texture",
 };
 
-// Terra's limits: MAX_H_SIZE_POWER / MAX_V_SIZE_POWER (terra.h:13,16).
-constexpr int kMaxSizePower = 14;
+// Editor limit for NEW worlds: Terra allows up to MAX_H_SIZE_POWER (14,
+// terra.h:13,16), but a 2^14 map is already unmanageable in the editor
+// (load/save/brush cost, GPU raster) — cap the size powers at 13. Existing
+// worlds with power 14 still load; the cap only affects the creation UI.
+constexpr int kMaxSizePower = 13;
 
 QSpinBox *makeSpin(int min, int max, int step = 1)
 {

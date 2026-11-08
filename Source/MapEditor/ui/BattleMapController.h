@@ -115,6 +115,9 @@ signals:
     void statusMessage(const QString &message, int timeoutMs);
     void actionStatesNeedUpdate();
     void palettesNeedRefresh();
+    /// The panel's "Place Spawn" button — the host activates the Place Spawn
+    /// editor mode (same path as the toolbar button / the S shortcut).
+    void placeSpawnRequested();
 
 private:
     void buildBattleMapDock();

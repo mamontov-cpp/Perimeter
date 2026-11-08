@@ -203,6 +203,28 @@ void BattleMapController::buildBattleMapDock()
     connect(battleMapPanel_,
             &MapEditor::BattleMapPanel::newBattleMapRequested, this,
             &BattleMapController::onNewBattleMapRequested);
+    // The panel's "Place Spawn" button asks the window to activate the
+    // editor mode (the mode state lives there) — re-emitted upwards.
+    connect(battleMapPanel_,
+            &MapEditor::BattleMapPanel::placeSpawnRequested, this,
+            [this] { emit placeSpawnRequested(); });
+    // Remove Player: the panel emits with a valid selection; SpgFile keeps
+    // at least one player (removePlayer refuses the last one) — the list,
+    // the spawn overlay and the undo availability follow.
+    connect(battleMapPanel_,
+            &MapEditor::BattleMapPanel::removePlayerRequested, this, [this] {
+                const int player = battleMapPanel_->selectedPlayer();
+                if (!battleMap_.removePlayer(player)) {
+                    showStatus(tr("Failed to remove the player."), 4000);
+                    return;
+                }
+                battleMapPanel_->refresh();
+                syncSpawnOverlay();
+                emit actionStatesNeedUpdate();
+                showStatus(tr("Player removed — save the battle map to "
+                              "persist."),
+                           5000);
+            });
 
     // Template combo: the battle maps of the current game directory.
     battleMapPanel_->setTemplates(templates());

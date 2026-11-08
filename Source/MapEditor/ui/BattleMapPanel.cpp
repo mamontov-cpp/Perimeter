@@ -58,10 +58,22 @@ BattleMapPanel::BattleMapPanel(SpgFile &battleMap, EditorSession &session,
     auto *buttons = new QHBoxLayout;
     auto *gotoButton = new QPushButton(tr("Go To"), this);
     auto *moveButton = new QPushButton(tr("Move to View Centre"), this);
+    auto *spawnButton = new QPushButton(tr("Place Spawn"), this);
+    spawnButton->setToolTip(
+        tr("Activate the Place Spawn mode: a click on the map moves the "
+           "spawn of the player selected in the list to that cell "
+           "(also on the Brush toolbar / Edit → Editor Mode, key S)."));
+    placeSpawnButton_ = spawnButton;
     auto *editButton = new QPushButton(tr("Edit Properties..."), this);
+    auto *removeButton = new QPushButton(tr("Remove Player"), this);
+    removeButton->setToolTip(
+        tr("Remove the selected player from the battle map (the last "
+           "remaining player cannot be removed)."));
     buttons->addWidget(gotoButton);
     buttons->addWidget(moveButton);
+    buttons->addWidget(spawnButton);
     buttons->addWidget(editButton);
+    buttons->addWidget(removeButton);
     layout->addLayout(buttons);
 
     auto *newRow = new QHBoxLayout;
@@ -83,6 +95,18 @@ BattleMapPanel::BattleMapPanel(SpgFile &battleMap, EditorSession &session,
             &BattleMapPanel::onMoveToViewCenter);
     connect(editButton, &QPushButton::clicked, this,
             &BattleMapPanel::onEditProperties);
+    connect(removeButton, &QPushButton::clicked, this, [this] {
+        if (selectedPlayer() < 0) {
+            QMessageBox::information(
+                this, tr("Remove Player"),
+                tr("Select a player in the list first."));
+            return;
+        }
+        emit removePlayerRequested();
+    });
+    connect(spawnButton, &QPushButton::clicked, this,
+            [this] { emit placeSpawnRequested(); });
+    spawnButton->setEnabled(false); // refresh() enables it with a loaded map
     connect(list_, &QListWidget::itemDoubleClicked, this,
             [this](QListWidgetItem *) { onGoTo(); });
     connect(newButton, &QPushButton::clicked, this, [this] {
@@ -116,6 +140,10 @@ int BattleMapPanel::selectedPlayer() const
 
 void BattleMapPanel::refresh()
 {
+    if (placeSpawnButton_) {
+        // The mode places a battle-map spawn — meaningless without a map.
+        placeSpawnButton_->setEnabled(battleMap_.loaded());
+    }
     if (!battleMap_.loaded()) {
         header_->setText(tr("No battle map loaded."));
         list_->clear();
@@ -125,6 +153,11 @@ void BattleMapPanel::refresh()
                          .arg(QString::fromStdString(battleMap_.worldName()))
                          .arg(battleMap_.zeroLayerHeight())
                          .arg(battleMap_.playerCount()));
+
+    // Keep the selected player across the rebuild: a spawn move / property
+    // edit refreshes the list, and the Place Spawn mode would otherwise lose
+    // its target after every single placement.
+    const int selected = selectedPlayer();
 
     list_->clear();
     for (int i = 0; i < battleMap_.playerCount(); ++i) {
@@ -142,6 +175,9 @@ void BattleMapPanel::refresh()
             list_);
         item->setData(Qt::UserRole, i);
         item->setForeground(kPlayerColors[i % 8]);
+        if (i == selected) {
+            list_->setCurrentItem(item);
+        }
     }
 }
 

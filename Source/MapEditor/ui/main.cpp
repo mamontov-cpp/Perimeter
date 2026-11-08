@@ -2,10 +2,16 @@
 #include "ViewportWidget.h"
 #include "MinimapWidget.h"
 #include "BrushTool.h"
+#include "BattleMapController.h"
+#include "BattleMapPanel.h"
 
+#include <QAction>
 #include <QApplication>
 #include <QDir>
 #include <QDoubleSpinBox>
+#include <QFileInfo>
+#include <QListWidget>
+#include <QPushButton>
 #include <QToolBar>
 #include <QImage>
 #include <QMouseEvent>
@@ -86,6 +92,118 @@ int main(int argc, char *argv[])
         QTimer::singleShot(10000, &window, [&window, world] {
             window.debugLoadWorld(world.toStdString());
         });
+        // Battle-map / Place Spawn repro: MAP_EDITOR_BATTLEMAP=<file.spg>
+        // opens the map once the world is loaded, then drives the Place
+        // Spawn mode end-to-end (action enabled -> mode switch -> a
+        // simulated viewport click moves the selected player's anchor) and
+        // exercises the panel's Remove Player button.
+        const QString battleMap = qEnvironmentVariable("MAP_EDITOR_BATTLEMAP");
+        if (!battleMap.isEmpty()) {
+            QTimer::singleShot(16000, &window, [&window, gameDir, battleMap] {
+                MapEditor::editorTrace("autotest: battle map step start");
+                MapEditor::BattleMapController *bm = window.debugBattleMaps();
+                if (!bm) {
+                    MapEditor::editorTrace("autotest: battle map — no controller");
+                    return;
+                }
+                QString path;
+                for (const QString &sub :
+                     {QStringLiteral("RESOURCE/Battle"),
+                      QStringLiteral("RESOURCE/Worlds")}) {
+                    const QString candidate =
+                        QDir(gameDir).filePath(sub + QLatin1Char('/') + battleMap);
+                    if (QFileInfo::exists(candidate)) {
+                        path = candidate;
+                        break;
+                    }
+                }
+                if (path.isEmpty()) {
+                    MapEditor::editorTrace("autotest: battle map '%s' not found",
+                                           battleMap.toStdString().c_str());
+                    return;
+                }
+                const bool opened = bm->openPath(path);
+                MapEditor::editorTrace("autotest: battle map opened=%d path=%s",
+                                       opened ? 1 : 0,
+                                       path.toStdString().c_str());
+                QAction *spawnAction = window.debugPlaceSpawnAction();
+                MapEditor::editorTrace(
+                    "autotest: placeSpawn action present=%d enabled=%d",
+                    spawnAction ? 1 : 0,
+                    (spawnAction && spawnAction->isEnabled()) ? 1 : 0);
+                if (!spawnAction || !spawnAction->isEnabled()) {
+                    return;
+                }
+                // Drive the BATTLE MAP PANEL's "Place Spawn" button (the
+                // user-facing path) instead of triggering the action.
+                QPushButton *panelSpawn = nullptr;
+                for (QPushButton *button :
+                     bm->panel()->findChildren<QPushButton *>()) {
+                    if (button->text() == QStringLiteral("Place Spawn")) {
+                        panelSpawn = button;
+                    }
+                }
+                MapEditor::editorTrace("autotest: panel placeSpawn button=%d enabled=%d",
+                                       panelSpawn ? 1 : 0,
+                                       (panelSpawn && panelSpawn->isEnabled()) ? 1 : 0);
+                if (panelSpawn) {
+                    panelSpawn->click();
+                }
+                MapEditor::ViewportWidget *vp = window.debugViewport();
+                MapEditor::editorTrace(
+                    "autotest: viewport mode after trigger=%d (expect %d=PlaceSpawn)",
+                    vp ? static_cast<int>(vp->editorMode()) : -1,
+                    static_cast<int>(MapEditor::ViewportWidget::EditorMode::PlaceSpawn));
+                if (!vp) {
+                    return;
+                }
+                // Select player 0 in the panel list, then simulate the click
+                // by calling the viewport's signal directly (Qt signals are
+                // plain member functions).
+                if (QListWidget *list = bm->panel()->findChild<QListWidget *>()) {
+                    list->setCurrentRow(0);
+                }
+                double ax = 0;
+                double ay = 0;
+                bm->spgFile().playerAnchor(0, ax, ay);
+                const int cx = static_cast<int>(vp->width() / 2);
+                const int cy = static_cast<int>(vp->height() / 2);
+                vp->spawnPlacementRequested(cx, cy);
+                double nx = 0;
+                double ny = 0;
+                bm->spgFile().playerAnchor(0, nx, ny);
+                MapEditor::editorTrace(
+                    "autotest: spawn anchor (%.1f,%.1f) -> (%.1f,%.1f) moved=%d",
+                    ax, ay, nx, ny, (nx != ax || ny != ay) ? 1 : 0);
+                // Remove Player button: find it by text, click, count must drop.
+                const int before = bm->spgFile().playerCount();
+                QString buttonTexts;
+                QPushButton *remove = nullptr;
+                for (QPushButton *button :
+                     bm->panel()->findChildren<QPushButton *>()) {
+                    buttonTexts += QStringLiteral(" [") + button->text()
+                                   + QStringLiteral("]");
+                    if (button->text() == QStringLiteral("Remove Player")) {
+                        remove = button;
+                    }
+                }
+                MapEditor::editorTrace("autotest: panel buttons:%s found=%d",
+                                       buttonTexts.toStdString().c_str(),
+                                       remove ? 1 : 0);
+                MapEditor::editorTrace("autotest: selectedPlayer=%d",
+                                       bm->panel()->selectedPlayer());
+                // The spawn move refreshed the panel and cleared the list
+                // selection — select again before the removal.
+                if (QListWidget *list = bm->panel()->findChild<QListWidget *>()) {
+                    list->setCurrentRow(0);
+                }
+                if (remove) {
+                    remove->click();
+                }
+                MapEditor::editorTrace("autotest: players %d -> %d",
+                                       before, bm->spgFile().playerCount());
+            });
+        }
         if (!shots.isEmpty()) {
             QDir().mkpath(shots);
             using ViewMode = MapEditor::ViewportWidget::ViewMode;

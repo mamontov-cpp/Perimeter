@@ -82,6 +82,11 @@ public:
     /// The brush tool for the autotest harness (nullptr before the toolbar is
     /// built) — lets a repro drive a real stamp through the widget handlers.
     MapEditor::BrushTool *debugBrushTool() const { return brushTool_; }
+    /// The battle-map controller for the autotest harness (nullptr before
+    /// buildViewport).
+    MapEditor::BattleMapController *debugBattleMaps() const { return battleMaps_; }
+    /// The Place Spawn mode action for the autotest harness.
+    QAction *debugPlaceSpawnAction() const { return actModePlaceSpawn_; }
 
 private slots:
     void onActionSelectGameDir();
@@ -212,6 +217,13 @@ private:
     // hooks keep them).
     void createBrushActions();
     void createEditorModeActions();
+    /// The editor-mode switch body shared by the mode actions (toolbar /
+    /// Edit menu), the Place Spawn panel button (via the BattleMapController
+    /// signal) and the shortcut path: guards the Place Spawn precondition,
+    /// swaps the PickColor brush type for the Eyedropper and pushes the mode
+    /// into the viewport. `mode` is a ViewportWidget::EditorMode (int — the
+    /// header only forward-declares ViewportWidget).
+    void activateEditorMode(int mode);
 
     /// Put the current world name into the window title:
     /// "Perimeter Map Editor - <world>" while a world is loaded, otherwise
