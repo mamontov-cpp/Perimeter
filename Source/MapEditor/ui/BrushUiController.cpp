@@ -1747,7 +1747,8 @@ void BrushUiController::syncControls()
         const bool showsTarget =
             params.effect == MapEditor::BrushEffect::AlignVariableH ||
             params.effect == MapEditor::BrushEffect::Script;
-        const int shown = showsTarget ? params.heightLevel : params.strength;
+        const int shown = static_cast<int>(std::lround(
+            showsTarget ? params.heightLevel : params.strength));
         brushLevelSpin_->setToolTip(
             params.effect == MapEditor::BrushEffect::Script
                 ? tr("Height value the scripted brush script reads through "

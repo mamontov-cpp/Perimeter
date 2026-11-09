@@ -566,16 +566,20 @@ bool runModelBrushApplyTests()
     // round(norm_k * modelHeight) voxels; a target at or below the terrain
     // ends at the geo height with the dam removed (and no paint).
     auto expectColumn = [&](int columnX, double norm) {
-        const int targetVox = static_cast<int>(
-            std::lround(norm * static_cast<double>(modelHeight)));
+        // The brush keeps the target in Terra's 1/32 fixed point: one
+        // rounding to the nearest representable step, no whole-voxel
+        // quantization (that used to stair-step ramp columns).
+        const int target32 = static_cast<int>(std::llround(
+            norm * static_cast<double>(modelHeight) * (1 << VX_FRACTION)));
         const int geo = geoAt(columnX, cy);
-        const int expected = std::max(geo, targetVox << VX_FRACTION);
+        const int expected = std::max(geo, target32);
         TEST_REQUIRE(altAt(columnX, cy) == expected,
                      "column at x=%d must reach its target (geo %d, target "
-                     "%d voxels).",
-                     columnX - cx, geo >> VX_FRACTION, targetVox);
+                     "%d fixed = %d voxels).",
+                     columnX - cx, geo >> VX_FRACTION, target32,
+                     target32 >> VX_FRACTION);
         const int off = cy * mapW + columnX;
-        if (targetVox << VX_FRACTION > geo) {
+        if (target32 > geo) {
             TEST_REQUIRE(vMap.VxDBuf[off] != 0 &&
                              vMap.SurBuf[off] == 42,
                          "a column above the terrain keeps the dam and "

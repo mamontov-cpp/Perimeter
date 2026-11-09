@@ -138,7 +138,10 @@ bool readPosition(duk_context* ctx, int idx, int& x, int& y)
 /// Applies one op through the brush: a filled circle/square mask of the
 /// given radius at the position, driven with the Dam mode and the effect
 /// the API call names. Shared tail of all *Height/paint* bindings.
-duk_ret_t applyOp(duk_context* ctx, BrushEffect effect, int value,
+/// `value` is double: the height arguments accept FRACTIONAL voxels and are
+/// converted to Terra's 1/32 fixed point at stamp time (the packed RGB color
+/// of paintColor also rides in it).
+duk_ret_t applyOp(duk_context* ctx, BrushEffect effect, double value,
                   bool valueIsColor)
 {
     ScriptEnv* env = getEnv(ctx);
@@ -179,11 +182,12 @@ duk_ret_t applyOp(duk_context* ctx, BrushEffect effect, int value,
         op.heightLevel = BrushTool::clampHeightLevel(value);
         break;
     case BrushEffect::SetColor: {
+        const int packed = static_cast<int>(value);
         const std::vector<unsigned char> pal =
             env->session->paletteBytes(EditorSession::PaletteLayer::Dam);
         if (pal.size() == 768) {
-            op.colorIndex = nearestPaletteEntry(pal.data(), (value >> 16) & 0xFF,
-                                                (value >> 8) & 0xFF, value & 0xFF);
+            op.colorIndex = nearestPaletteEntry(pal.data(), (packed >> 16) & 0xFF,
+                                                (packed >> 8) & 0xFF, packed & 0xFF);
         }
         break;
     }
@@ -220,23 +224,27 @@ duk_ret_t apiGetCurrentThickness(duk_context* ctx)
 
 duk_ret_t apiGetCurrentHeight(duk_context* ctx)
 {
-    duk_push_int(ctx, getEnv(ctx)->params->heightLevel);
+    // Number (may be fractional — the scripted brush height is fixed-point
+    // under the hood since the MCP/script fractional-height support).
+    duk_push_number(ctx, getEnv(ctx)->params->heightLevel);
     return 1;
 }
 
+// Height arguments are read as NUMBERS: fractional voxels (10.4) stay
+// fractional through to Terra's 1/32 fixed point instead of truncating.
 duk_ret_t apiRaiseHeight(duk_context* ctx)
 {
-    return applyOp(ctx, BrushEffect::ChangeHeight, duk_to_int(ctx, 1), false);
+    return applyOp(ctx, BrushEffect::ChangeHeight, duk_to_number(ctx, 1), false);
 }
 
 duk_ret_t apiLowerHeight(duk_context* ctx)
 {
-    return applyOp(ctx, BrushEffect::ChangeHeight, -duk_to_int(ctx, 1), false);
+    return applyOp(ctx, BrushEffect::ChangeHeight, -duk_to_number(ctx, 1), false);
 }
 
 duk_ret_t apiSetHeight(duk_context* ctx)
 {
-    return applyOp(ctx, BrushEffect::AlignVariableH, duk_to_int(ctx, 1), false);
+    return applyOp(ctx, BrushEffect::AlignVariableH, duk_to_number(ctx, 1), false);
 }
 
 duk_ret_t apiSetToZP(duk_context* ctx)

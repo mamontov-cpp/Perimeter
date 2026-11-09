@@ -178,7 +178,9 @@ struct BrushParams
 {
     BrushShape shape = BrushShape::FilledCircle;
     int radius = 8;      ///< stamp half-size in map cells (clamped to kMaxBrushRadius).
-    int strength = 30;   ///< 1..100: per-stamp delta in 1/32 m units *at full influence*.
+    double strength = 30.0; ///< 1..100: per-stamp delta in voxels *at full
+                            ///< influence* (fractional voxels allowed - converted
+                            ///< to the 1/32 fixed point at stamp time).
     BrushMode mode = BrushMode::Geo;   ///< Geo/Dam target layer (rules per effect, T3.2).
     int colorIndex = 0;                ///< palette index for SetColor (0..255), geosurface<128, dam>=128.
     BrushEffect effect = BrushEffect::ChangeHeight;
@@ -190,7 +192,11 @@ struct BrushParams
 
     /// AlignVariableH target height in whole voxels (0..255, clamped; 1 voxel
     /// = 1/32 m). Level-to-zeroplast (Align4ZP) reads vMap.hZeroPlast instead.
-    int heightLevel = 32;
+    /// Target/set height in VOXELS - fractional values allowed. Converted to
+    /// Terra's 1/32-voxel fixed point (VX_FRACTION) exactly once, at stamp
+    /// time, so scripted/MCP heights like 10.4 land on the nearest supported
+    /// fixed-point value instead of truncating to a whole voxel.
+    double heightLevel = 32.0;
 
     /// Stroke width in cells of the UNFILLED shapes
     /// (CircleOutline, SquareOutline, Line). 0 = the full stamp extent (the
@@ -424,9 +430,13 @@ public:
     static int clampRadius(int radius);
     /// Strength clamped into [1,100] (percent of the full per-stamp delta).
     static int clampStrength(int strength);
+    /// Fractional variant: clamps the per-stamp delta in voxels.
+    static double clampStrength(double strength);
     /// Alignment target height clamped into [0, MAX_VX_HEIGHT_WHOLE] whole
     /// voxels — the AlignVariableH target domain (the UI spinbox uses it too).
     static int clampHeightLevel(int level);
+    /// Fractional variant: clamps in voxels, keeps the fraction.
+    static double clampHeightLevel(double level);
     /// Thickness clamped into [0, maxThickness(radius)]; 0 = "auto" (the
     /// pre-thickness behaviour of the shape).
     static int clampThickness(int thickness, int radius);

@@ -270,10 +270,10 @@ boolean: true — заполненный квадрат, false — заполн�
 | `getCurrentPos()` | `{x, y}` — точка текущего штампа |
 | `getCurrentRadius()` | радиус кисти из UI |
 | `getCurrentThickness()` | толщина штриха из UI |
-| `getCurrentHeight()` | высота кисти из UI (спинбокс «vox») |
-| `raiseHeight(pos, height, radius, square)` | поднять дамбу на `height` вокселей |
-| `lowerHeight(pos, height, radius, square)` | опустить дамбу на `height` вокселей |
-| `setHeight(pos, height, radius, square)` | установить дамбу на высоту `height` |
+| `getCurrentHeight()` | высота кисти из UI (спинбокс «vox», число) |
+| `raiseHeight(pos, height, radius, square)` | поднять дамбу на `height` вокселей — целых или дробных (10.4 округляется до ближайшего шага 1/32 вокселя, как в игре) |
+| `lowerHeight(pos, height, radius, square)` | опустить дамбу на `height` вокселей (дробные — как у raiseHeight) |
+| `setHeight(pos, height, radius, square)` | установить дамбу на высоту `height` (дробные — как у raiseHeight) |
 | `setToZP(pos, radius, square)` | выровнять до зеропласта + пометить |
 | `paintSoot(pos, radius, square)` | гарь |
 | `paintVeryLightDam(pos, radius, square)` | «очень лёгкая дамба» |

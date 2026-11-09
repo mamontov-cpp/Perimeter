@@ -452,12 +452,44 @@ int BrushTool::clampRadius(int radius)
 
 int BrushTool::clampStrength(int strength)
 {
-    return std::clamp(strength, 1, 100);
+    return static_cast<int>(clampStrength(static_cast<double>(strength)));
+}
+
+double BrushTool::clampStrength(double strength)
+{
+    return std::clamp(strength, 1.0, 100.0);
 }
 
 int BrushTool::clampHeightLevel(int level)
 {
-    return std::clamp(level, 0, MAX_VX_HEIGHT_WHOLE);
+    return static_cast<int>(clampHeightLevel(static_cast<double>(level)));
+}
+
+double BrushTool::clampHeightLevel(double level)
+{
+    return std::clamp(level, 0.0, static_cast<double>(MAX_VX_HEIGHT_WHOLE));
+}
+
+/// The height a set/alignment brush drives a cell to, in Terra's 1/32-voxel
+/// fixed point: the voxel value (whole or fractional) converted ONCE with
+/// rounding to the nearest representable step.
+static int heightLevelFixedPoint(double levelVox)
+{
+    const double clamped =
+        std::clamp(levelVox, 0.0, static_cast<double>(MAX_VX_HEIGHT_WHOLE));
+    return static_cast<int>(std::llround(clamped * (1 << VX_FRACTION)));
+}
+
+/// Terra's setHAppoximation() only accepts WHOLE voxels (it shifts, dropping
+/// the fraction), but the hAppr member itself is the fixed-point cap the
+/// toolzer clamps at - and it is public. Set it to the EXACT fixed-point
+/// target so fractional heights converge exactly (Terra stores the fraction
+/// natively in AtrBuf's VX_FRACTION bits).
+template <toolzer2TerrainEffect T>
+static void setExactToolzerTarget(individualToolzer<T>& toolzer, int target32)
+{
+    toolzer.setHAppoximation(target32 >> VX_FRACTION);
+    toolzer.hAppr = target32;
 }
 
 int BrushTool::maxThickness(int radius)
@@ -553,9 +585,10 @@ int BrushTool::heightDeltaMagnitude(const BrushParams& params, unsigned char inf
     if (influence == 0) {
         return 0;
     }
-    // Full delta = strength in 1/32 m units (VX_FRACTION), scaled by the mask
-    // influence; round half away from zero.
-    const int full = clampStrength(params.strength) << VX_FRACTION;
+    // Full delta = strength converted to 1/32 m units (VX_FRACTION),
+    // scaled by the mask influence; round half away from zero.
+    const int full = static_cast<int>(
+        std::llround(clampStrength(params.strength) * (1 << VX_FRACTION)));
     return scaleDeltaByInfluence(full, influence);
 }
 
@@ -1301,7 +1334,7 @@ bool BrushTool::applySculpt(const BrushMask& absoluteMask,
                 vMap.AtrBuf[off] & ~At_ZPMASK);
         }
         seedDamLayer(off);
-        sculptToolzer.setHAppoximation(target32 >> VX_FRACTION);
+        setExactToolzerTarget(sculptToolzer, target32);
         sculptToolzer.tVoxSetAll(off, dV);
     }
 
@@ -1339,15 +1372,15 @@ bool BrushTool::applyShape3D(const BrushMask& absoluteMask,
     shape = clampShape3DSettings(params.shape3d, shape);
 
     // Pass 1 (PRE-edit): collect the covered cells, their heights and their
-    // shape targets. The target is absolute: the Height base plus the shape
-    // profile (Shape3D.h) scaled by the Shape Height amplitude, QUANTIZED to
-    // whole voxels — Terra's alignment toolzer caps at whole-voxel
-    // granularity (setHAppoximation shifts, zeroing the fraction bits), so a
-    // fractional target would sit above the cap and the stamp would never
-    // converge to a no-op.
+    // shape targets. The target is absolute — the Height base plus the shape
+    // profile (Shape3D.h) scaled by the Shape Height amplitude — kept in
+    // Terra's 1/32-voxel fixed point end to end: rounding once at the very
+    // end avoids the whole-voxel stair-stepping a per-cell lround would put
+    // on smooth profiles, and setExactToolzerTarget caps the toolzer at the
+    // exact fractional target.
     const int shapeHeightVox =
         std::clamp(params.shapeHeight, 0, MAX_VX_HEIGHT_WHOLE);
-    const int baseVox = clampHeightLevel(params.heightLevel);
+    const double baseVox = clampHeightLevel(params.heightLevel);
     const int cx = (bx + bxEnd - 1) / 2;
     const int cy = (by + byEnd - 1) / 2;
     std::vector<int> offs;
@@ -1370,14 +1403,14 @@ bool BrushTool::applyShape3D(const BrushMask& absoluteMask,
                 shape3DProfile(params.shape3d, shape,
                                static_cast<double>(x - cx),
                                static_cast<double>(y - cy));
-            const int targetVox = std::clamp(
-                baseVox +
-                    static_cast<int>(std::lround(profile * shapeHeightVox)),
-                0, MAX_VX_HEIGHT_WHOLE);
+            const double targetVox = baseVox + profile * shapeHeightVox;
+            const int target32 = std::clamp(
+                static_cast<int>(std::llround(targetVox * (1 << VX_FRACTION))),
+                0, MAX_VX_HEIGHT);
             const int off = y * static_cast<int>(vMap.H_SIZE) + x;
             offs.push_back(off);
             alts.push_back(vMap.SGetAlt(off));
-            targets.push_back(targetVox << VX_FRACTION);
+            targets.push_back(target32);
             influences.push_back(influence);
         }
     }
@@ -1442,7 +1475,7 @@ bool BrushTool::applyShape3D(const BrushMask& absoluteMask,
                 vMap.AtrBuf[off] & ~At_ZPMASK);
         }
         seedDamLayer(off);
-        shapeToolzer.setHAppoximation(target32 >> VX_FRACTION);
+        setExactToolzerTarget(shapeToolzer, target32);
         shapeToolzer.tVoxSetAll(off, dV);
     }
 
@@ -1525,27 +1558,29 @@ bool BrushTool::applyModelBrush(const BrushMask& absoluteMask,
     if (offs.empty() || altCount == 0) {
         return false;
     }
+    // Targets in Terra's 1/32 fixed point throughout: averageAlt is already
+    // fixed point, the model fraction scales in voxel units — one rounding
+    // at the end lands each cell on the nearest representable step instead
+    // of a whole voxel (no stair-stepping on smooth model slopes).
     const double averageAlt = altSum / static_cast<double>(altCount);
-    const double averageVox =
-        averageAlt / static_cast<double>(1 << VX_FRACTION);
+    const double heightScale =
+        static_cast<double>(heightVox) * (1 << VX_FRACTION);
     for (std::size_t k = 0; k < offs.size(); ++k) {
         const double norm = norms[k];
         if (mode == 0) {
             targets[k] = std::clamp(
-                static_cast<int>(std::lround(norm * heightVox)), 0,
-                MAX_VX_HEIGHT_WHOLE);
+                static_cast<int>(std::llround(norm * heightScale)), 0,
+                MAX_VX_HEIGHT);
         } else if (mode == 1) {
             targets[k] = std::clamp(
-                static_cast<int>(
-                    std::lround(averageVox + norm * heightVox)),
-                0, MAX_VX_HEIGHT_WHOLE);
+                static_cast<int>(std::llround(averageAlt + norm * heightScale)),
+                0, MAX_VX_HEIGHT);
         } else {
             // Subtract: a negative result removes the dam (clamped at 0 —
             // the toolzer removes the dam on its way down to the terrain).
             targets[k] = std::clamp(
-                static_cast<int>(
-                    std::lround(averageVox - norm * heightVox)),
-                0, MAX_VX_HEIGHT_WHOLE);
+                static_cast<int>(std::llround(averageAlt - norm * heightScale)),
+                0, MAX_VX_HEIGHT);
         }
     }
 
@@ -1558,7 +1593,7 @@ bool BrushTool::applyModelBrush(const BrushMask& absoluteMask,
         if (!heightGateAllows(params, alts[k])) {
             continue;
         }
-        const int target32 = targets[k] << VX_FRACTION;
+        const int target32 = targets[k];
         if (dir > 0 && alts[k] < target32) {
             anyMoves = true;
         } else if (dir < 0 && alts[k] > target32) {
@@ -1583,7 +1618,7 @@ bool BrushTool::applyModelBrush(const BrushMask& absoluteMask,
         if (!heightGateAllows(params, alts[k])) {
             continue;
         }
-        const int target32 = targets[k] << VX_FRACTION;
+        const int target32 = targets[k];
         int dV = target32 - alts[k];
         if (dir > 0 && dV <= 0) {
             continue;
@@ -1601,7 +1636,7 @@ bool BrushTool::applyModelBrush(const BrushMask& absoluteMask,
                 vMap.AtrBuf[off] & ~At_ZPMASK);
         }
         seedDamLayer(off);
-        modelToolzer.setHAppoximation(targets[k]);
+        setExactToolzerTarget(modelToolzer, targets[k]);
         modelToolzer.tVoxSetAll(off, dV);
         if (mode == 0 && indices[k] >= 0 && vMap.VxDBuf[off] != 0) {
             vMap.SurBuf[off] = static_cast<unsigned char>(indices[k]);
@@ -1842,10 +1877,13 @@ void BrushTool::applyEffectToCell(const BrushParams& params, int x, int y, unsig
         // The target height is synced before every cell — a static toolzer
         // would otherwise carry the hZeroPlast of a previously loaded world.
         const bool damCell = vMap.VxDBuf[off] != 0;
-        const int whole = params.effect == BrushEffect::Align4ZP
-            ? static_cast<int>(vMap.hZeroPlast)
-            : clampHeightLevel(params.heightLevel);
-        const int target = whole << VX_FRACTION;
+        // The target in Terra's 1/32 fixed point: hZeroPlast is whole by
+        // definition; a fractional heightLevel (scripted/MCP brushes) is
+        // converted once to the nearest supported fixed-point value.
+        const int target =
+            params.effect == BrushEffect::Align4ZP
+                ? static_cast<int>(vMap.hZeroPlast) << VX_FRACTION
+                : heightLevelFixedPoint(params.heightLevel);
 
         if (params.effect == BrushEffect::Align4ZP &&
             (vMap.AtrBuf[off] & At_ZPMASK) == At_ZEROPLAST) {
@@ -1875,7 +1913,7 @@ void BrushTool::applyEffectToCell(const BrushParams& params, int x, int y, unsig
         if (params.effect == BrushEffect::AlignVariableH &&
             params.mode == BrushMode::Dam) {
             const int wholeZP = static_cast<int>(vMap.hZeroPlast);
-            if (whole != wholeZP &&
+            if ((target >> VX_FRACTION) != wholeZP &&
                 (vMap.AtrBuf[off] & At_ZPMASK) == At_ZEROPLAST) {
                 vMap.AtrBuf[off] = static_cast<unsigned char>(
                     vMap.AtrBuf[off] & ~At_ZPMASK);
@@ -1899,14 +1937,14 @@ void BrushTool::applyEffectToCell(const BrushParams& params, int x, int y, unsig
                 // Mark only when the cell's top surface sits exactly at the
                 // zeroplast height (the toolzer checks that itself).
                 static individualToolzer<T2TE_PLOTTING_ZEROPLAST> plotZPToolzer;
-                plotZPToolzer.setHAppoximation(whole);
+                setExactToolzerTarget(plotZPToolzer, target);
                 plotZPToolzer.tVoxSet(off, 1);
             }
             break;
         }
         if (params.effect == BrushEffect::Align4ZP) {
             static individualToolzer<T2TE_ALIGNMENT_TERRAIN_4ZP> alignZPToolzer;
-            alignZPToolzer.setHAppoximation(whole);
+            setExactToolzerTarget(alignZPToolzer, target);
             // tVoxSetAll, not tVoxSet: the zeroplast brush ignores the GRIDAT
             // hardness. tVoxSet attenuates a lowering by
             // `dV*(hardness<<hardness)/24` — 0/24, 2/24, 8/24, 24/24 for
@@ -1921,7 +1959,7 @@ void BrushTool::applyEffectToCell(const BrushParams& params, int x, int y, unsig
             // merged brush levels to hZeroPlast and marks every cell that
             // sits at that height (Terra's own plotCircleZL behaviour).
             static individualToolzer<T2TE_PLOTTING_ZEROPLAST> plotZPToolzer;
-            plotZPToolzer.setHAppoximation(whole);
+            setExactToolzerTarget(plotZPToolzer, target);
             plotZPToolzer.tVoxSet(off, 1);
         } else {
             // AlignVariableH drives the (seeded) dam or the geo layer to the
@@ -1929,7 +1967,7 @@ void BrushTool::applyEffectToCell(const BrushParams& params, int x, int y, unsig
             // hardness attenuation does not leave a lowering stamp short of
             // the chosen height: "set to height" is exact in both directions.
             static individualToolzer<T2TE_ALIGNMENT_TERRAIN_VARIABLE_H> alignHToolzer;
-            alignHToolzer.setHAppoximation(whole);
+            setExactToolzerTarget(alignHToolzer, target);
             alignHToolzer.tVoxSetAll(off, dV);
         }
         break;

@@ -418,8 +418,10 @@ inline QVector<McpToolSpec> mcpToolCatalog()
                              "lattice), inflate (normal offset), gaussianBlur "
                              "(needs blurRadius). layer: 'dam' (default, "
                              "includes all sculpting) or 'geo'. height in "
-                             "whole voxels (1 voxel = 1/32 m) for the height "
-                             "effects; fraction (0..1) is the sculpting blend "
+                             "voxels - whole or fractional (fractional "
+                             "values convert to the nearest 1/32-voxel "
+                             "fixed-point step Terra supports) for the "
+                             "height effects; fraction (0..1) is the sculpting blend "
                              "for smooth/flatten/tricubic/inflate; square "
                              "switches the stamp shape; sides/angleOffset "
                              "configure the regular-polygon mask. 3D SOLID "
@@ -461,7 +463,7 @@ inline QVector<McpToolSpec> mcpToolCatalog()
                          {QStringLiteral("radius"),
                           obj({{QStringLiteral("type"), integer}})},
                          {QStringLiteral("height"),
-                          obj({{QStringLiteral("type"), integer}})},
+                          obj({{QStringLiteral("type"), num}})},
                          {QStringLiteral("fraction"),
                           obj({{QStringLiteral("type"), num},
                                {QStringLiteral("default"), 1.0}})},

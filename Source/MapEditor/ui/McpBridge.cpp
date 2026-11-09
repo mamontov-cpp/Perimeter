@@ -1194,14 +1194,14 @@ QVariantMap MapEditor::McpBridge::mcpApplyBrush(const QVariantMap& args)
     if (effectName == QLatin1String("raiseHeight")) {
         op.effect = MapEditor::BrushEffect::ChangeHeight;
         op.direction = 1;
-        op.strength = MapEditor::BrushTool::clampStrength(mcpArgInt(args, "height", 1));
+        op.strength = MapEditor::BrushTool::clampStrength(mcpArgDbl(args, "height", 1.0));
     } else if (effectName == QLatin1String("lowerHeight")) {
         op.effect = MapEditor::BrushEffect::ChangeHeight;
         op.direction = -1;
-        op.strength = MapEditor::BrushTool::clampStrength(mcpArgInt(args, "height", 1));
+        op.strength = MapEditor::BrushTool::clampStrength(mcpArgDbl(args, "height", 1.0));
     } else if (effectName == QLatin1String("setHeight")) {
         op.effect = MapEditor::BrushEffect::AlignVariableH;
-        op.heightLevel = MapEditor::BrushTool::clampHeightLevel(mcpArgInt(args, "height", 0));
+        op.heightLevel = MapEditor::BrushTool::clampHeightLevel(mcpArgDbl(args, "height", 0.0));
     } else if (effectName == QLatin1String("setToZP")) {
         op.effect = MapEditor::BrushEffect::Align4ZP;
     } else if (effectName == QLatin1String("paintSoot")) {
