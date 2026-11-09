@@ -444,7 +444,11 @@ inline QVector<McpToolSpec> mcpToolCatalog()
                              "heightmap rectangle; modelHeight (voxels), "
                              "scaleX/scaleY (0..1) and mode (0 place, 1 add, "
                              "2 subtract) configure it. Both are Dam-layer "
-                             "only. DIFFERENCE MODE: with set_difference_mode "
+                             "only. IMAGE MASK: after load_brush_image the stamp geometry is the "
+                             "loaded alpha mask instead of the shape; "
+                             "maskScale (10-800 percent) rescales it "
+                             "like the toolbar Mask spin. DIFFERENCE "
+                             "MODE: with set_difference_mode "
                              "ON every stamp writes the .gmp difference data "
                              "instead of the base terrain.") +
                   undoNote,
@@ -510,7 +514,10 @@ inline QVector<McpToolSpec> mcpToolCatalog()
                           obj({{QStringLiteral("type"), str},
                                {QStringLiteral("enum"),
                                 QJsonArray{QStringLiteral("dam"),
-                                           QStringLiteral("geo")}}})}})},
+                                           QStringLiteral("geo")}}})},
+                         {QStringLiteral("maskScale"),
+                          obj({{QStringLiteral("type"), integer},
+                               {QStringLiteral("default"), 100}})}})},
                    {QStringLiteral("required"),
                     QJsonArray{QStringLiteral("effect"), QStringLiteral("x"),
                                QStringLiteral("y"), QStringLiteral("radius")}}})});
@@ -607,6 +614,25 @@ inline QVector<McpToolSpec> mcpToolCatalog()
                                    QStringLiteral("r"), QStringLiteral("g"),
                                    QStringLiteral("b")}}})});
     }
+
+    t.append({QStringLiteral("load_brush_image"),
+              QStringLiteral("Loads an image (PNG/TGA/BMP/JPG) as the brush "
+                             "stamp mask — the image's ALPHA channel becomes "
+                             "the stamp influence: fully transparent pixels "
+                             "do not stamp at all, partial alpha scales the "
+                             "effect. From then on, apply_brush stamps "
+                             "through the image instead of the shape/radius "
+                             "geometry (any effect; Geo and Dam layer). "
+                             "Rescale the stamp with the maskScale argument "
+                             "of apply_brush (10-800 percent, like the "
+                             "toolbar Mask spin).") +
+                  undoNote,
+              obj({{QStringLiteral("type"), QStringLiteral("object")},
+                   {QStringLiteral("properties"),
+                    obj({{QStringLiteral("file"),
+                          obj({{QStringLiteral("type"), str}})}})},
+                   {QStringLiteral("required"),
+                    QJsonArray{QStringLiteral("file")}}})});
 
     t.append({QStringLiteral("load_decal_image"),
               QStringLiteral("Loads an image (PNG/TGA/BMP, max 512 px per "

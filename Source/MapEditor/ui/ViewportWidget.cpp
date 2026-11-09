@@ -218,6 +218,10 @@ void ViewportWidget::setSession(EditorSession *session)
             zoomToFit();
             editorTrace("ViewportWidget: setSession update");
             update();
+            // The first painted frame after a fresh bind can carry small
+            // artifacts (the deferred GPU rebuild consumed pre-drain caches);
+            // force a full redraw right after it (forceFullRedraw).
+            fullRedrawAfterLoadPending_ = true;
         } else {
             editorTrace("ViewportWidget: setSession bindWorld FAILED");
         }
@@ -251,8 +255,18 @@ void ViewportWidget::reloadWorld()
             needs3DRedraw_ = true;
             scheduleGpuRebuild();
             update();
+            fullRedrawAfterLoadPending_ = true;
         }
     }
+}
+
+void ViewportWidget::forceFullRedraw()
+{
+    if (renderer_ && renderer_->isBound()) {
+        renderer_->invalidateAll();
+    }
+    needs3DRedraw_ = true;
+    update();
 }
 
 /// Push the widget-level view settings into a freshly bound renderer: the
@@ -1429,6 +1443,15 @@ void ViewportWidget::paintGL()
     painter.setRenderHint(QPainter::Antialiasing);
     if (!baseDrawn) {
         painter.fillRect(rect(), QColor(32, 32, 32));
+    }
+
+    // First frame after a world load: force a full redraw so the SECOND
+    // frame repaints everything from a consistent state (the first frame
+    // can carry small artifacts — the deferred GPU rebuild consumed the
+    // pre-drain caches and the view state settled mid-frame).
+    if (fullRedrawAfterLoadPending_) {
+        fullRedrawAfterLoadPending_ = false;
+        forceFullRedraw();
     }
 
     if (viewMode_ == ViewMode::Oblique) {

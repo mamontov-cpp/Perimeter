@@ -89,7 +89,7 @@ bool runMcpServerTests()
     // 1: catalog sanity.
     // ------------------------------------------------------------------
     const QVector<MapEditor::McpToolSpec> catalog = MapEditor::mcpToolCatalog();
-    TEST_REQUIRE(catalog.size() >= 37,
+    TEST_REQUIRE(catalog.size() >= 38,
                  "the catalog must expose at least 37 tools, got %lld.",
                  static_cast<long long>(catalog.size()));
     // The complete tool set — kept in sync with the dispatch handlers in
@@ -110,6 +110,7 @@ bool runMcpServerTests()
         QStringLiteral("delete_nature_object"), QStringLiteral("apply_brush"),
         QStringLiteral("run_script"),      QStringLiteral("set_scripted_brush_script"),
         QStringLiteral("get_terrain_at"),  QStringLiteral("get_palette"),
+        QStringLiteral("load_brush_image"),
         QStringLiteral("load_decal_image"), QStringLiteral("import_model"),
         QStringLiteral("set_difference_mode"), QStringLiteral("save_difference"),
         QStringLiteral("load_difference"), QStringLiteral("list_players"),

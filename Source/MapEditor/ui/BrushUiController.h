@@ -66,10 +66,26 @@ public:
     void updateEnabledStates(bool worldLoaded);
     // Re-read the tool parameters into the buttons/spinbox state.
     void syncControls();
+    /// The shared body of the Mask scale spin and setMaskScalePercent:
+    /// recomputes the active image stamp from its un-scaled original at
+    /// maskScalePercent_.
+    void applyMaskScale();
     // The color swatch + index spin follow params().colorIndex.
     void syncColorControls();
     /// Push a palette index into the color spin without firing its signal.
     void setColorIndex(int index);
+    /// Dialog-free image-mask loading, shared by the UI picker (onLoadBrushImage)
+    /// and the MCP load_brush_image tool: the image's alpha channel becomes
+    /// the stamp influence (fully transparent pixels do not stamp at all).
+    /// Empty string on success, an agent/user-readable error otherwise.
+    /// The un-scaled original is kept and the scale resets to 100%, exactly
+    /// like the toolbar flow.
+    QString loadBrushImage(const QString &filePath);
+    /// Recomputes the active image stamp (brush mask or ImageDecal decal)
+    /// at `percent` of the original size (10..800), centred under the cursor
+    /// — the toolbar Mask spin body, callable headless (MCP apply_brush).
+    void setMaskScalePercent(int percent);
+    int maskScalePercent() const { return maskScalePercent_; }
     /// Re-quantize the imported model colours against the current Dam
     /// palette (the MCP import_model path sets the raster directly, then
     /// quantizes through here).
@@ -211,6 +227,7 @@ private:
     // T3.5 — the image-mask scale control and the un-scaled original mask.
     QSpinBox *brushMaskScaleSpin_ = nullptr;
     MapEditor::BrushMask brushMaskOriginal_;
+    int maskScalePercent_ = 100;
     // ImageDecal — the un-scaled palette-index decal.
     MapEditor::ImageDecal::DecalImage decalOriginal_;
     // Exclusivity group of the common + sculpting brush-type actions.

@@ -1598,23 +1598,8 @@ void BrushUiController::buildBrushToolbar()
         tr("Scale of the loaded brush image relative to its original pixel "
            "size (the mask stays centred under the cursor)."));
     connect(brushMaskScaleSpin_, &QSpinBox::valueChanged, this, [this](int value) {
-        if (!brushTool_) {
-            return;
-        }
-        const double factor = value / 100.0;
-        // The same control scales whichever image stamp is active: the
-        // influence mask of the terrain tools (T3.5) or the palette-index
-        // decal image (ImageDecal). Both are recomputed from the un-scaled
-        // original, so repeated changes never accumulate blur.
-        if (brushTool_->params().effect == MapEditor::BrushEffect::ImageDecal) {
-            if (!decalOriginal_.empty()) {
-                brushTool_->setDecalImage(
-                    MapEditor::ImageDecal::scaleNearest(decalOriginal_, factor));
-            }
-        } else if (!brushMaskOriginal_.empty()) {
-            brushTool_->setImageMask(scaleBrushMask(brushMaskOriginal_, factor));
-        }
-        syncControls();
+        maskScalePercent_ = value;
+        applyMaskScale();
     });
     bar->addWidget(new QLabel(tr("Mask:"), bar));
     bar->addWidget(brushMaskScaleSpin_);
@@ -2003,38 +1988,31 @@ void BrushUiController::syncColorControls()
     }
 }
 
-void BrushUiController::onLoadBrushImage()
+QString BrushUiController::loadBrushImage(const QString &filePath)
 {
-    const QString filter = tr("Images (*.png *.tga *.bmp *.jpg *.jpeg);;All Files (*)");
-    const QString filePath = QFileDialog::getOpenFileName(
-        window_, tr("Load Brush Image"), QString(), filter);
-    if (filePath.isEmpty()) {
-        return;
+    if (!brushTool_) {
+        return tr("The brush tool is not available.");
     }
-
     // Load via QImageReader for explicit format control.
     QImageReader reader(filePath);
     reader.setAutoTransform(true);
     const QImage img = reader.read();
     if (img.isNull()) {
-        QMessageBox::warning(window_, tr("Image Load Failed"),
-            tr("Cannot load image '%1':\n%2")
-                .arg(filePath, reader.errorString()));
-        return;
+        return tr("Cannot load image '%1': %2")
+            .arg(filePath, reader.errorString());
     }
 
-    // Convert to brush mask.
+    // Convert to brush mask — the alpha channel becomes the stamp influence.
     const MapEditor::BrushMask mask = imageToBrushMask(img);
     if (mask.empty()) {
-        QMessageBox::warning(window_, tr("Empty Image"),
-            tr("The loaded image produced an empty brush mask."));
-        return;
+        return tr("The loaded image produced an empty brush mask.");
     }
 
     // Keep the un-scaled original: the scale control recomputes the mask
     // from it, so repeated scale changes never blur the source.
     brushMaskOriginal_ = mask;
     brushTool_->setImageMask(mask);
+    maskScalePercent_ = 100;
     if (brushMaskScaleSpin_) {
         brushMaskScaleSpin_->blockSignals(true);
         brushMaskScaleSpin_->setValue(100);
@@ -2068,6 +2046,54 @@ void BrushUiController::onLoadBrushImage()
             .arg(mask.sx)
             .arg(mask.sy),
         5000);
+    return QString();
+}
+
+void BrushUiController::setMaskScalePercent(int percent)
+{
+    const int clamped = qBound(10, percent, 800);
+    maskScalePercent_ = clamped;
+    if (brushMaskScaleSpin_ && brushMaskScaleSpin_->value() != clamped) {
+        brushMaskScaleSpin_->blockSignals(true);
+        brushMaskScaleSpin_->setValue(clamped);
+        brushMaskScaleSpin_->blockSignals(false);
+    }
+    applyMaskScale();
+}
+
+void BrushUiController::applyMaskScale()
+{
+    if (!brushTool_) {
+        return;
+    }
+    const double factor = maskScalePercent_ / 100.0;
+    // The same control scales whichever image stamp is active: the
+    // influence mask of the terrain tools (T3.5) or the palette-index
+    // decal image (ImageDecal). Both are recomputed from the un-scaled
+    // original, so repeated changes never accumulate blur.
+    if (brushTool_->params().effect == MapEditor::BrushEffect::ImageDecal) {
+        if (!decalOriginal_.empty()) {
+            brushTool_->setDecalImage(
+                MapEditor::ImageDecal::scaleNearest(decalOriginal_, factor));
+        }
+    } else if (!brushMaskOriginal_.empty()) {
+        brushTool_->setImageMask(scaleBrushMask(brushMaskOriginal_, factor));
+    }
+    syncControls();
+}
+
+void BrushUiController::onLoadBrushImage()
+{
+    const QString filter = tr("Images (*.png *.tga *.bmp *.jpg *.jpeg);;All Files (*)");
+    const QString filePath = QFileDialog::getOpenFileName(
+        window_, tr("Load Brush Image"), QString(), filter);
+    if (filePath.isEmpty()) {
+        return;
+    }
+    const QString error = loadBrushImage(filePath);
+    if (!error.isEmpty()) {
+        QMessageBox::warning(window_, tr("Image Load Failed"), error);
+    }
 }
 
 void BrushUiController::onLoadDecalImage()

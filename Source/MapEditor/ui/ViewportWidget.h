@@ -610,6 +610,14 @@ private:
     /// grid overlay, upload it into the frame texture and blit. Returns false
     /// when there is nothing drawable (no bound world / no rendered frame).
     bool drawObliqueGL(QOpenGLFunctions *gl);
+    /// Full-redraw pass after a freshly loaded world's FIRST painted frame:
+    /// invalidates the whole 2D cache (the next update() re-rasterizes every
+    /// cell and the GPU tilemap receives the full dirty area), re-arms the
+    /// 3D mip pyramid and queues a repaint. The first frame after
+    /// setSession/reloadWorld can show small artifacts — the deferred GPU
+    /// rebuild consumed the pre-drain caches and the view state settled
+    /// mid-frame — so the second frame repaints from a consistent state.
+    void forceFullRedraw();
     /// Create the map texture when missing/resize (returns true then — the
     /// caller must upload the full image).
     bool ensureMapTexture(QOpenGLFunctions *gl, int mapW, int mapH);
@@ -763,6 +771,10 @@ private:
     /// changed, terrain stamped, window resized). When false, paintEvent()
     /// blits the cached RGB565 frame without calling viewV2D() again.
     bool needs3DRedraw_ = true;
+
+    /// Set by setSession/reloadWorld after a successful world bind: the next
+    /// completed paint frame triggers forceFullRedraw() (see there).
+    bool fullRedrawAfterLoadPending_ = false;
 
     ViewMode viewMode_ = ViewMode::TopDown;
     View3DRenderer *view3d_ = nullptr;

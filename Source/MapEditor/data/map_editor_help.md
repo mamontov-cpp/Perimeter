@@ -716,7 +716,10 @@ port=12345
 сажа, очень лёгкая дамба, paintColor, скульптинг smooth/flatten/tricubic/
 inflate/gaussianBlur), 3D-тела (`shape`: cone, pyramid, truncatedCone,
 truncatedPyramid, torus, halfEllipsoid), ImageDecal (`load_decal_image` +
-`effect: "imageDecal"`), кисть-модель (`import_model` + `effect: "model"`),
+`effect: "imageDecal"`), маска-картинка (`load_brush_image` — альфа-канал
+задаёт форму штампа: полностью прозрачные пиксели не штампуют вовсе;
+масштаб — аргумент `maskScale` у apply_brush, 10–800 %, как спин Mask на
+тулбаре), кисть-модель (`import_model` + `effect: "model"`),
 параметры штампа (radius, square, sides/angleOffset, fraction, blurRadius,
 layer dam/geo). В режиме различий штамп пишет в diff-буфер.
 

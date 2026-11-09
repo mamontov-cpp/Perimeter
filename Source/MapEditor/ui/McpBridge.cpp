@@ -959,7 +959,8 @@ QVariantMap MapEditor::McpBridge::mcpHandleBrushes(const QString& name,
                                          const QVariantMap& args)
 {
     static const QSet<QString> kTools = {
-        QStringLiteral("apply_brush"), QStringLiteral("load_decal_image"),
+        QStringLiteral("apply_brush"), QStringLiteral("load_brush_image"),
+        QStringLiteral("load_decal_image"),
         QStringLiteral("import_model"), QStringLiteral("run_script"),
         QStringLiteral("set_scripted_brush_script"),
     };
@@ -967,6 +968,29 @@ QVariantMap MapEditor::McpBridge::mcpHandleBrushes(const QString& name,
         return mcpUnhandled();
     }
     using MapEditor::EditorSession;
+
+    if (name == QLatin1String("load_brush_image")) {
+        const QString worldError = mcpRequireWorld();
+        if (!worldError.isEmpty()) {
+            return mcpError(worldError);
+        }
+        const QString filePath = mcpArgStr(args, "file");
+        if (filePath.isEmpty()) {
+            return mcpError(QStringLiteral("file must not be empty"));
+        }
+        // The BrushUiController owns the mask original + scale state, so the
+        // UI spinbox and the MCP tool stay in sync (same core as the toolbar
+        // Load Brush Image button).
+        const QString error = brushUI_->loadBrushImage(filePath);
+        if (!error.isEmpty()) {
+            return mcpError(error);
+        }
+        const MapEditor::BrushMask& mask = brushTool_->imageMask();
+        return mcpOk({{QStringLiteral("width"), mask.sx},
+                      {QStringLiteral("height"), mask.sy},
+                      {QStringLiteral("maskScale"),
+                       brushUI_->maskScalePercent()}});
+    }
 
     if (name == QLatin1String("load_decal_image")) {
         const QString worldError = mcpRequireWorld();
@@ -1085,6 +1109,12 @@ QVariantMap MapEditor::McpBridge::mcpApplyBrush(const QVariantMap& args)
     const QString worldError = mcpRequireWorld();
     if (!worldError.isEmpty()) {
         return mcpError(worldError);
+    }
+    // Scale of the loaded brush-image mask, like the toolbar Mask spin
+    // (percent of the original image size, 10..800): the mask is recomputed
+    // from the un-scaled original, so stamps never accumulate blur.
+    if (args.contains(QStringLiteral("maskScale"))) {
+        brushUI_->setMaskScalePercent(mcpArgInt(args, "maskScale", 100));
     }
     const QString effectName = mcpArgStr(args, "effect");
     const int x = mcpArgInt(args, "x");
