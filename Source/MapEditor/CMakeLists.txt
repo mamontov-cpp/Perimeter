@@ -423,13 +423,15 @@ IF(TARGET MapEditorRender)
     TARGET_COMPILE_DEFINITIONS(map_editor PRIVATE MAP_EDITOR_GPU_VIEW=1)
 ENDIF()
 
-# The help manual (Help menu / F1) is a standalone Markdown file deployed
-# next to the executable.
+# The help manual (Help menu / F1) is a pair of standalone Markdown files
+# (the Russian original and the English translation) deployed next to the
+# executable; HelpWindow switches between them.
 ADD_CUSTOM_COMMAND(TARGET map_editor POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${CMAKE_CURRENT_SOURCE_DIR}/data/map_editor_help.md"
+                "${CMAKE_CURRENT_SOURCE_DIR}/data/map_editor_help_en.md"
                 $<TARGET_FILE_DIR:map_editor>
-        COMMENT "Deploying map_editor_help.md")
+        COMMENT "Deploying the help manuals")
 
 # Deploy the used Qt runtime next to the executable so the editor starts from the build tree.
 IF(PERIMETER_WINDOWS)
@@ -470,4 +472,4 @@ ADD_SUBDIRECTORY(tests)
 # ---------------------------------------------------------------------------
 INSTALL(TARGETS map_editor
         RUNTIME DESTINATION .)
-INSTALL(FILES data/map_editor_help.md DESTINATION .)
+INSTALL(FILES data/map_editor_help.md data/map_editor_help_en.md DESTINATION .)
