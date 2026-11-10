@@ -1,7 +1,7 @@
 // ============================================================================
 // T5.2 — createNewWorld (new world from a template).
 //
-//   58  flat mode: 64x64 world created from the temp world as template —
+//   58  flat mode: 512x512 world created from the temp world as template —
 //       files exist, world.ini carries the wizard values, the session loads
 //       the new world with the requested size/hZeroPlast and a fully flat
 //       geo layer at the requested height, and the initial save produced
@@ -97,8 +97,8 @@ bool runWorldCreationFlatTests()
 
     MapEditor::NewWorldParams params;
     params.name = "TESTFLAT";
-    params.mapPowerX = 6; // 64 x 64 — small and fast
-    params.mapPowerY = 6;
+    params.mapPowerX = 9; // 512 x 512 — the smallest creatable size
+    params.mapPowerY = 9;
     params.hZeroPlast = 40;
     params.geoLayerHeight = 25;
     params.geoNetPower = 6;
@@ -115,8 +115,8 @@ bool runWorldCreationFlatTests()
     TEST_REQUIRE(session.isWorldLoaded() &&
                      session.currentWorldName() == "TESTFLAT",
                  "session did not switch to the new world.");
-    TEST_REQUIRE(vMap.H_SIZE == 64 && vMap.V_SIZE == 64,
-                 "map size is %u x %u, expected 64 x 64.",
+    TEST_REQUIRE(vMap.H_SIZE == 512 && vMap.V_SIZE == 512,
+                 "map size is %u x %u, expected 512 x 512.",
                  vMap.H_SIZE, vMap.V_SIZE);
     TEST_REQUIRE(static_cast<int>(vMap.hZeroPlast) == params.hZeroPlast,
                  "hZeroPlast is %d, expected %d.",
@@ -124,7 +124,7 @@ bool runWorldCreationFlatTests()
 
     // Flat geo layer at the requested height, no dams.
     bool flat = true;
-    for (int off = 0; off < 64 * 64; ++off) {
+    for (int off = 0; off < 512 * 512; ++off) {
         if (vMap.VxGBuf[off] != params.geoLayerHeight || vMap.VxDBuf[off] != 0) {
             flat = false;
             break;
@@ -151,7 +151,7 @@ bool runWorldCreationFlatTests()
                           "hZeroPlast") == "40",
                  "world.ini hZeroPlast was not written.");
     TEST_REQUIRE(iniValue(newDir / "world.ini", "Global Parameters",
-                          "Map Power X") == "6",
+                          "Map Power X") == "9",
                  "world.ini Map Power X was not written.");
     TEST_REQUIRE(MapEditor::vmpCompressionOfFile(
                      files.filePath(MapEditor::WorldFiles::OutputVmpFile)) == 0,
@@ -190,8 +190,8 @@ bool runWorldCreationGeneratedTests()
 
     MapEditor::NewWorldParams params;
     params.name = "TESTGEN";
-    params.mapPowerX = 6;
-    params.mapPowerY = 6;
+    params.mapPowerX = 9;
+    params.mapPowerY = 9;
     params.hZeroPlast = 40;
     params.geoLayerHeight = 25; // unused in generated mode
     params.flatSurface = false; // Terra buildWorld() terrain
@@ -204,8 +204,8 @@ bool runWorldCreationGeneratedTests()
     TEST_REQUIRE(session.isWorldLoaded() &&
                      session.currentWorldName() == "TESTGEN",
                  "session did not switch to the generated world.");
-    TEST_REQUIRE(vMap.H_SIZE == 64 && vMap.V_SIZE == 64,
-                 "generated map size is %u x %u, expected 64 x 64.",
+    TEST_REQUIRE(vMap.H_SIZE == 512 && vMap.V_SIZE == 512,
+                 "generated map size is %u x %u, expected 512 x 512.",
                  vMap.H_SIZE, vMap.V_SIZE);
 
     const fs::path newDir = root / "RESOURCE" / "Worlds" / "TESTGEN";

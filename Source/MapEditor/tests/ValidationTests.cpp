@@ -94,8 +94,8 @@ bool runValidationTests()
 
         MapEditor::NewWorldParams params;
         params.name = "VALFLAT";
-        params.mapPowerX = 6;
-        params.mapPowerY = 6;
+        params.mapPowerX = 9;
+        params.mapPowerY = 9;
         params.hZeroPlast = 40;
         params.geoLayerHeight = 25;
         params.flatSurface = true;
@@ -108,10 +108,10 @@ bool runValidationTests()
         long long dig = 0;
         MapEditor::ValidationIssue balance = MapEditor::validateVolumeBalance(
             MapEditor::VolumeBalanceOptions{}, fill, dig);
-        TEST_REQUIRE(fill == 0 && dig == (40 - 25) * 64 * 64,
+        TEST_REQUIRE(fill == 0 && dig == (40 - 25) * 512 * 512,
                      "flat-world volumes are fill=%lld dig=%lld, expected "
                      "0 / %lld.",
-                     fill, dig, static_cast<long long>(15) * 64 * 64);
+                     fill, dig, static_cast<long long>(15) * 512 * 512);
         TEST_REQUIRE(balance.severity == MapEditor::Severity::Warning,
                      "an all-pit world must warn about the imbalance.");
 

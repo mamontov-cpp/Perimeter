@@ -168,9 +168,10 @@ loaded/created) places static nature — trees, rocks, effects
      from it);
    - relief: **flat** (the geo layer height; it must be below the zeroplast
      thickness) or **generated** (the game's procedural relief);
-   - map size (a power of two, e.g. 11 = 2048×2048; the editor caps it at
-     13 = 8192×8192 — the game allows 14, but that is already unmanageable
-     for the editor), the zeroplast height (`hZeroPlast`).
+   - map size (a power of two: **9 = 512×512 minimum** — the editor
+     refuses to create anything smaller — up to 13 = 8192×8192; the game
+     allows 14 and such worlds still load, but the creation dialog does
+     not offer them), the zeroplast height (`hZeroPlast`).
    The created world is loaded and saved right away.
 2. Shape the relief with the brushes; place zeroplast and base sites.
 3. **File → Save**.

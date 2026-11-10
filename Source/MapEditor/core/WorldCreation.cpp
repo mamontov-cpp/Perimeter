@@ -216,9 +216,13 @@ WorldCreateResult createNewWorld(EditorSession& session,
         result.error = "The world name is empty or contains forbidden characters.";
         return result;
     }
-    if (params.mapPowerX < 6 || params.mapPowerY < 6 ||
+    // The editor creates 512x512 (power 9) and up: no shipped map is
+    // smaller, and Terra's own lower bound (6) is kept only so existing
+    // worlds still load. The upper bound stays Terra's MAX_H_SIZE_POWER
+    // (14) — the wizard spins cap at 13.
+    if (params.mapPowerX < 9 || params.mapPowerY < 9 ||
         params.mapPowerX > 14 || params.mapPowerY > 14) {
-        result.error = "Map size powers must be within 6..14.";
+        result.error = "Map size powers must be within 9..14.";
         return result;
     }
     if (params.hZeroPlast < 0 || params.hZeroPlast > 255 ||

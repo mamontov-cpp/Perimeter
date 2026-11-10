@@ -24,10 +24,13 @@ const char *const kF3dFunctionNames[] = {
     "Tree Texture",
 };
 
-// Editor limit for NEW worlds: Terra allows up to MAX_H_SIZE_POWER (14,
-// terra.h:13,16), but a 2^14 map is already unmanageable in the editor
-// (load/save/brush cost, GPU raster) — cap the size powers at 13. Existing
-// worlds with power 14 still load; the cap only affects the creation UI.
+// Editor limits for NEW worlds: Terra allows 6..MAX_H_SIZE_POWER (14,
+// terra.h:13,16), but the editor restricts the range — a 2^14 map is
+// unmanageable (load/save/brush cost, GPU raster) and maps below 512x512
+// (power 9) are not shipped with the game and are of no practical use.
+// Existing worlds outside the range still load; the limits only affect
+// creation (the wizard spins and WorldCreation::createNewWorld).
+constexpr int kMinSizePower = 9;
 constexpr int kMaxSizePower = 13;
 
 QSpinBox *makeSpin(int min, int max, int step = 1)
@@ -70,8 +73,8 @@ void WorldSettingsPanel::buildUi(Mode mode)
     const bool isNew = mode == Mode::NewWorld;
     if (isNew) {
         auto *powerRow = new QHBoxLayout;
-        powerXSpin_ = makeSpin(6, kMaxSizePower);
-        powerYSpin_ = makeSpin(6, kMaxSizePower);
+        powerXSpin_ = makeSpin(kMinSizePower, kMaxSizePower);
+        powerYSpin_ = makeSpin(kMinSizePower, kMaxSizePower);
         powerRow->addWidget(new QLabel(tr("Power X:"), sizeGroup));
         powerRow->addWidget(powerXSpin_);
         powerRow->addWidget(new QLabel(tr("Power Y:"), sizeGroup));

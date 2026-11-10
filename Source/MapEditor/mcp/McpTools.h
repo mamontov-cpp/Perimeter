@@ -83,7 +83,10 @@ inline QVector<McpToolSpec> mcpToolCatalog()
                              "copies palettes/textures from an existing "
                              "world; flat=true makes a flat geo layer at "
                              "geoLayerHeight (must be below hZeroPlast), "
-                             "flat=false generates procedural relief.") +
+                             "flat=false generates procedural relief. "
+                             "mapPower is the log2 map size in both "
+                             "dimensions, 9..14 (512x512 .. 16384x16384; "
+                             "the New World wizard caps at 13).") +
                   undoNote,
               obj({{QStringLiteral("type"), QStringLiteral("object")},
                    {QStringLiteral("properties"),
@@ -93,6 +96,9 @@ inline QVector<McpToolSpec> mcpToolCatalog()
                           obj({{QStringLiteral("type"), str}})},
                          {QStringLiteral("mapPower"),
                           obj({{QStringLiteral("type"), integer},
+                               {QStringLiteral("description"),
+                                QStringLiteral("log2 map size, 9..14 "
+                                               "(512x512 and up)")},
                                {QStringLiteral("default"), 11}})},
                          {QStringLiteral("hZeroPlast"),
                           obj({{QStringLiteral("type"), integer},
