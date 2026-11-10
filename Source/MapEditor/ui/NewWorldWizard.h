@@ -42,6 +42,9 @@ public:
     MapEditor::NewWorldParams wizardParams() const;
     QString templateWorldName() const;
 
+protected:
+    void showEvent(QShowEvent *event) override;
+
 private:
     QWizardPage *buildNamePage();
     QWizardPage *buildTerrainPage();
@@ -54,4 +57,7 @@ private:
     QRadioButton *generatedRadio_ = nullptr;
     WorldSettingsPanel *paramsPanel_ = nullptr;
     std::string gameDir_;
+    /// The header title/subtitle labels get their padding on first show
+    /// (QWizard builds the header lazily).
+    bool headerPadded_ = false;
 };

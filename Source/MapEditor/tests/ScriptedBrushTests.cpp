@@ -10,7 +10,7 @@
 //   2. Geo mode, an empty script, a syntax error and a runtime error are
 //      refused with clear messages (checkScriptSyntax covers the OK-button
 //      gate);
-//   3. the 20 s-class time limit aborts an endless loop (tested with a
+//   3. the time limit aborts an endless loop (tested with a
 //      short budget).
 // ============================================================================
 

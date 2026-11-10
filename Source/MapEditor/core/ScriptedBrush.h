@@ -28,13 +28,13 @@ bool checkScriptSyntax(const std::string& script, std::string& errorOut);
 /// Runs the scripted brush at the stamp centre (cx, cy). Dam mode only.
 /// Every world edit the script performs is collected into ONE undo entry;
 /// a failing script keeps its partial edits under that same entry.
-/// `timeoutMs` bounds the evaluation (duktape interrupt, default 20 s).
+/// `timeoutMs` bounds the evaluation (duktape interrupt, default 60 s).
 /// Returns false and fills errorOut on any failure: empty script, wrong
 /// mode, syntax error, runtime error (message includes brush.js:line), or
 /// timeout.
 bool runScriptedBrush(EditorSession& session, BrushTool& brush,
                       const BrushParams& params, int cx, int cy,
-                      std::string& errorOut, int timeoutMs = 20000);
+                      std::string& errorOut, int timeoutMs = 60000);
 
 /// Runs a script through the SAME editor API as the scripted brush (the
 /// Run Script window), once, with (cx, cy) as the current position
@@ -46,7 +46,7 @@ bool runScriptedBrush(EditorSession& session, BrushTool& brush,
 bool runEditorScript(EditorSession& session, BrushTool& brush,
                      const BrushParams& params, int cx, int cy,
                      const std::string& script, std::string& errorOut,
-                     int timeoutMs = 20000);
+                     int timeoutMs = 60000);
 
 /// UI hook for the scripted brush's showInfoMessageBox/showErrorMessageBox:
 /// the core is Qt-free, so the UI layer installs this callback and the core

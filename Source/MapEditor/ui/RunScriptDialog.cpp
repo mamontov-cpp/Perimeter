@@ -29,7 +29,7 @@ RunScriptDialog::RunScriptDialog(QWidget* parent, const QString& script)
         tr("JavaScript (duktape) with the editor brush API — the same "
            "functions the scripted brush runs. No stamp: getCurrentPos() "
            "reports the cursor cell (the map centre when the cursor is off "
-           "the map). The whole run is ONE undo step; a 20 s time limit "
+           "the map). The whole run is ONE undo step; a 60 s time limit "
            "applies. API functions are highlighted in blue."),
         this);
     hint->setWordWrap(true);

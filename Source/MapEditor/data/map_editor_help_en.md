@@ -285,7 +285,7 @@ Limitations and semantics:
 - **one stamp = one Undo entry** — no matter how many operations the script
   performs, Ctrl+Z reverts its entire work at once (stamps closer than 500
   ms merge into one transaction, like the regular brushes);
-- a **20 s time limit** per stamp — an infinite loop is aborted with an
+- a **60 s time limit** per stamp — an infinite loop is aborted with an
   error;
 - a runtime error (exception, timeout, empty script) is shown in a message
   box; the partial changes are reverted by the same Ctrl+Z;
@@ -325,7 +325,7 @@ The same API is available from **Tools → Run Script...** — the "run script"
 window (without the stamp preview settings; **Run** and **Cancel** buttons).
 Running executes the text once: `getCurrentPos()` is the cell under the
 cursor (the map centre when the cursor is outside it), the whole run is one
-Undo step, the 20 s limit applies.
+Undo step, the 60 s limit applies.
 
 The getters validate the position: a `pos` outside the map raises an
 exception with a message. Colors follow the game's render model: a cell

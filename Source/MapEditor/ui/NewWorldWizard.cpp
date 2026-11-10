@@ -17,6 +17,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QRadioButton>
+#include <QShowEvent>
 #include <QVBoxLayout>
 
 namespace {
@@ -80,7 +81,7 @@ NewWorldWizard::NewWorldWizard(QWidget *parent,
                                const std::string &gameDir)
     : QWizard(parent), gameDir_(gameDir)
 {
-    setWindowTitle(tr("New World"));
+    setWindowTitle(QString("  ") + tr("New World"));
     setOption(QWizard::NoBackButtonOnStartPage, true);
 
     addPage(buildNamePage());
@@ -175,4 +176,23 @@ MapEditor::NewWorldParams NewWorldWizard::wizardParams() const
 QString NewWorldWizard::templateWorldName() const
 {
     return namePage_->templateCombo->currentText();
+}
+
+void NewWorldWizard::showEvent(QShowEvent *event)
+{
+    QWizard::showEvent(event);
+    if (headerPadded_) {
+        return;
+    }
+    headerPadded_ = true;
+    // The header title/subtitle labels sit flush against the window's left
+    // edge — give them the same breathing room the page layouts have.
+    const QStringList titles = {tr("World Name and Template"), tr("Terrain"),
+                                tr("World Parameters")};
+    const QList<QLabel *> labels = findChildren<QLabel *>();
+    for (QLabel *label : labels) {
+        if (titles.contains(label->text())) {
+            label->setContentsMargins(12, 0, 12, 0);
+        }
+    }
 }

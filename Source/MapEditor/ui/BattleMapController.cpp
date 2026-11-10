@@ -978,6 +978,9 @@ void BattleMapController::newBattleMap()
                            session_->currentWorldName())),
                    &dialog);
     targetLabel->setWordWrap(true);
+    // Breathing room from the window border (the form row itself sits
+    // flush against the edge).
+    targetLabel->setContentsMargins(12, 0, 12, 0);
     form->addRow(targetLabel);
 
     auto *templateCombo = new QComboBox(&dialog);

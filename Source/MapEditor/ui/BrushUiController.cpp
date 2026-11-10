@@ -926,7 +926,7 @@ void BrushUiController::createBrushTypeActions()
            "radii, paintColor with an RGB colour (nearest Dam palette "
            "entry), and the sculpting brushes applyBlur/applySmooth. Dam "
            "layer only. The whole stamp evaluation is ONE undo "
-           "step; a 20 s time limit applies. Edit the script with the "
+           "step; a 60 s time limit applies. Edit the script with the "
            "pencil button next to this one."),
         MapEditor::BrushEffect::Script, 0);
     // The scripted brush operates on the Dam layer only: selecting it

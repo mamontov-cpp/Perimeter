@@ -245,7 +245,7 @@ ScriptEditorDialog::ScriptEditorDialog(QWidget* parent, const QString& script,
 
     auto* hint = new QLabel(
         tr("JavaScript (duktape), Dam layer only. The whole evaluation of one "
-           "stamp is a single Undo step; a 20 s time limit applies. The brush "
+           "stamp is a single Undo step; a 60 s time limit applies. The brush "
            "API functions are highlighted in blue."),
         this);
     hint->setWordWrap(true);
