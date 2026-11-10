@@ -168,11 +168,13 @@ loaded/created) places static nature — trees, rocks, effects
    The created world is loaded and saved right away.
 2. Shape the relief with the brushes; place zeroplast and base sites.
 3. **File → Save**.
-4. **File → New Battle Map...** — pick a map template, the player count
-   (1–8) and a name. The map is created for the loaded world; the spawns
-   are placed on an ellipse around the map centre — move each to a suitable
-   spot (the **New Battle Map...** button is also in the **Battle Map**
-   panel, key `B`).
+4. **File → New Battle Map...** — pick a map template and the player count
+   (1–8). The map is created for the loaded world and saved right away as
+   `<world name>.spg` (the game expects the battle map to share the
+   world's name — the dialog has no name field); the spawns are placed on
+   an ellipse around the map centre — move each to a suitable spot (the
+   **New Battle Map...** button is also in the **Battle Map** panel,
+   key `B`).
 5. Save the map and check it in the game.
 
 Tip: the battle map's `zeroLayerHeight` is taken from the world's

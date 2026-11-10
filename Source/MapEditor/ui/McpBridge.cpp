@@ -379,20 +379,23 @@ QVariantMap MapEditor::McpBridge::mcpHandleBattleMapFiles(const QString& name,
         return mcpOk({{QStringLiteral("path"), battleMaps_->path()}});
     }
 
-    // new_battle_map
+    // new_battle_map — the file always takes the world's name; a legacy
+    // "name" argument (when present) is accepted and ignored.
     const QString worldError = mcpRequireWorld();
     if (!worldError.isEmpty()) {
         return mcpError(worldError);
     }
-    const QString mapName = mcpArgStr(args, "name");
     const QString templ = mcpArgStr(args, "template").isEmpty()
                               ? battleMaps_->templates().value(0)
                               : mcpArgStr(args, "template");
-    if (mapName.isEmpty() || templ.isEmpty()) {
-        return mcpError(QStringLiteral("name and template are required"));
+    if (templ.isEmpty()) {
+        return mcpError(QStringLiteral("no template battle map exists"));
     }
-    battleMaps_->newBattleMapFromTemplate(mapName, templ,
-                                          mcpArgInt(args, "players", 2));
+    const QString createError = battleMaps_->newBattleMapFromTemplate(
+        templ, mcpArgInt(args, "players", 2));
+    if (!createError.isEmpty()) {
+        return mcpError(createError);
+    }
     if (!battleMaps_->isLoaded()) {
         return mcpError(QStringLiteral("new_battle_map failed"));
     }

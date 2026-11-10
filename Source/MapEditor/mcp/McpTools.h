@@ -162,19 +162,20 @@ inline QVector<McpToolSpec> mcpToolCatalog()
                              "(1-8), spawn anchors spread on an ellipse "
                              "around the map centre with terrain-height "
                              "correction, saved into RESOURCE/Battle as "
-                             "<name>.spg and opened right away. Fails when "
-                             "no world is loaded or no template exists."),
+                             "<world name>.spg (the battle map ALWAYS takes "
+                             "the world's name — the game resolves it that "
+                             "way) and opened right away. Fails when no "
+                             "world is loaded, no template exists, or "
+                             "<world name>.spg already exists (the tool "
+                             "never overwrites)."),
               obj({{QStringLiteral("type"), QStringLiteral("object")},
                    {QStringLiteral("properties"),
-                    obj({{QStringLiteral("name"),
-                          obj({{QStringLiteral("type"), str}})},
-                         {QStringLiteral("template"),
+                    obj({{QStringLiteral("template"),
                           obj({{QStringLiteral("type"), str}})},
                          {QStringLiteral("players"),
                           obj({{QStringLiteral("type"), integer},
                                {QStringLiteral("default"), 2}})}})},
-                   {QStringLiteral("required"),
-                    QJsonArray{QStringLiteral("name")}}})});
+                   {QStringLiteral("required"), QJsonArray()}})});
 
     t.append({QStringLiteral("list_battle_map_objects"),
               QStringLiteral("Lists the objects placed on the loaded battle "

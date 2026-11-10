@@ -121,11 +121,26 @@ bool BattleMapController::saveToCurrentPath()
     return true;
 }
 
-void BattleMapController::newBattleMapFromTemplate(const QString &name,
-                                                   const QString &templateMap,
-                                                   int playerCount)
+QString BattleMapController::newBattleMapFromTemplate(
+    const QString &templateMap, int playerCount)
 {
-    onNewBattleMapRequested(name, templateMap, playerCount);
+    // The MCP path is silent: no overwrite question, no message boxes. The
+    // battle map always takes the world's name — refuse when the file
+    // already exists instead of asking.
+    if (!session_ || !session_->hasGameDir() || !session_->isWorldLoaded()) {
+        return tr("no world loaded");
+    }
+    const fs::path target =
+        fs::u8path(session_->getGameDir()) / "RESOURCE" / "Battle" /
+        fs::u8path(session_->currentWorldName() + ".spg");
+    if (fs::exists(target)) {
+        return tr("%1 already exists — delete it or open it instead of "
+                  "recreating")
+            .arg(QString::fromStdString(target.u8string()));
+    }
+    return onNewBattleMapRequested(templateMap, playerCount, false)
+        ? QString()
+        : tr("failed to create the battle map from the template");
 }
 
 void BattleMapController::buildDocks()
@@ -202,7 +217,9 @@ void BattleMapController::buildBattleMapDock()
             this, &BattleMapController::onSpawnPlacementRequested);
     connect(battleMapPanel_,
             &MapEditor::BattleMapPanel::newBattleMapRequested, this,
-            &BattleMapController::onNewBattleMapRequested);
+            [this](const QString &templateMap, int players) {
+                onNewBattleMapRequested(templateMap, players, true);
+            });
     // The panel's "Place Spawn" button asks the window to activate the
     // editor mode (the mode state lives there) — re-emitted upwards.
     connect(battleMapPanel_,
@@ -931,9 +948,16 @@ void BattleMapController::newBattleMap()
                                   session_->currentWorldName())));
     auto *form = new QFormLayout(&dialog);
 
-    auto *nameEdit = new QLineEdit(&dialog);
-    nameEdit->setPlaceholderText(tr("MyMap"));
-    form->addRow(tr("Map name:"), nameEdit);
+    // The battle map MUST share the world's name (the game looks for
+    // <world>.spg), so there is no name field — say where it will be saved.
+    auto *targetLabel =
+        new QLabel(tr("Will be saved as %1.spg (the game expects the battle "
+                      "map to share the world's name).")
+                       .arg(QString::fromStdString(
+                           session_->currentWorldName())),
+                   &dialog);
+    targetLabel->setWordWrap(true);
+    form->addRow(targetLabel);
 
     auto *templateCombo = new QComboBox(&dialog);
     templateCombo->addItems(templateNames);
@@ -951,56 +975,44 @@ void BattleMapController::newBattleMap()
     connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     form->addRow(buttons);
-    // Ok is disabled until the name is filled in.
-    auto *okButton = buttons->button(QDialogButtonBox::Ok);
-    okButton->setEnabled(false);
-    connect(nameEdit, &QLineEdit::textChanged, okButton,
-            [okButton](const QString &text) {
-                okButton->setEnabled(!text.trimmed().isEmpty());
-            });
 
-    if (dialog.exec() != QDialog::Accepted ||
-        nameEdit->text().trimmed().isEmpty()) {
+    if (dialog.exec() != QDialog::Accepted) {
         return;
     }
-    onNewBattleMapRequested(nameEdit->text().trimmed(),
-                            templateCombo->currentText(),
-                            playersSpin->value());
+    onNewBattleMapRequested(templateCombo->currentText(),
+                            playersSpin->value(), true);
 }
 
-void BattleMapController::onNewBattleMapRequested(const QString &name,
-                                         const QString &templateMap,
-                                         int playerCount)
+bool BattleMapController::onNewBattleMapRequested(const QString &templateMap,
+                                                  int playerCount,
+                                                  bool interactive)
 {
     if (!session_ || !session_->hasGameDir()) {
-        return;
+        return false;
     }
     if (!session_->isWorldLoaded()) {
-        QMessageBox::information(
-            window_, tr("New Battle Map"),
-            tr("Load a world first — the new battle map is built for it."));
-        return;
+        if (interactive) {
+            QMessageBox::information(
+                window_, tr("New Battle Map"),
+                tr("Load a world first — the new battle map is built for it."));
+        }
+        return false;
     }
+    // The file always takes the world's name — the game resolves the battle
+    // map of a world by <world>.spg.
     const QString mapName =
-        name.isEmpty()
-            ? QInputDialog::getText(window_, tr("New Battle Map"),
-                                    tr("Map name:"), QLineEdit::Normal,
-                                    QString())
-            : name;
-    // `name` comes pre-filled from the File-menu dialog; the input-dialog
-    // fallback above already validated its own result.
-    if (mapName.trimmed().isEmpty()) {
-        return;
-    }
+        QString::fromStdString(session_->currentWorldName());
     const fs::path templatePath =
         fs::u8path(session_->getGameDir()) / "RESOURCE" / "Battle" /
         fs::u8path(templateMap.toStdString());
 
     MapEditor::SpgFile map;
     if (!map.load(templatePath.u8string())) {
-        QMessageBox::warning(window_, tr("New Battle Map"),
-                             tr("Cannot read the template battle map."));
-        return;
+        if (interactive) {
+            QMessageBox::warning(window_, tr("New Battle Map"),
+                                 tr("Cannot read the template battle map."));
+        }
+        return false;
     }
     map.setWorldName(session_->currentWorldName());
     map.setPlayerCount(playerCount);
@@ -1048,14 +1060,17 @@ void BattleMapController::onNewBattleMapRequested(const QString &name,
 
     const fs::path target =
         fs::u8path(session_->getGameDir()) / "RESOURCE" / "Battle" /
-        fs::u8path(mapName.trimmed().toStdString() + ".spg");
-    if (fs::exists(target) &&
-        QMessageBox::question(
-            window_, tr("New Battle Map"),
-            tr("%1 already exists. Overwrite?")
-                .arg(QString::fromStdString(target.u8string()))) !=
-            QMessageBox::Yes) {
-        return;
+        fs::u8path(mapName.toStdString() + ".spg");
+    if (fs::exists(target)) {
+        // The MCP path pre-checks the target and never reaches this ask.
+        if (!interactive ||
+            QMessageBox::question(
+                window_, tr("New Battle Map"),
+                tr("%1 already exists. Overwrite?")
+                    .arg(QString::fromStdString(target.u8string()))) !=
+                QMessageBox::Yes) {
+            return false;
+        }
     }
     // The wizard placed the anchors terrain-referenced — rest the frames on
     // their grounded pose over the terrain and store them "installed" so
@@ -1065,9 +1080,11 @@ void BattleMapController::onNewBattleMapRequested(const QString &name,
         [this](int x, int y) { return session_->terrainHeightAt(x, y); });
     map.setFramesInstalledForStart();
     if (!map.save(target.u8string())) {
-        QMessageBox::warning(window_, tr("New Battle Map"),
-                             tr("Failed to write the battle map."));
-        return;
+        if (interactive) {
+            QMessageBox::warning(window_, tr("New Battle Map"),
+                                 tr("Failed to write the battle map."));
+        }
+        return false;
     }
     // Open the fresh map right away.
     battleMap_ = MapEditor::SpgFile();
@@ -1077,6 +1094,7 @@ void BattleMapController::onNewBattleMapRequested(const QString &name,
     refreshUI();
     showStatus(
         tr("Battle map created: %1").arg(battleMapPath_), 5000);
+    return true;
 }
 
 

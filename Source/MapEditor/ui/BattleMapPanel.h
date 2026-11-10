@@ -69,9 +69,9 @@ signals:
     void battleMapChanged();
     /// Navigate the viewport to a map cell.
     void goToCell(int mapX, int mapY);
-    /// A new battle map wizard finished: name + player count requested.
-    void newBattleMapRequested(const QString &name, const QString &templateMap,
-                               int playerCount);
+    /// A new battle map was requested (template + player count; the file
+    /// always takes the loaded world's name).
+    void newBattleMapRequested(const QString &templateMap, int playerCount);
     /// "Remove Player" clicked with a selected list row — the caller removes
     /// the player from the SpgFile and refreshes (SpgFile keeps at least
     /// one player; the signal is not emitted for the empty selection).

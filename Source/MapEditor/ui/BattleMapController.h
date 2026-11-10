@@ -85,11 +85,14 @@ public:
     void saveBattleMapAs();
     void newBattleMap();
     /// MCP variants of the flows above: no dialogs beyond the shared name
-    /// mismatch warning, boolean result instead of message boxes.
+    /// mismatch warning, boolean result instead of message boxes. A new
+    /// battle map always takes the WORLD's name (the game expects
+    /// <world>.spg) — `newBattleMapFromTemplate` returns an empty string on
+    /// success or the refusal reason (e.g. the file already exists).
     bool openPath(const QString &path);
     bool saveToCurrentPath();
-    void newBattleMapFromTemplate(const QString &name,
-                                  const QString &templateMap, int playerCount);
+    QString newBattleMapFromTemplate(const QString &templateMap,
+                                     int playerCount);
 
     // Difference mode (.gmp) — File menu save/load of the difference data.
     void saveDiffData();
@@ -151,8 +154,11 @@ private:
     void onNatureCursorMoved(int mapX, int mapY);
     /// Nature models under RESOURCE/Models/Environment (game-content scan).
     QStringList scanNatureModels() const;
-    void onNewBattleMapRequested(const QString &name, const QString &templateMap,
-                                 int playerCount);
+    /// Creates a new battle map from the template: the file is always named
+    /// after the loaded world. `interactive` selects the UI path (message
+    /// boxes, the overwrite question) or the MCP path (silent, return code).
+    bool onNewBattleMapRequested(const QString &templateMap, int playerCount,
+                                 bool interactive);
     /// Place Spawn mode click: move the selected battle-map player's spawn
     /// group to the clicked cell (terrain z-correction, undoable through
     /// SpgFile::setPlayerAnchorUndoable).

@@ -116,7 +116,7 @@ BattleMapPanel::BattleMapPanel(SpgFile &battleMap, EditorSession &session,
                 tr("No template battle maps found in RESOURCE/Battle."));
             return;
         }
-        emit newBattleMapRequested(QString(), newTemplateCombo_->currentText(),
+        emit newBattleMapRequested(newTemplateCombo_->currentText(),
                                    newPlayerCountSpin_->value());
     });
 }
