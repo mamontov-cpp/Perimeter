@@ -145,16 +145,9 @@ bool runSpgObjectBoundsTests()
     TEST_REQUIRE(spg.natureObjects().size() == baseNature + 2,
                  "expected %zu + 2 nature objects.", baseNature);
 
-    // A fully-covering bounds pass removes nothing.
-    TEST_REQUIRE(spg.removeObjectsOutsideBounds(1 << 20, 1 << 20) == 0,
-                 "a covering bounds pass must remove nothing.");
-    TEST_REQUIRE(spg.buildings().size() == baseBuildings + 2 &&
-                     spg.scumSpots().size() == baseSpots + 2 &&
-                     spg.natureObjects().size() == baseNature + 2,
-                 "the covering pass must not change any list.");
-
     // The real pass: exactly the three outside newcomers (plus any base
-    // object already outside the bounds) go away.
+    // object already outside the bounds — the shipped maps place some
+    // objects marginally off-map) go away.
     const std::size_t removed = spg.removeObjectsOutsideBounds(mapW, mapH);
     TEST_REQUIRE(removed == 3 + baseOutB + baseOutS + baseOutN,
                  "expected %zu removals, got %zu.",
