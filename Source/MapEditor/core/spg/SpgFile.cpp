@@ -2320,6 +2320,52 @@ bool SpgFile::removeNatureObject(std::size_t index)
     return true;
 }
 
+std::size_t SpgFile::removeObjectsOutsideBounds(int mapW, int mapH)
+{
+    if (!loaded() || mapW <= 0 || mapH <= 0) {
+        return 0;
+    }
+    const auto outside = [mapW, mapH](double x, double y) {
+        return x < 0.0 || y < 0.0 || x >= mapW || y >= mapH;
+    };
+    std::size_t removed = 0;
+    // Collect the view indices first, then erase in descending order so the
+    // remaining indices stay valid. Each remover takes the *view* index.
+    const auto purge = [this, &removed](const std::vector<std::size_t>& idxs,
+                                        bool (SpgFile::*remove)(std::size_t)) {
+        for (auto it = idxs.rbegin(); it != idxs.rend(); ++it) {
+            if ((this->*remove)(*it)) {
+                ++removed;
+            }
+        }
+    };
+    std::vector<std::size_t> idxs;
+    const std::vector<PlacedBuilding> bl = buildings();
+    for (std::size_t i = 0; i < bl.size(); ++i) {
+        if (outside(bl[i].x, bl[i].y)) {
+            idxs.push_back(i);
+        }
+    }
+    purge(idxs, &SpgFile::removeBuilding);
+    idxs.clear();
+    const std::vector<ScumSpot> ss = scumSpots();
+    for (std::size_t i = 0; i < ss.size(); ++i) {
+        if (outside(ss[i].x, ss[i].y)) {
+            idxs.push_back(i);
+        }
+    }
+    purge(idxs, &SpgFile::removeScumSpot);
+    idxs.clear();
+    const std::vector<NatureObject> no = natureObjects();
+    for (std::size_t i = 0; i < no.size(); ++i) {
+        if (outside(no[i].x, no[i].y)) {
+            idxs.push_back(i);
+        }
+    }
+    purge(idxs, &SpgFile::removeNatureObject);
+    return removed;
+}
+
 int SpgFile::filthTypeCount()
 {
     return kFilthTypeCount;

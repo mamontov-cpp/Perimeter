@@ -37,6 +37,7 @@ ADD_EXECUTABLE(map_editor_tests
         UnitModelCatalogTests.cpp
         ScumSpotsTests.cpp
         NatureObjectsTests.cpp
+        SpgObjectBoundsTests.cpp
         McpServerTests.cpp
         GameColorDiagnosticTests.cpp
         SpgOriginalSaveNameTests.cpp

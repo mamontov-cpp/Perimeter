@@ -333,6 +333,12 @@ public:
                               bool lighting);
     bool removeNatureObject(std::size_t index);
 
+    /// Removes buildings, scum nests (mound + FILTH_SPOT pair) and nature
+    /// objects whose x/y fall outside [0, mapW) x [0, mapH). Used when a new
+    /// battle map is created from a template whose world is larger than the
+    /// current world. Returns the total removed count.
+    std::size_t removeObjectsOutsideBounds(int mapW, int mapH);
+
     /// Adds/removes `chainFile` (e.g. "EXTDEMO.scr") in EVERY player's
     /// TriggerChainNames, and purges it from the legacy lowercase
     /// triggerChainNames. Add is a no-op when already registered. Call before

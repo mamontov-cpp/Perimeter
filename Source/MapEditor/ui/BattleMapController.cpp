@@ -962,6 +962,18 @@ void BattleMapController::onNewBattleMapRequested(const QString &name,
     map.setPlayerCount(playerCount);
     map.setZeroLayerHeight(session_->zeroLayerHeight());
 
+    // The template may come from a larger world than the current one — drop
+    // its placed objects that would fall outside this map's bounds.
+    const std::size_t removedOutside = map.removeObjectsOutsideBounds(
+        static_cast<int>(session_->mapWidth()),
+        static_cast<int>(session_->mapHeight()));
+    if (removedOutside > 0) {
+        showStatus(tr("Removed %1 template object(s) outside the new map's "
+                      "bounds (the template's world is larger).")
+                       .arg(removedOutside),
+                   6000);
+    }
+
     // Spread the spawn anchors on a circle around the map centre and correct
     // every z by the terrain delta (the model z offsets of the template are
     // preserved).
