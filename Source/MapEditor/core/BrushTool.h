@@ -7,6 +7,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <utility>
 #include <vector>
 
@@ -500,6 +501,22 @@ public:
     /// tools with their own geometry (brush-image T3.5); the public
     /// applyStamp/applyLine funnels across here too.
     bool applyMask(const BrushMask& absoluteMask, const BrushParams& params);
+
+    /// Script-only two-pass height function (the "applyHeightFn" script API).
+    /// Dam layer. `heightFn(x, y, h)` is evaluated for EVERY covered cell
+    /// against the PRE-EDIT dam surface (h = the current surface in voxels
+    /// with 1/32 precision, 0 where no dam) and returns the cell's new
+    /// ABSOLUTE height; the targets are then written per cell through the
+    /// AlignVariableH mechanism (dam seeding + tVoxSetAll — hardness
+    /// ignored, exact in both directions), each converted to the nearest
+    /// fixed-point value. Because every read sees the original surface,
+    /// covered cells can never add up on each other — the seamless
+    /// alternative to overlapping raise/lower stamps. `heightFn` returning
+    /// false aborts the op BEFORE anything is written or recorded; when no
+    /// cell would change, no undo entry appears. One undo entry per call.
+    bool applyHeightFunction(
+        const BrushMask& absoluteMask,
+        const std::function<bool(int, int, double, double&)>& heightFn);
 
     // --- T3.5: image brush mask --------------------------------------------
     /// Set the image mask used when params.useImageMask is set. The mask

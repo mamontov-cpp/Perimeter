@@ -16,6 +16,7 @@
 //   paintColor(pos, red, green, blue, radius, square)
 //   applyBlur(pos, radius, blurRadius, effect, square)
 //   applySmooth(pos, radius, effect, square)
+//   applyHeightFn(pos, radius, fn, square)
 //
 //   getDamHeight(pos)                  -> int     dam height (whole voxels,
 //                                                 0 where no dam)
@@ -34,6 +35,12 @@
 //   effect = number 0..1 (clamped) — the fraction of the way each covered
 //            cell moves towards the sculpting reference in one stamp; the
 //            same value the Sculpting spinbox sets in the UI (0.5 = 50 %)
+//   fn     = function(x, y, h) -> number: applyHeightFn evaluates it for
+//            EVERY covered cell against the PRE-EDIT dam surface (h =
+//            current height in voxels, fractional, 0 where no dam) and
+//            writes the returned ABSOLUTE heights in one pass — covered
+//            cells never influence each other (unlike overlapping
+//            raise/lower stamps, which add up on the overlap)
 //   square = boolean: true → filled square stamp, false → filled circle
 //   height = whole voxels, behaves like the corresponding editor brush
 //            (raise/lower step per call; setHeight/setToZP absolute)
@@ -88,6 +95,10 @@ ScriptEnv* getEnv(duk_context* ctx)
     duk_pop_2(ctx);
     return env;
 }
+
+/// Defined below (after the API bindings) — the binding callbacks capture
+/// script errors as text and raise through this formatter.
+std::string describeError(duk_context* ctx);
 
 /// The message-box hook (installed by the Qt UI; see
 /// setScriptedBrushMessageHook). Null = messages drop silently.
@@ -346,6 +357,86 @@ duk_ret_t apiApplySmooth(duk_context* ctx)
     return applySculptOp(ctx, BrushEffect::Tricubic, 0);
 }
 
+/// applyHeightFn(pos, radius, fn, square) — the two-pass height-function
+/// tool. `fn(x, y, h)` receives a covered cell's map coordinates and its
+/// PRE-EDIT dam surface height (voxels, fractional 1/32 precision, 0 where
+/// no dam) and returns the cell's new ABSOLUTE height. EVERY covered cell
+/// is evaluated against the original surface before ANY write, so adjacent
+/// cells / radius-1 stamps cannot add up on each other the way overlapping
+/// raise/lower stamps do — the seamless way to shape an area by a function
+/// of position and the original height. A throw (or a non-numeric /
+/// non-finite return) aborts the whole op with nothing written; when no
+/// cell would change the call is a quiet no-op. Dam layer, like the other
+/// script height ops.
+duk_ret_t apiApplyHeightFn(duk_context* ctx)
+{
+    ScriptEnv* env = getEnv(ctx);
+    int x = 0;
+    int y = 0;
+    if (!readPosition(ctx, 0, x, y)) {
+        return duk_error(ctx, DUK_ERR_TYPE_ERROR,
+                         "first argument must be a position {x, y}");
+    }
+    int radius = duk_to_int(ctx, 1);
+    if (radius < 1) {
+        return duk_error(ctx, DUK_ERR_RANGE_ERROR,
+                         "radius must be a number >= 1, got %d", radius);
+    }
+    radius = BrushTool::clampRadius(radius);
+    if (!duk_is_callable(ctx, 2)) {
+        return duk_error(ctx, DUK_ERR_TYPE_ERROR,
+                         "third argument must be a function fn(x, y, h) "
+                         "returning the new absolute height");
+    }
+    const bool square = duk_to_boolean(ctx, 3);
+
+    BrushMask mask = square ? BrushMasks::filledSquare(radius)
+                            : BrushMasks::filledCircle(radius);
+    mask.translate(x, y);
+
+    // The callable stays at stack index 2 for the whole evaluation (the
+    // wrapper's pushes/pops are balanced and applyHeightFunction never
+    // touches the duktape stack); each invocation dup()s it. Errors are
+    // captured as text — raising a duktape error across the C++ pass-1
+    // frames would longjmp over live std::vector locals.
+    std::string fnError;
+    auto heightFn = [&](int cx, int cy, double h, double& outTarget) {
+        if (!fnError.empty()) {
+            return false; // already failed — stop the loop
+        }
+        duk_dup(ctx, 2);
+        duk_push_int(ctx, cx);
+        duk_push_int(ctx, cy);
+        duk_push_number(ctx, h);
+        if (duk_pcall(ctx, 3) != DUK_EXEC_SUCCESS) {
+            fnError = describeError(ctx);
+            duk_pop(ctx);
+            return false;
+        }
+        if (!duk_is_number(ctx, -1)) {
+            fnError = "fn must return a finite number (the new height)";
+            duk_pop(ctx);
+            return false;
+        }
+        const double result = duk_get_number(ctx, -1);
+        duk_pop(ctx);
+        if (!std::isfinite(result)) {
+            fnError = "fn returned a non-finite height";
+            return false;
+        }
+        outTarget = result;
+        return true;
+    };
+
+    if (!env->brush->applyHeightFunction(mask, heightFn)) {
+        if (!fnError.empty()) {
+            return duk_error(ctx, DUK_ERR_ERROR, "%s", fnError.c_str());
+        }
+        return 0; // nothing would change / outside the map: a quiet no-op
+    }
+    return 0;
+}
+
 /// Shared tail of the read* bindings: reads the {x, y} position and
 /// range-checks it against the loaded map. Throws a duktape error (which
 /// aborts the evaluation with a clear brush.js message) when the argument
@@ -508,6 +599,7 @@ void registerApiBindings(duk_context* ctx)
     registerBinding(ctx, "paintColor", apiPaintColor, 6);
     registerBinding(ctx, "applyBlur", apiApplyBlur, 5);
     registerBinding(ctx, "applySmooth", apiApplySmooth, 4);
+    registerBinding(ctx, "applyHeightFn", apiApplyHeightFn, 4);
     registerBinding(ctx, "getDamHeight", apiGetDamHeight, 1);
     registerBinding(ctx, "getGeoColor", apiGetGeoColor, 1);
     registerBinding(ctx, "getDamColor", apiGetDamColor, 1);

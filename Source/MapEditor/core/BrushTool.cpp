@@ -1796,6 +1796,109 @@ void damHeightChange(int off, int dV)
     heightToolzer.tVoxSet(off, dV);
 }
 
+// (the anonymous namespace of the layer helpers closes here — a member
+// function cannot be defined inside it)
+} // namespace
+
+bool BrushTool::applyHeightFunction(
+    const BrushMask& absoluteMask,
+    const std::function<bool(int, int, double, double&)>& heightFn)
+{
+    if (!session_.isWorldLoaded() || absoluteMask.empty()) {
+        return false;
+    }
+    const int mapW = static_cast<int>(vMap.H_SIZE);
+    const int mapH = static_cast<int>(vMap.V_SIZE);
+    const int bx = std::max(0, absoluteMask.x);
+    const int by = std::max(0, absoluteMask.y);
+    const int bxEnd = std::min(mapW, absoluteMask.x + absoluteMask.sx);
+    const int byEnd = std::min(mapH, absoluteMask.y + absoluteMask.sy);
+    if (bx >= bxEnd || by >= byEnd) {
+        return false; // completely outside the map
+    }
+
+    // --- Pass 1: evaluate the function over the PRE-EDIT surface. Every ---
+    // --- read happens before ANY write, so covered cells never see each  ---
+    // --- other's new heights — adjacent radius-1 stamps / cells cannot  ---
+    // --- add up the way overlapping raise/lower stamps do. A callback   ---
+    // --- failure aborts before anything is written or recorded.         ---
+    struct CellTarget
+    {
+        int off;
+        int target; ///< Terra 1/32 fixed point
+    };
+    std::vector<CellTarget> targets;
+    for (int y = by; y < byEnd; ++y) {
+        for (int x = bx; x < bxEnd; ++x) {
+            const int dx = x - absoluteMask.x;
+            const int dy = y - absoluteMask.y;
+            if (dx < 0 || dy < 0 || dx >= absoluteMask.sx ||
+                dy >= absoluteMask.sy || !absoluteMask.at(dx, dy)) {
+                continue; // clipped-away mask border
+            }
+            const int off = y * mapW + x;
+            // Same surface read the API's getDamHeight reports (0 where no
+            // dam), but keeping the fraction bits — the function sees the
+            // exact 1/32-precision height.
+            const int alt = vMap.VxDBuf[off] != 0
+                ? static_cast<int>(vMap.SGetAlt(off))
+                : 0;
+            double targetVox = 0.0;
+            if (!heightFn(x, y,
+                          static_cast<double>(alt) / (1 << VX_FRACTION),
+                          targetVox)) {
+                return false; // the script failed — nothing written yet
+            }
+            const int target32 = heightLevelFixedPoint(targetVox);
+            if (target32 != alt) {
+                targets.push_back({off, target32});
+            }
+        }
+    }
+    if (targets.empty()) {
+        return false; // nothing would change — no empty undo entry
+    }
+
+    // --- Undo snapshot before the first write (one entry per call). ---
+    session_.recordUndoArea(bx, by, bxEnd - bx, byEnd - by);
+
+    // --- Pass 2: write each target through the AlignVariableH mechanism ---
+    // --- (Dam layer: zeroplast-gate clearing + seeding + tVoxSetAll —    ---
+    // --- hardness ignored, exact in both directions), with the per-cell  ---
+    // --- target synced before every call like the alignment brush does.  ---
+    for (const CellTarget& t : targets) {
+        const int off = t.off;
+        const int wholeZP = static_cast<int>(vMap.hZeroPlast);
+        if ((t.target >> VX_FRACTION) != wholeZP &&
+            (vMap.AtrBuf[off] & At_ZPMASK) == At_ZEROPLAST) {
+            // The alignment toolzers early-return on At_ZEROPLAST cells;
+            // a function target different from hZeroPlast means the cell
+            // no longer represents zeroplast (same rule as Set Height).
+            vMap.AtrBuf[off] = static_cast<unsigned char>(
+                vMap.AtrBuf[off] & ~At_ZPMASK);
+        }
+        seedDamLayer(off);
+        const int dV = t.target - static_cast<int>(vMap.SGetAlt(off));
+        if (dV == 0) {
+            continue;
+        }
+        static individualToolzer<T2TE_ALIGNMENT_TERRAIN_VARIABLE_H> alignHToolzer;
+        setExactToolzerTarget(alignHToolzer, t.target);
+        alignHToolzer.tVoxSetAll(off, dV);
+    }
+
+    // Grid + viewport dirty rectangles, margin 1 like applyMask.
+    const int x0 = std::max(0, bx - 1);
+    const int y0 = std::max(0, by - 1);
+    const int x1 = std::min(mapW - 1, bxEnd + 1);
+    const int y1 = std::min(mapH - 1, byEnd + 1);
+    vMap.recalcArea2Grid(x0, y0, x1, y1);
+    session_.regRenderWithShadowTrail(x0, y0, x1, y1);
+    return true;
+}
+
+namespace {
+
 /// Alignment (Align4ZP / AlignVariableH) in Geo mode over a dam cell.
 ///
 /// Terra's alignment toolzers always edit the top (dam) layer, but the Geo

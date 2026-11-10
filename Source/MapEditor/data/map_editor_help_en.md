@@ -303,6 +303,7 @@ number ≥ 1, the circle radius or the square half-side, up to 512; `square`
 | `paintColor(pos, red, green, blue, radius, square)` | paint: the Dam palette entry nearest to RGB (0..255) |
 | `applyBlur(pos, radius, blurRadius, effect, square)` | Gaussian Blur: smooth the heights with a Gaussian kernel; `blurRadius` is clamped to `1..radius-1`, `effect` — the effect fraction 0..1 (1.0 = reach in one stamp) |
 | `applySmooth(pos, radius, effect, square)` | Tricubic: smooth towards the tricubic (bicubic Catmull-Rom) interpolation of the lattice under the stamp — like the Tricubic brush on the Sculpting toolbar; `effect` — the fraction 0..1 |
+| `applyHeightFn(pos, radius, fn, square)` | set the height **by a function**: `fn(x, y, h)` is called for every covered cell with its coordinates and the PRE-EDIT dam surface height `h` (fractional, 1/32 step; 0 where there is no dam) and returns the cell's new **absolute** height (fractional — like raiseHeight); all reads see the original surface before any write, so cells never influence each other |
 | `getDamHeight(pos)` | the dam height at the cell in whole voxels (**0** when there is no dam) |
 | `getGeoColor(pos)` | `{r, g, b}` — the cell's SurBuf index through the **Geo** palette |
 | `getDamColor(pos)` | `{r, g, b}` — the cell's SurBuf index through the **Dam** palette |
@@ -323,6 +324,28 @@ stores a single SurBuf index, and the palette (Geo or Dam) is selected by
 the layer — so `getGeoColor` and `getDamColor` read the same index through
 different palettes. The message boxes are the script's only access to the
 UI; any JS value is converted to a string for them.
+
+A note on `raiseHeight`/`lowerHeight`: these are **incremental** ops — a
+radius-1 stamp covers a 3×3 area around the centre, so stamps at adjacent
+cells (distance 1) always overlap and the overlapped cell receives, say,
++10 again — the sums pile up. Distinct heights in adjacent cells cannot be
+placed that way. Options without mutual influence: `applyHeightFn` (one
+operation: every cell is computed against the pre-edit surface first,
+then all writes land — any seamless function of position and the original
+height), `setHeight` (absolute set: overlaps do not add up, but the last
+stamp overwrites the shared cells), or radius-1 `setHeight` stamps with
+the centres at least 3 cells apart (no overlap at all).
+
+Example — a smooth "pyramidal" slope without a single stamp (the height is
+a function of position; the original height is available as `h` too):
+
+```js
+var p = getCurrentPos();
+applyHeightFn(p, 10, function(x, y, h) {
+    return 30 - Math.abs(x - p.x) - Math.abs(y - p.y);
+}, false);
+// h + 5 — raise the whole area by exactly 5, wherever it started
+```
 
 Example — a stepped pedestal around the cursor:
 

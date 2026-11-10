@@ -743,9 +743,205 @@ bool runScriptPaletteApiTests()
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// applyHeightFn — the two-pass height-function script API (the seamless
+// alternative to overlapping raise/lower stamps, which add up on the
+// overlap).
+// ---------------------------------------------------------------------------
+
+bool runScriptHeightFnTests()
+{
+    MapEditor::EditorSession session;
+    // Undo coalescing off: these tests expect one undo entry per action.
+    session.setUndoCoalescingWindowMs(0);
+    const bool loaded = prepareBrushTestSession("load_root_hfn", session);
+    TEST_REQUIRE(loaded,
+                 "the height-fn test could not load the temporary world.");
+
+    const int mapW = static_cast<int>(vMap.H_SIZE);
+    const int mapH = static_cast<int>(vMap.V_SIZE);
+    TEST_REQUIRE(mapW >= 512 && mapH >= 512,
+                 "the world is too small for the height-fn test.");
+
+    // A flat-enough area with headroom (same scan as the scripted test).
+    int cx = 0;
+    int cy = 0;
+    bool found = false;
+    for (int gy = 40; gy < mapH - 40 && !found; gy += 24) {
+        for (int gx = 40; gx < mapW - 40 && !found; gx += 24) {
+            int localMax = 0;
+            for (int dy = -20; dy <= 20; ++dy) {
+                for (int dx = -20; dx <= 20; ++dx) {
+                    localMax = std::max(
+                        localMax,
+                        static_cast<int>(vMap.SGetAlt(gx + dx, gy + dy)));
+                }
+            }
+            if (localMax + 4096 <= MAX_VX_HEIGHT) {
+                cx = gx;
+                cy = gy;
+                found = true;
+            }
+        }
+    }
+    TEST_REQUIRE(found, "no suitable stamp area for the height-fn test.");
+
+    MapEditor::BrushTool brush(session);
+
+    /// The dam surface at a cell in Terra's 1/32 fixed point (0 = no dam).
+    const auto damAlt = [&](int x, int y) -> int {
+        const int off = y * mapW + x;
+        return vMap.VxDBuf[off] != 0
+            ? static_cast<int>(vMap.SGetAlt(off))
+            : 0;
+    };
+
+    // --- 1: every covered cell lands EXACTLY on its function value — the  ---
+    // ---    adjacent-cells interference scenario (radius-1-class stamps    ---
+    // ---    at distance 1 with different heights): a ramp by x over the    ---
+    // ---    5x5 square, checked cell by cell including the shared edges.   ---
+    {
+        std::string error;
+        const std::string script =
+            "applyHeightFn({x: " + std::to_string(cx) + ", y: " +
+            std::to_string(cy) +
+            "}, 2, function(x, y, h) { return 20 + (x - " +
+            std::to_string(cx) + ") * 5; }, true);";
+        TEST_REQUIRE(
+            MapEditor::runEditorScript(session, brush, brush.params(), cx, cy,
+                                       script, error),
+            "applyHeightFn refused: %s", error.c_str());
+        for (int dy = -2; dy <= 2; ++dy) {
+            for (int dx = -2; dx <= 2; ++dx) {
+                const int expected = (20 + dx * 5) << VX_FRACTION;
+                TEST_REQUIRE(damAlt(cx + dx, cy + dy) == expected,
+                             "cell (%d, %d) must land exactly at %d, got %d.",
+                             cx + dx, cy + dy, expected,
+                             damAlt(cx + dx, cy + dy));
+            }
+        }
+    }
+    std::printf("[PASS] applyHeightFn: adjacent cells land exactly on their "
+                "function values (no add-up).\n");
+
+    // --- 2: h is the cell's own PRE-EDIT height — over a slope every cell ---
+    // ---    gains exactly 7 (no cell sees a neighbour's half-written       ---
+    // ---    value); the fn verifies h itself. The slope is laid first in   ---
+    // ---    the SAME script so every covered cell starts from a known h.   ---
+    {
+        std::string error;
+        const std::string script =
+            "applyHeightFn({x: " + std::to_string(cx) + ", y: " +
+            std::to_string(cy) +
+            "}, 3, function(x, y, h) { return 30 + (x - " +
+            std::to_string(cx) + "); }, true);\n"
+            "applyHeightFn({x: " +
+            std::to_string(cx) + ", y: " + std::to_string(cy) +
+            "}, 3, function(x, y, h) {\n"
+            "  var want = 30 + (x - " +
+            std::to_string(cx) +
+            ");\n"
+            "  if (h !== want) { throw new Error('h=' + h + ' want=' + want); }\n"
+            "  return h + 7;\n"
+            "}, true);";
+        TEST_REQUIRE(
+            MapEditor::runEditorScript(session, brush, brush.params(), cx, cy,
+                                       script, error),
+            "the h-carrying applyHeightFn refused: %s", error.c_str());
+        for (int dy = -3; dy <= 3; ++dy) {
+            for (int dx = -3; dx <= 3; ++dx) {
+                const int expected = (37 + dx) << VX_FRACTION;
+                TEST_REQUIRE(damAlt(cx + dx, cy + dy) == expected,
+                             "cell (%d, %d) must be the slope + 7 (%d), got "
+                             "%d.",
+                             cx + dx, cy + dy, expected,
+                             damAlt(cx + dx, cy + dy));
+            }
+        }
+    }
+    std::printf("[PASS] applyHeightFn: h carries each cell's pre-edit height "
+                "(slope + offset stays exact).\n");
+
+    // --- 3: fractional targets convert to the nearest fixed-point step. ---
+    {
+        std::string error;
+        const std::string script =
+            "applyHeightFn({x: " + std::to_string(cx) + ", y: " +
+            std::to_string(cy) +
+            "}, 1, function(x, y, h) { return 15.5; }, true);";
+        TEST_REQUIRE(
+            MapEditor::runEditorScript(session, brush, brush.params(), cx, cy,
+                                       script, error),
+            "the fractional applyHeightFn refused: %s", error.c_str());
+        const int expected = (15 << VX_FRACTION) + (1 << (VX_FRACTION - 1));
+        TEST_REQUIRE(damAlt(cx, cy) == expected,
+                     "15.5 voxels must become exactly 15 + 16/32, got %d.",
+                     damAlt(cx, cy));
+    }
+    std::printf("[PASS] applyHeightFn: fractional heights hit the nearest "
+                "fixed-point step.\n");
+
+    // --- 4: a throw aborts the op with NOTHING written and no undo entry. ---
+    {
+        const int mx = 12;
+        const RegionBytes before =
+            RegionBytes::read(cx - mx, cy - mx, 2 * mx + 1, 2 * mx + 1);
+        const bool couldUndo = session.canUndo();
+        std::string error;
+        TEST_REQUIRE(!MapEditor::runEditorScript(
+                         session, brush, brush.params(), cx, cy,
+                         "applyHeightFn({x: " + std::to_string(cx) +
+                             ", y: " + std::to_string(cy) +
+                             "}, 3, function(x, y, h) {"
+                             " throw new Error('boom'); }, true);",
+                         error) &&
+                         error.find("boom") != std::string::npos,
+                     "a throwing fn must abort with its message, got: %s",
+                     error.c_str());
+        const RegionBytes after =
+            RegionBytes::read(cx - mx, cy - mx, 2 * mx + 1, 2 * mx + 1);
+        TEST_REQUIRE(after.equals(before),
+                     "a throwing fn must leave the world byte-exact.");
+        TEST_REQUIRE(session.canUndo() == couldUndo,
+                     "a throwing fn must not record an undo entry.");
+    }
+    std::printf("[PASS] applyHeightFn: a throw aborts with nothing written.\n");
+
+    // --- 5: one run = one undo entry, byte-exact restore. ----------------
+    {
+        const int mx = 10;
+        const RegionBytes before =
+            RegionBytes::read(cx - mx, cy - mx, 2 * mx + 1, 2 * mx + 1);
+        std::string error;
+        TEST_REQUIRE(
+            MapEditor::runEditorScript(
+                session, brush, brush.params(), cx, cy,
+                "applyHeightFn({x: " + std::to_string(cx) + ", y: " +
+                    std::to_string(cy) +
+                    "}, 4, function(x, y, h) {"
+                    " return 50 - Math.abs(x - " +
+                    std::to_string(cx) + ") - Math.abs(y - " +
+                    std::to_string(cy) + "); }, true);",
+                error),
+            "the pyramid applyHeightFn refused: %s", error.c_str());
+        TEST_REQUIRE(session.canUndo(), "one run must be one undo entry.");
+        TEST_REQUIRE(session.undo(), "undo failed.");
+        const RegionBytes restored =
+            RegionBytes::read(cx - mx, cy - mx, 2 * mx + 1, 2 * mx + 1);
+        TEST_REQUIRE(restored.equals(before),
+                     "undo must restore the applyHeightFn region byte-exact.");
+    }
+    std::printf("[PASS] applyHeightFn: one undo entry restores the region "
+                "byte-exact.\n");
+
+    return true;
+}
+
 } // namespace
 
 MAP_EDITOR_REGISTER_TEST("Scripted brush (duktape)", 90,
                          runScriptedBrushTests);
 MAP_EDITOR_REGISTER_TEST("Script palette API + Run Script", 99,
                          runScriptPaletteApiTests);
+MAP_EDITOR_REGISTER_TEST("applyHeightFn (script height function)", 105,
+                         runScriptHeightFnTests);
