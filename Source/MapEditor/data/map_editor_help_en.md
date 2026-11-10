@@ -95,6 +95,12 @@ written to the `.spg` (`nobodysBuildings`), the relief does not change:
   buildings are rejected), **Select** (a click selects a building; the
   **Rotation** and **HP** spins edit the selection), **Delete** (a click
   deletes);
+- **Charge** (a 0–100 % spin, shown only for the superweapons — Scum
+  Disruptor, Missile Gun (Ballistic), Filth Navigator): the initial shot
+  charge (`weaponChargeLevel` 0..1 in the `.spg`). **Place** stamps the
+  chosen value, **Select** edits the charge of a building already on the
+  map; 100 % = the shot is available right away (the game's default),
+  0 % = charging from empty;
 - buildings are visible: in the 2D view and on the minimap as white dots
   (like the game's radar), in 3D as the actual M3D models with the game's
   textures; the selection is highlighted orange;

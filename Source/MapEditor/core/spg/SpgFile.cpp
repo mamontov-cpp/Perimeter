@@ -892,7 +892,9 @@ std::shared_ptr<XPrmObject> buildingEntryObject(const SpgFile::PlacedBuilding& b
     fields.push_back(namedScalar("basementInstalled", "true"));
     fields.push_back(namedScalar("accumulatedEnergy", "0."));
     fields.push_back(namedScalar("zeroLayerCounter", "0"));
-    fields.push_back(namedScalar("weaponChargeLevel", "1."));
+    fields.push_back(namedScalar(
+        "weaponChargeLevel",
+        formatXPrmNumber(std::clamp(b.charge, 0.0, 1.0))));
     fields.push_back(XPrmObject::Field{"wayPoints", "", true, "", freshObject({anonScalar("0", ';')}), "", ';', true});
     fields.push_back(namedScalar("weapon", "0"));
     if (info.kind == BuildingKind::Protector) {
@@ -1099,6 +1101,15 @@ std::vector<SpgFile::PlacedBuilding> SpgFile::buildings() const
             }
         }
         b.hp = hp;
+        // The initial weapon charge (SaveUnitRealData
+        // weaponChargeLevel, 0..1) — the game ships it on
+        // every building; absent means the default 1.
+        const std::string chargeText =
+            obj->scalar("weaponChargeLevel");
+        b.charge = chargeText.empty()
+            ? 1.0
+            : std::clamp(std::strtod(chargeText.c_str(), nullptr),
+                        0.0, 1.0);
         out.push_back(b);
     }
     return out;
@@ -1215,6 +1226,28 @@ bool SpgFile::setBuildingHp(std::size_t index, int hp)
     damageField->hasObject = true;
     damageField->object = damageObject(hp, info->molecula);
     damageField->edited = true;
+    return true;
+}
+
+bool SpgFile::setBuildingCharge(std::size_t index, double charge)
+{
+    if (!loaded()) {
+        return false;
+    }
+    XPrmObject* array = buildingsArray(save_, false);
+    if (!array || index + 1 >= array->fields.size() ||
+        !array->fields[index + 1].object) {
+        return false;
+    }
+    XPrmObject* obj = array->fields[index + 1].object.get();
+    XPrmObject::Field* chargeField = obj->field("weaponChargeLevel");
+    if (!chargeField) {
+        return false;
+    }
+    chargeField->scalar = formatXPrmNumber(std::clamp(charge, 0.0, 1.0));
+    chargeField->hasObject = false;
+    chargeField->object.reset();
+    chargeField->edited = true;
     return true;
 }
 

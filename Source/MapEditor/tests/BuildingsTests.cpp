@@ -229,6 +229,93 @@ bool runBuildingsTests()
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// The superweapon charge (SaveUnitRealData::weaponChargeLevel) — the
+// Buildings panel Place/Select control for the charged-shot superweapons
+// (40 Scum Disruptor, 41 Missile Gun, 42 Filth Navigator).
+// ---------------------------------------------------------------------------
+
+bool runBuildingChargeTests()
+{
+    MapEditor::Tests::TestContext& ctx = MapEditor::Tests::context();
+    MapEditor::setupErrHWrapper();
+
+    const fs::path compass = ctx.gameDir / "RESOURCE" / "Battle" /
+                             "COMPASS.spg";
+    TEST_REQUIRE(fs::exists(compass), "COMPASS.spg missing in game dir.");
+
+    // The catalog gate: only the three superweapons carry the control.
+    TEST_REQUIRE(MapEditor::isChargeableSuperweapon(40) &&
+                     MapEditor::isChargeableSuperweapon(41) &&
+                     MapEditor::isChargeableSuperweapon(42),
+                 "the three superweapons must be chargeable.");
+    TEST_REQUIRE(!MapEditor::isChargeableSuperweapon(8) &&
+                     !MapEditor::isChargeableSuperweapon(37),
+                 "ordinary buildings (incl. the Rocket Launcher) must not "
+                 "be chargeable.");
+
+    // --- add with a charge → parse back in memory. ------------------------
+    MapEditor::SpgFile spg;
+    TEST_REQUIRE(spg.load(compass.u8string()), "COMPASS load failed.");
+    {
+        MapEditor::SpgFile::PlacedBuilding b;
+        b.unitId = spg.maxUnitId() + 1;
+        b.attributeId = 41; // UNIT_ATTRIBUTE_GUN_BALLISTIC — the Missile Gun
+        b.x = 1100.0;
+        b.y = 1200.0;
+        b.z = 39.0;
+        b.charge = 0.5;
+        TEST_REQUIRE(spg.addBuilding(b), "addBuilding (charge 0.5) refused.");
+    }
+    {
+        MapEditor::SpgFile::PlacedBuilding b;
+        b.unitId = spg.maxUnitId() + 1;
+        b.attributeId = 8; // an ordinary building — default charge
+        b.x = 1300.0;
+        b.y = 1400.0;
+        b.z = 39.0;
+        TEST_REQUIRE(spg.addBuilding(b), "addBuilding (default) refused.");
+    }
+    std::vector<MapEditor::SpgFile::PlacedBuilding> list = spg.buildings();
+    TEST_REQUIRE(list.size() >= 2, "the two buildings must be listed.");
+    TEST_REQUIRE(std::abs(list[list.size() - 2].charge - 0.5) < 1e-9,
+                 "the Missile Gun must carry charge 0.5, got %f.",
+                 list[list.size() - 2].charge);
+    TEST_REQUIRE(std::abs(list.back().charge - 1.0) < 1e-9,
+                 "an unset charge must default to 1.0, got %f.",
+                 list.back().charge);
+
+    // --- setBuildingCharge: edit + clamp. ----------------------------------
+    const std::size_t gunIndex = list[list.size() - 2].index;
+    TEST_REQUIRE(spg.setBuildingCharge(gunIndex, 0.25),
+                 "setBuildingCharge(0.25) refused.");
+    TEST_REQUIRE(std::abs(spg.buildings()[gunIndex].charge - 0.25) < 1e-9,
+                 "the charge edit must apply.");
+    TEST_REQUIRE(spg.setBuildingCharge(gunIndex, 1.7),
+                 "setBuildingCharge(1.7) must clamp, not refuse.");
+    TEST_REQUIRE(std::abs(spg.buildings()[gunIndex].charge - 1.0) < 1e-9,
+                 "the charge must clamp to 1.0, got %f.",
+                 spg.buildings()[gunIndex].charge);
+
+    // --- round-trip through a saved file. ----------------------------------
+    const fs::path out = ctx.tempRoot / "spg" / "building_charge.spg";
+    TEST_REQUIRE(spg.save(out.u8string()), "the charge save failed.");
+    MapEditor::SpgFile back;
+    TEST_REQUIRE(back.load(out.u8string()), "the charge re-load failed.");
+    std::vector<MapEditor::SpgFile::PlacedBuilding> backList =
+        back.buildings();
+    TEST_REQUIRE(std::abs(backList[gunIndex].charge - 1.0) < 1e-9,
+                 "the clamped charge must survive the round-trip.");
+    TEST_REQUIRE(std::abs(backList.back().charge - 1.0) < 1e-9,
+                 "the default charge must survive the round-trip.");
+
+    std::printf("[PASS] superweapon charge: add/edit/clamp + save "
+                "round-trip.\n");
+    return true;
+}
+
 } // namespace
 
 MAP_EDITOR_REGISTER_TEST("Battle-map buildings", 100, runBuildingsTests);
+MAP_EDITOR_REGISTER_TEST("Superweapon charge (weaponChargeLevel)", 106,
+                         runBuildingChargeTests);

@@ -100,6 +100,17 @@ inline constexpr BuildingInfo kPlaceableBuildings[] = {
 inline constexpr std::size_t kPlaceableBuildingCount =
     sizeof(kPlaceableBuildings) / sizeof(kPlaceableBuildings[0]);
 
+/// The charged-shot superweapons (their first shot waits for the weapon
+/// charge): Scum Disruptor, the Missile Gun (Ballistic) and the Filth
+/// Navigator. Their initial charge is the spg `weaponChargeLevel` (0..1) —
+/// only these get the Charge control in the Buildings panel.
+inline bool isChargeableSuperweapon(int attributeId)
+{
+    return attributeId == 40 || // UNIT_ATTRIBUTE_GUN_SCUM_DISRUPTOR
+           attributeId == 41 || // UNIT_ATTRIBUTE_GUN_BALLISTIC (Missile Gun)
+           attributeId == 42;   // UNIT_ATTRIBUTE_GUN_FILTH_NAVIGATOR
+}
+
 /// Lookup by terUnitAttributeID (nullptr when not placeable).
 inline const BuildingInfo* buildingInfo(int attributeId)
 {

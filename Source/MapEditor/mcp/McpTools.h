@@ -209,7 +209,11 @@ inline QVector<McpToolSpec> mcpToolCatalog()
                              "plants, 6=Command Center, 7-31 labs, 32-33 "
                              "corridors, 34 static bomb, 35-42 guns). The "
                              "building stands on the zero layer; placement "
-                             "refuses intersections with other buildings.") +
+                             "refuses intersections with other buildings. "
+                             "'charge' (0..1) is the initial weapon charge "
+                             "of the charged-shot superweapons (40 Scum "
+                             "Disruptor, 41 Missile Gun, 42 Filth "
+                             "Navigator; 1 = fires right away).") +
                   undoNote,
               obj({{QStringLiteral("type"), QStringLiteral("object")},
                    {QStringLiteral("properties"),
@@ -238,12 +242,19 @@ inline QVector<McpToolSpec> mcpToolCatalog()
                    {QStringLiteral("default"), 0}})},
              {QStringLiteral("hp"),
               obj({{QStringLiteral("type"), integer},
-                   {QStringLiteral("default"), 100}})}});
+                   {QStringLiteral("default"), 100}})},
+             {QStringLiteral("charge"),
+              obj({{QStringLiteral("type"), num},
+                   {QStringLiteral("description"),
+                    QStringLiteral("initial weapon charge 0..1 (the "
+                                   "charged-shot superweapons 40/41/42)")},
+                   {QStringLiteral("default"), 1}})}});
 
     t.append({QStringLiteral("update_building"),
               QStringLiteral("Edits a placed building (from "
-                             "list_battle_map_objects): position, rotation "
-                             "and HP.") +
+                             "list_battle_map_objects): position, rotation, "
+                             "HP and weapon charge (0..1, superweapons "
+                             "40/41/42).") +
                   undoNote,
               obj({{QStringLiteral("type"), QStringLiteral("object")},
                    {QStringLiteral("properties"),
@@ -252,7 +263,9 @@ inline QVector<McpToolSpec> mcpToolCatalog()
                         {QStringLiteral("y"), obj({{QStringLiteral("type"), num}})},
                         {QStringLiteral("angle"), obj({{QStringLiteral("type"), num}})},
                         {QStringLiteral("hp"),
-                         obj({{QStringLiteral("type"), integer}})}}))},
+                         obj({{QStringLiteral("type"), integer}})},
+                        {QStringLiteral("charge"),
+                         obj({{QStringLiteral("type"), num}})}}))},
                    {QStringLiteral("required"),
                     QJsonArray{QStringLiteral("index")}}})});
 

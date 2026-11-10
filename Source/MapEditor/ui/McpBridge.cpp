@@ -36,6 +36,8 @@
 #include "spg/SpgFile.h"
 
 
+#include <algorithm>
+
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
@@ -677,6 +679,7 @@ QVariantMap MapEditor::McpBridge::mcpHandleObjects(const QString& name,
                 {QStringLiteral("y"), list[i].y},
                 {QStringLiteral("angleDeg"), list[i].angleDeg},
                 {QStringLiteral("hp"), list[i].hp},
+                {QStringLiteral("charge"), list[i].charge},
             });
         }
         QVariantList scum;
@@ -747,6 +750,7 @@ QVariantMap MapEditor::McpBridge::mcpHandleObjects(const QString& name,
         b.z = session_->zeroLayerHeight() + info->zOffset;
         b.angleDeg = mcpArgDbl(args, "angle", 0.0);
         b.hp = mcpArgInt(args, "hp", 100);
+        b.charge = std::clamp(mcpArgDbl(args, "charge", 1.0), 0.0, 1.0);
         if (!battleMaps_->spgFile().addBuilding(b)) {
             return mcpError(QStringLiteral("addBuilding failed"));
         }
@@ -770,6 +774,11 @@ QVariantMap MapEditor::McpBridge::mcpHandleObjects(const QString& name,
         if (args.contains(QStringLiteral("hp")) &&
             !battleMaps_->spgFile().setBuildingHp(b.index, mcpArgInt(args, "hp"))) {
             return mcpError(QStringLiteral("setBuildingHp failed"));
+        }
+        if (args.contains(QStringLiteral("charge")) &&
+            !battleMaps_->spgFile().setBuildingCharge(
+                b.index, mcpArgDbl(args, "charge"))) {
+            return mcpError(QStringLiteral("setBuildingCharge failed"));
         }
         battleMaps_->reloadPlacedBuildings();
         return mcpOk();

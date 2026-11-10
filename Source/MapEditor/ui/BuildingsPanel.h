@@ -55,12 +55,18 @@ public:
     void setActiveTool(int index);
     double rotationDeg() const;
     int hp() const;
+    /// The initial weapon charge 0..1 the Place tool stamps (100 % default).
+    double charge() const;
 
     /// Show the selected building's info (empty clears).
     void setSelectionInfo(const QString& text);
-    /// Mirror the selected building's rotation/HP into the spins WITHOUT
-    /// emitting the edit signals.
-    void showSelectionParams(double deg, int hp);
+    /// Mirror the selected building's rotation/HP/charge into the spins
+    /// WITHOUT emitting the edit signals. `charge` is the 0..1
+    /// weaponChargeLevel (meaningful for the charged-shot superweapons).
+    void showSelectionParams(double deg, int hp, double charge);
+    /// Show/hide the Charge control — only the charged-shot superweapons
+    /// (Scum Disruptor / Missile Gun / Filth Navigator) carry it.
+    void setChargeEnabled(bool enabled);
     /// Swap a building button to the baked model icon (name moves under
     /// the icon). Null/empty icons are ignored.
     void setBuildingIcon(int attributeId, const QIcon& icon);
@@ -74,6 +80,9 @@ signals:
     void rotationEdited(double deg);
     /// The HP spin was edited by the user (apply to the selection).
     void hpEdited(int hp);
+    /// The Charge spin was edited by the user (0..1, apply to the
+    /// selected superweapon).
+    void chargeEdited(double charge);
 
 private:
     void onBuildingToggled(int id, bool checked);
@@ -86,6 +95,8 @@ private:
     QLabel* selection_ = nullptr;
     QDoubleSpinBox* rotationSpin_ = nullptr;
     QSpinBox* hpSpin_ = nullptr;
+    QDoubleSpinBox* chargeSpin_ = nullptr;
+    QLabel* chargeLabel_ = nullptr;
     int tool_ = -1;
     bool updatingSpins_ = false;
 };

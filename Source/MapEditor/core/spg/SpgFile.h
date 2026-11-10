@@ -203,6 +203,9 @@ public:
         double z = 0;
         double angleDeg = 0;   ///< rotation around Z.
         int hp = 100;          ///< percent (damageMolecula).
+        double charge = 1.0;   ///< weaponChargeLevel 0..1 (the initial charge
+                               ///< of the charged-shot superweapons; other
+                               ///< buildings ignore the field).
     };
 
     /// Current buildings in file order (skipped: entries whose attributeID
@@ -218,6 +221,9 @@ public:
                          double angleDeg);
     /// Rewrites the damageMolecula for an existing building.
     bool setBuildingHp(std::size_t index, int hp);
+    /// Rewrites the weaponChargeLevel (initial charge 0..1, the
+    /// charged-shot superweapons) for an existing building.
+    bool setBuildingCharge(std::size_t index, double charge);
     /// Removes an existing building.
     bool removeBuilding(std::size_t index);
     /// Maximum unitID anywhere under SavePrm (frames, squads, slots,

@@ -320,6 +320,22 @@ void BattleMapController::buildBuildingsDock()
                         tr("Building HP set to %1%.").arg(hp), 3000);
                 }
             });
+    connect(buildingsPanel_, &MapEditor::BuildingsPanel::chargeEdited, this,
+            [this](double charge) {
+                if (selectedBuildingRow_ < 0 ||
+                    selectedBuildingRow_ >=
+                        static_cast<int>(placedBuildings_.size())) {
+                    return;
+                }
+                const MapEditor::SpgFile::PlacedBuilding& b =
+                    placedBuildings_[static_cast<std::size_t>(selectedBuildingRow_)];
+                if (battleMap_.setBuildingCharge(b.index, charge)) {
+                    reloadPlacedBuildings();
+                    showStatus(tr("Building charge set to %1%.")
+                                   .arg(qRound(charge * 100)),
+                               3000);
+                }
+            });
 
     // Viewport tool clicks + cursor tracking for the placement preview.
     connect(viewport_, &MapEditor::ViewportWidget::buildingPlaceRequested,
@@ -485,6 +501,9 @@ void BattleMapController::onBuildingPlace(double mapX, double mapY)
     b.z = session_->zeroLayerHeight() + info->zOffset;
     b.angleDeg = buildingsPanel_->rotationDeg();
     b.hp = buildingsPanel_->hp();
+    // The initial weapon charge of the charged-shot superweapons (the
+    // panel spin stays at the 100 % default for every other building).
+    b.charge = buildingsPanel_->charge();
     if (!battleMap_.addBuilding(b)) {
         showStatus(tr("Failed to place the building."), 4000);
         return;
@@ -518,7 +537,9 @@ void BattleMapController::onBuildingSelect(double mapX, double mapY)
                 .arg(QString::fromLatin1(info ? info->name : "?"))
                 .arg(b.x)
                 .arg(b.y));
-        buildingsPanel_->showSelectionParams(b.angleDeg, b.hp);
+        buildingsPanel_->showSelectionParams(b.angleDeg, b.hp, b.charge);
+        buildingsPanel_->setChargeEnabled(
+            MapEditor::isChargeableSuperweapon(b.attributeId));
     } else if (buildingsPanel_) {
         buildingsPanel_->setSelectionInfo(
             tr("Click a building to select it."));

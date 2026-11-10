@@ -6,6 +6,8 @@
 
 #include "BuildingCatalog.h"
 
+#include <algorithm>
+
 #include <QAbstractButton>
 #include <QButtonGroup>
 #include <QDoubleSpinBox>
@@ -101,6 +103,30 @@ BuildingsPanel::BuildingsPanel(QWidget* parent)
         }
     });
     params->addWidget(hpSpin_);
+    // --- Charge: the initial weapon charge of the charged-shot
+    // superweapons (Scum Disruptor / Missile Gun / Filth Navigator) — the
+    // Place tool stamps it, the Select tool edits it. Hidden for every
+    // other building type (the field exists in the save but only these
+    // three weapons wait on it before the first shot).
+    chargeLabel_ = new QLabel(tr("Charge:"), this);
+    params->addWidget(chargeLabel_);
+    chargeSpin_ = new QDoubleSpinBox(this);
+    chargeSpin_->setRange(0.0, 100.0);
+    chargeSpin_->setDecimals(0);
+    chargeSpin_->setValue(100); // fully charged, like the game default
+    chargeSpin_->setSuffix(tr(" %"));
+    chargeSpin_->setToolTip(
+        tr("Initial weapon charge the Place tool stamps / the Select tool "
+           "applies to the selected superweapon (weaponChargeLevel "
+           "0..1 — 100 % fires right away, 0 % starts uncharged)."));
+    connect(chargeSpin_, &QDoubleSpinBox::valueChanged, this,
+            [this](double value) {
+                if (!updatingSpins_) {
+                    emit chargeEdited(value / 100.0);
+                }
+            });
+    params->addWidget(chargeSpin_);
+    setChargeEnabled(false);
     layout->addLayout(params);
 
     // --- The building grid ----------------------------------------------
@@ -154,6 +180,8 @@ void BuildingsPanel::setActiveTool(int index)
 void BuildingsPanel::onBuildingToggled(int id, bool checked)
 {
     if (checked) {
+        // The Charge control belongs to the charged-shot superweapons only.
+        setChargeEnabled(MapEditor::isChargeableSuperweapon(id));
         emit buildingChosen(id);
     }
 }
@@ -174,16 +202,28 @@ int BuildingsPanel::hp() const
     return hpSpin_->value();
 }
 
+double BuildingsPanel::charge() const
+{
+    return chargeSpin_->value() / 100.0;
+}
+
+void BuildingsPanel::setChargeEnabled(bool enabled)
+{
+    chargeSpin_->setVisible(enabled);
+    chargeLabel_->setVisible(enabled);
+}
+
 void BuildingsPanel::setSelectionInfo(const QString& text)
 {
     selection_->setText(text.isEmpty() ? tr("No battle map loaded.") : text);
 }
 
-void BuildingsPanel::showSelectionParams(double deg, int hp)
+void BuildingsPanel::showSelectionParams(double deg, int hp, double charge)
 {
     updatingSpins_ = true;
     rotationSpin_->setValue(deg);
     hpSpin_->setValue(hp);
+    chargeSpin_->setValue(std::clamp(charge, 0.0, 1.0) * 100.0);
     updatingSpins_ = false;
 }
 
