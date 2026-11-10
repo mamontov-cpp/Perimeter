@@ -258,7 +258,8 @@ void BattleMapController::buildBuildingsDock()
                 using VT = MapEditor::ViewportWidget::BuildingTool;
                 viewport_->setBuildingTool(tool == 0 ? VT::Place
                                           : tool == 1 ? VT::Select
-                                                      : VT::Delete);
+                                          : tool == 2 ? VT::Delete
+                                                      : VT::None);
                 if (tool != 0) {
                     viewport_->setBuildingPreview(-1, 0, true);
                 }
@@ -312,6 +313,49 @@ void BattleMapController::buildBuildingsDock()
             this, &BattleMapController::onBuildingDelete);
     connect(viewport_, &MapEditor::ViewportWidget::cursorMapPosition, this,
             &BattleMapController::onBuildingCursorMoved);
+    // The click routing is exclusive (one panel tool, or none = the normal
+    // brush): mirror any change into the panel buttons so exactly one of the
+    // twelve tool buttons is highlighted at a moment.
+    connect(viewport_, &MapEditor::ViewportWidget::clickRoutingChanged, this,
+            [this] { syncPanelToolButtons(); });
+}
+
+void BattleMapController::syncPanelToolButtons()
+{
+    if (!viewport_) {
+        return;
+    }
+    using VW = MapEditor::ViewportWidget;
+    int building = -1;
+    switch (viewport_->buildingTool()) {
+    case VW::BuildingTool::Place:  building = 0; break;
+    case VW::BuildingTool::Select: building = 1; break;
+    case VW::BuildingTool::Delete: building = 2; break;
+    default: break;
+    }
+    int scum = -1;
+    switch (viewport_->scumTool()) {
+    case VW::ScumTool::Place:  scum = 0; break;
+    case VW::ScumTool::Select: scum = 1; break;
+    case VW::ScumTool::Delete: scum = 2; break;
+    default: break;
+    }
+    int nature = -1;
+    switch (viewport_->natureTool()) {
+    case VW::NatureTool::Place:  nature = 0; break;
+    case VW::NatureTool::Select: nature = 1; break;
+    case VW::NatureTool::Delete: nature = 2; break;
+    default: break;
+    }
+    if (buildingsPanel_) {
+        buildingsPanel_->setActiveTool(building);
+    }
+    if (scumSpotsPanel_) {
+        scumSpotsPanel_->setActiveTool(scum);
+    }
+    if (naturePanel_) {
+        naturePanel_->setActiveTool(nature);
+    }
 }
 
 void BattleMapController::reloadPlacedBuildings()
@@ -1173,7 +1217,8 @@ void BattleMapController::buildScumSpotsDock()
                 using VT = MapEditor::ViewportWidget::ScumTool;
                 viewport_->setScumTool(tool == 0 ? VT::Place
                                         : tool == 1 ? VT::Select
-                                                    : VT::Delete);
+                                        : tool == 2 ? VT::Delete
+                                                    : VT::None);
                 if (tool != 0) {
                     viewport_->setScumPreview(-1, 0, true);
                 }
@@ -1548,7 +1593,8 @@ void BattleMapController::buildNatureDock()
                 using VT = MapEditor::ViewportWidget::NatureTool;
                 viewport_->setNatureTool(tool == 0 ? VT::Place
                                           : tool == 1 ? VT::Select
-                                                      : VT::Delete);
+                                          : tool == 2 ? VT::Delete
+                                                      : VT::None);
                 if (tool != 0) {
                     viewport_->setNaturePreview(QString(), 0, true);
                 }

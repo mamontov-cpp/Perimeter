@@ -2,6 +2,7 @@
 
 #include <QWidget>
 
+#include <QList>
 #include <QStringList>
 
 class QCheckBox;
@@ -39,7 +40,15 @@ public:
 
     void setActive(bool active);
 
-    int tool() const { return tool_; } ///< 0 place, 1 select, 2 delete.
+    /// The active tool: 0 place, 1 select, 2 delete, -1 none (the normal
+    /// brush handles clicks). The tools are mutually exclusive — within the
+    /// panel by the buttons themselves, across the panels through the
+    /// viewport's click routing (see ViewportWidget::clickRoutingChanged).
+    int tool() const { return tool_; }
+    /// Mirror the active tool into the buttons WITHOUT emitting toolChosen
+    /// (-1 unchecks all). The viewport calls this when another panel's tool
+    /// or a brush/editor mode takes the click over.
+    void setActiveTool(int index);
     QString selectedModel() const;     ///< "" when none.
     double rotationDeg() const;
     double z() const;
@@ -68,6 +77,8 @@ signals:
 private:
     void emitParams();
 
+    /// The Place/Select/Delete row, in tool-index order.
+    QList<QToolButton*> toolButtons_;
     QLabel* selection_ = nullptr;
     QListWidget* modelList_ = nullptr;
     QDoubleSpinBox* rotationSpin_ = nullptr;
@@ -76,7 +87,7 @@ private:
     QCheckBox* flagDestroy_ = nullptr;
     QCheckBox* flagCollisions_ = nullptr;
     QCheckBox* flagLighting_ = nullptr;
-    int tool_ = 0;
+    int tool_ = -1;
     bool updatingSpins_ = false;
 };
 

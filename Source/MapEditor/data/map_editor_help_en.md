@@ -70,6 +70,14 @@ The same applies to the Survival mode.
    labels; names are only in the panel), in the 3D view — colored discs on
    the relief at the spawn point. The position updates on every move.
 
+All map-click tools are mutually exclusive: **Place Spawn** and the
+**Place / Select / Delete** tools of the Buildings, Scum Nests and
+Nature panels. Activating one resets the others (exactly one button is
+highlighted at a moment); clicking the active button again releases it
+— and the click works as the normal brush again, as it does after
+choosing any brush or mode (**Brush**, **View**, **Eyedropper**) on the
+mode toolbar.
+
 ### Pre-placed buildings (Buildings panel)
 
 The **Buildings** panel (tab next to Battle Map; active only when a battle

@@ -392,7 +392,11 @@ public:
         return buildings_;
     }
     /// The buildings panel tool active in the viewport (None restores the
-    /// normal brush/pick routing).
+    /// normal brush/pick routing). The three panel tools and the special
+    /// editor modes (Place Spawn, Eyedropper, View) are click-routing
+    /// alternatives: activating any ONE of them resets all the others
+    /// (see clearPanelTools / setEditorMode) — a left click can never be
+    /// claimed by two states at once.
     enum class BuildingTool
     {
         None,
@@ -400,7 +404,7 @@ public:
         Select, ///< click emits buildingSelectRequested(x, y).
         Delete, ///< click emits buildingDeleteRequested(x, y).
     };
-    void setBuildingTool(BuildingTool tool) { buildingTool_ = tool; }
+    void setBuildingTool(BuildingTool tool);
     BuildingTool buildingTool() const { return buildingTool_; }
     /// Placement preview footprint at the cursor: attributeId - 1 hides it,
     /// `valid` paints it green/red like the in-game placement ghost.
@@ -426,7 +430,7 @@ public:
         Select, ///< click emits scumSelectRequested(x, y).
         Delete, ///< click emits scumDeleteRequested(x, y).
     };
-    void setScumTool(ScumTool tool) { scumTool_ = tool; }
+    void setScumTool(ScumTool tool);
     ScumTool scumTool() const { return scumTool_; }
     /// Placement preview footprint at the cursor (green/red).
     void setScumPreview(int attributeId, double radiusCells, bool valid);
@@ -458,7 +462,7 @@ public:
         Select, ///< click emits natureSelectRequested(x, y).
         Delete, ///< click emits natureDeleteRequested(x, y).
     };
-    void setNatureTool(NatureTool tool) { natureTool_ = tool; }
+    void setNatureTool(NatureTool tool);
     NatureTool natureTool() const { return natureTool_; }
     /// Placement preview footprint at the cursor (green/red).
     void setNaturePreview(const QString &modelName, double radiusCells,
@@ -539,6 +543,11 @@ signals:
     /// Emitted after setEditorMode() — MainWindow keeps its mode buttons in
     /// sync with it (the interactions can also switch the mode internally).
     void editorModeChanged(MapEditor::ViewportWidget::EditorMode mode);
+    /// Emitted after ANY change of the panel click-routing tools
+    /// (building/scum/nature) — BattleMapController mirrors the state into
+    /// the panel buttons so exactly one tool (or none, = the normal brush)
+    /// is highlighted at any moment.
+    void clickRoutingChanged();
     /// Emitted when the eyedropper is triggered (T3.3/T4.2) — provides the
     /// map cell coordinates and the current SurBuf palette index at that cell.
     void eyedropperPicked(int mapX, int mapY, unsigned char surIndex);
@@ -749,6 +758,10 @@ private:
     BrushTool *brushTool_ = nullptr;
     /// What a click in the world does (View / Brush / Eyedropper).
     EditorMode editorMode_ = EditorMode::Brush;
+    /// Resets the three panel click-routing tools to None (hiding their
+    /// placement previews) — called from setEditorMode and used by the panel
+    /// setters to keep at most one click-routing state alive.
+    void clearPanelTools();
     bool brushPainting_ = false;
     QPoint lastPaintCell_{-1, -1};
     /// Eyedropper drag: left held down re-picks at every new cell (the brush

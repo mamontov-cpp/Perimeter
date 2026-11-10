@@ -295,6 +295,11 @@ void ViewportWidget::setBrushTool(BrushTool *brush)
 
 void ViewportWidget::setEditorMode(EditorMode mode)
 {
+    // The editor modes own the left click: entering ANY of them (Brush, View,
+    // Eyedropper, Place Spawn) resets the panel place/select/delete tools —
+    // choosing a brush (or any mode) always leaves exactly one routing state
+    // active. The panel setters call this themselves to return to Brush.
+    clearPanelTools();
     if (editorMode_ == mode) {
         return;
     }
@@ -309,6 +314,88 @@ void ViewportWidget::setEditorMode(EditorMode mode)
     lastPickCell_ = {-1, -1};
     setCursor(paintCursorShape());
     emit editorModeChanged(editorMode_);
+    update();
+}
+
+void ViewportWidget::clearPanelTools()
+{
+    if (buildingTool_ == BuildingTool::None
+        && scumTool_ == ScumTool::None
+        && natureTool_ == NatureTool::None) {
+        return;
+    }
+    buildingTool_ = BuildingTool::None;
+    scumTool_ = ScumTool::None;
+    natureTool_ = NatureTool::None;
+    setBuildingPreview(-1, 0, true);
+    setScumPreview(-1, 0, true);
+    setNaturePreview(QString(), 0, true);
+    emit clickRoutingChanged();
+    update();
+}
+
+void ViewportWidget::setBuildingTool(BuildingTool tool)
+{
+    if (tool != BuildingTool::None) {
+        // The panel tools are click-routing alternatives to each other and to
+        // the special editor modes: activating one resets the others and
+        // returns to the Brush mode (the mode toolbar follows through
+        // editorModeChanged). Ours is assigned after the reset, so it
+        // survives setEditorMode's clearPanelTools().
+        scumTool_ = ScumTool::None;
+        natureTool_ = NatureTool::None;
+        setScumPreview(-1, 0, true);
+        setNaturePreview(QString(), 0, true);
+        setEditorMode(EditorMode::Brush);
+    }
+    if (buildingTool_ == tool) {
+        return;
+    }
+    buildingTool_ = tool;
+    if (buildingTool_ == BuildingTool::None) {
+        setBuildingPreview(-1, 0, true);
+    }
+    emit clickRoutingChanged();
+    update();
+}
+
+void ViewportWidget::setScumTool(ScumTool tool)
+{
+    if (tool != ScumTool::None) {
+        buildingTool_ = BuildingTool::None;
+        natureTool_ = NatureTool::None;
+        setBuildingPreview(-1, 0, true);
+        setNaturePreview(QString(), 0, true);
+        setEditorMode(EditorMode::Brush);
+    }
+    if (scumTool_ == tool) {
+        return;
+    }
+    scumTool_ = tool;
+    if (scumTool_ == ScumTool::None) {
+        setScumPreview(-1, 0, true);
+    }
+    emit clickRoutingChanged();
+    update();
+}
+
+void ViewportWidget::setNatureTool(NatureTool tool)
+{
+    if (tool != NatureTool::None) {
+        buildingTool_ = BuildingTool::None;
+        scumTool_ = ScumTool::None;
+        setBuildingPreview(-1, 0, true);
+        setScumPreview(-1, 0, true);
+        setEditorMode(EditorMode::Brush);
+    }
+    if (natureTool_ == tool) {
+        return;
+    }
+    natureTool_ = tool;
+    if (natureTool_ == NatureTool::None) {
+        setNaturePreview(QString(), 0, true);
+    }
+    emit clickRoutingChanged();
     update();
 }
 

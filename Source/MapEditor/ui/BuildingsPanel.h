@@ -12,6 +12,7 @@ class QSpinBox;
 class QToolButton;
 
 #include <QHash>
+#include <QList>
 
 // ============================================================================
 // BuildingsPanel — pre-placed battle-map buildings (SavePrm.nobodysBuildings).
@@ -43,8 +44,15 @@ public:
 
     /// The building toggled in the grid (-1 when none).
     int selectedBuilding() const;
-    /// The active tool: 0 place, 1 select, 2 delete.
+    /// The active tool: 0 place, 1 select, 2 delete, -1 none (the normal
+    /// brush handles clicks). The tools are mutually exclusive — within the
+    /// panel by the buttons themselves, across the panels through the
+    /// viewport's click routing (see ViewportWidget::clickRoutingChanged).
     int tool() const { return tool_; }
+    /// Mirror the active tool into the buttons WITHOUT emitting toolChosen
+    /// (-1 unchecks all). The viewport calls this when another panel's tool
+    /// or a brush/editor mode takes the click over.
+    void setActiveTool(int index);
     double rotationDeg() const;
     int hp() const;
 
@@ -73,10 +81,12 @@ private:
     QButtonGroup* buildingGroup_ = nullptr;
     QGridLayout* grid_ = nullptr;
     QHash<int, QToolButton*> buildingButtons_;
+    /// The Place/Select/Delete row, in tool-index order.
+    QList<QToolButton*> toolButtons_;
     QLabel* selection_ = nullptr;
     QDoubleSpinBox* rotationSpin_ = nullptr;
     QSpinBox* hpSpin_ = nullptr;
-    int tool_ = 0;
+    int tool_ = -1;
     bool updatingSpins_ = false;
 };
 

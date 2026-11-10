@@ -25,18 +25,32 @@ NaturePanel::NaturePanel(QWidget* parent)
     layout->addWidget(selection_);
 
     // --- Tools: Place / Select / Delete -------------------------------
+    // Mutually exclusive (like the panel tools of the other panels and the
+    // editor modes in the viewport): checking one resets the siblings, and
+    // unchecking the active one (tool -1) hands the click back to the normal
+    // brush.
     auto* tools = new QHBoxLayout;
     const auto addTool = [this, tools](int index, const QString& text,
                                        const QString& tip) {
         auto* button = new QToolButton(this);
         button->setText(text);
         button->setCheckable(true);
-        button->setChecked(index == 0);
         button->setToolTip(tip);
-        connect(button, &QToolButton::clicked, this, [this, index] {
-            tool_ = index;
-            emit toolChosen(index);
-        });
+        connect(button, &QToolButton::clicked, this,
+                [this, index, button](bool checked) {
+                    if (checked) {
+                        for (QToolButton* other : std::as_const(toolButtons_)) {
+                            if (other != button) {
+                                other->setChecked(false);
+                            }
+                        }
+                        tool_ = index;
+                    } else {
+                        tool_ = -1;
+                    }
+                    emit toolChosen(tool_);
+                });
+        toolButtons_.append(button);
         tools->addWidget(button);
     };
     addTool(0, tr("Place"),
@@ -130,6 +144,16 @@ void NaturePanel::setActive(bool active)
     if (!active) {
         selection_->setText(tr("No battle map loaded."));
     }
+}
+
+void NaturePanel::setActiveTool(int index)
+{
+    // Programmatic sync only: setChecked() does not emit clicked(), so the
+    // toolChosen loop stays quiet.
+    for (int i = 0; i < toolButtons_.size(); ++i) {
+        toolButtons_[i]->setChecked(i == index);
+    }
+    tool_ = index;
 }
 
 QString NaturePanel::selectedModel() const

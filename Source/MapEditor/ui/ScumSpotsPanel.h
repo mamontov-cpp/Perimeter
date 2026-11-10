@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QHash>
+#include <QList>
 #include <QWidget>
 
 #include <vector>
@@ -43,7 +44,15 @@ public:
     void setActive(bool active);
 
     int selectedSpot() const;          ///< attribute id (-1 when none).
-    int tool() const { return tool_; } ///< 0 place, 1 select, 2 delete.
+    /// The active tool: 0 place, 1 select, 2 delete, -1 none (the normal
+    /// brush handles clicks). The tools are mutually exclusive — within the
+    /// panel by the buttons themselves, across the panels through the
+    /// viewport's click routing (see ViewportWidget::clickRoutingChanged).
+    int tool() const { return tool_; }
+    /// Mirror the active tool into the buttons WITHOUT emitting toolChosen
+    /// (-1 unchecks all). The viewport calls this when another panel's tool
+    /// or a brush/editor mode takes the click over.
+    void setActiveTool(int index);
     double rotationDeg() const;
     int hp() const;
 
@@ -77,6 +86,8 @@ private:
 
     QButtonGroup* spotGroup_ = nullptr;
     QHash<int, QToolButton*> spotButtons_;
+    /// The Place/Select/Delete row, in tool-index order.
+    QList<QToolButton*> toolButtons_;
     QLabel* selection_ = nullptr;
     QDoubleSpinBox* rotationSpin_ = nullptr;
     QSpinBox* hpSpin_ = nullptr;
@@ -94,7 +105,7 @@ private:
     QCheckBox* createFirst_ = nullptr;
     QWidget* filthBox_ = nullptr;
 
-    int tool_ = 0;
+    int tool_ = -1;
     bool updatingSpins_ = false;
 };
 

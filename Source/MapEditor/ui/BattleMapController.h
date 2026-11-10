@@ -126,6 +126,9 @@ private:
     void buildNatureDock();
     void bakeBuildingIconsIfPossible();
     void syncBuildingsOverlay();
+    /// Mirror the viewport's exclusive click routing into the three panels'
+    /// tool buttons (ViewportWidget::clickRoutingChanged).
+    void syncPanelToolButtons();
     void onBuildingPlace(double mapX, double mapY);
     void onBuildingSelect(double mapX, double mapY);
     void onBuildingDelete(double mapX, double mapY);
