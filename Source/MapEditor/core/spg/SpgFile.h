@@ -51,6 +51,11 @@ public:
 
     bool load(const std::string& path);
     bool save(const std::string& path) const;
+    /// Rewrites the mission descriptor's originalSaveName to this map's own
+    /// resource-relative path — see the implementation for why the game's
+    /// "Again" restart depends on it. Called by save().
+    void syncOriginalSaveName(const std::string& path) const;
+
     bool loaded() const { return mission_ && save_ != nullptr; }
 
     // -----------------------------------------------------------------------
@@ -365,7 +370,7 @@ private:
     std::vector<PlayerMoveStep> playerMoveUndo_;
     std::vector<PlayerMoveStep> playerMoveRedo_;
 
-    XPrmDocument doc_;
+    mutable XPrmDocument doc_; // syncOriginalSaveName patches the raw text
     XPrmObject* mission_ = nullptr;
     XPrmObject* save_ = nullptr;
     /// Encoding of the editable strings (player names) in the loaded file —

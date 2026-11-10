@@ -166,6 +166,12 @@ public:
     /// Returns -1 when no world is loaded or the cell is out of range.
     int terrainHeightAt(int x, int y) const;
 
+    /// The exact visible surface height in VOXELS as a double — the raw
+    /// 1/32 fixed-point value (Terra's VX_FRACTION), dam priority. For
+    /// readouts that show the fraction (e.g. the status-bar cursor info).
+    /// Returns -1 when no world is loaded or the cell is out of range.
+    double terrainHeightExact(int x, int y) const;
+
     /// One-cell terrain sample for the MCP server / scripting UIs: whole
     /// voxel geo height, the top-surface height while a dam layer exists
     /// (0 where dam-free), the SurBuf surface index with its Geo/Dam

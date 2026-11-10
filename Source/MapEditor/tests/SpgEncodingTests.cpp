@@ -112,8 +112,12 @@ bool runSpgEncodingTests()
         TEST_REQUIRE(spg.playerData(3).name == "Vice",
                      "untouched player names must not change.");
 
-        // 2: an untouched CP1251 file saves byte-exact.
-        const fs::path untouchedPath = dir / "cp1251_untouched.spg";
+        // 2: an untouched CP1251 file saves byte-exact. Saved under the
+        // embedded originalSaveName's own file name (COMPASS): save()
+        // rewrites originalSaveName to the map's own path, which already
+        // matches, so the document must stay untouched.
+        const fs::path untouchedPath = dir / "copy" / "COMPASS.spg";
+        fs::create_directories(untouchedPath.parent_path());
         TEST_REQUIRE(spg.save(untouchedPath.u8string()), "untouched save failed.");
         TEST_REQUIRE(MapEditor::Tests::readFileBytes(untouchedPath) ==
                          MapEditor::Tests::readFileBytes(cp1251Path),

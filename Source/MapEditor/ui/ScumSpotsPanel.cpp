@@ -76,6 +76,8 @@ ScumSpotsPanel::ScumSpotsPanel(QWidget* parent)
     params->addWidget(new QLabel(tr("HP:"), this));
     hpSpin_ = new QSpinBox(this);
     hpSpin_->setRange(0, 100);
+    hpSpin_->setValue(100); // full HP by default (like the Buildings
+                            // panel — the minimum would place a dead nest)
     hpSpin_->setSuffix(tr(" %"));
     connect(hpSpin_, &QSpinBox::valueChanged, this, [this](int value) {
         if (!updatingSpins_) {

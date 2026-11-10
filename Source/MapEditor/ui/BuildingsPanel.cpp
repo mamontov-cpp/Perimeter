@@ -74,6 +74,9 @@ BuildingsPanel::BuildingsPanel(QWidget* parent)
     params->addWidget(new QLabel(tr("HP:"), this));
     hpSpin_ = new QSpinBox(this);
     hpSpin_->setRange(0, 100);
+    hpSpin_->setValue(100); // full HP by default — a fresh building must
+                            // not be saved dead (the spin minimum would
+                            // otherwise place destroyed buildings)
     hpSpin_->setSuffix(tr(" %"));
     hpSpin_->setToolTip(
         tr("Hit points the Place tool stamps with / the Select tool applies "

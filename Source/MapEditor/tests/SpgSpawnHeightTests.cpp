@@ -207,7 +207,10 @@ bool runSpgSpawnHeightTests()
                      "2nd normalize refused.");
         TEST_REQUIRE(spg.setFramesInstalledForStart(),
                      "2nd installed-state pass refused.");
-        const fs::path againPath = dir / "normalized_again.spg";
+        // Same file name in a subfolder: save() rewrites originalSaveName
+        // to the map's own path, so equal output requires an equal name.
+        const fs::path againPath = dir / "again" / "normalized.spg";
+        fs::create_directories(againPath.parent_path());
         TEST_REQUIRE(spg.save(againPath.u8string()), "save failed.");
         TEST_REQUIRE(MapEditor::Tests::readFileBytes(againPath) ==
                          MapEditor::Tests::readFileBytes(normalizedPath),
@@ -223,7 +226,10 @@ bool runSpgSpawnHeightTests()
         TEST_REQUIRE(spg.load(normalizedPath.u8string()), "load failed.");
         TEST_REQUIRE(spg.restPlayersOnZeroLayer(kZl, flatTerrain),
                      "normalize refused.");
-        const fs::path stablePath = dir / "stable.spg";
+        // Same file name in a subfolder (save() rewrites originalSaveName to
+        // the map's own path, so byte equality requires an equal name).
+        const fs::path stablePath = dir / "stable" / "normalized.spg";
+        fs::create_directories(stablePath.parent_path());
         TEST_REQUIRE(spg.save(stablePath.u8string()), "save failed.");
         TEST_REQUIRE(MapEditor::Tests::readFileBytes(stablePath) ==
                          MapEditor::Tests::readFileBytes(normalizedPath),

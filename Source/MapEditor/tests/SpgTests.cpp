@@ -87,8 +87,11 @@ bool runSpgRoundTripTests()
     TEST_REQUIRE(spg.playerAnchor(0, fx, fy) && fx > 0 && fy > 0,
                  "player 0 anchor not found.");
 
-    // SpgFile save of an untouched file stays byte-exact too.
-    const fs::path out = ctx.tempRoot / "spg" / "roundtrip.spg";
+    // SpgFile save of an untouched file stays byte-exact too. Saved under
+    // the same file name: save() rewrites originalSaveName to the map's own
+    // resource-relative path — and with the value already matching (COMPASS
+    // saved as COMPASS.spg) the document stays untouched.
+    const fs::path out = ctx.tempRoot / "spg" / "COMPASS.spg";
     fs::create_directories(out.parent_path());
     TEST_REQUIRE(spg.save(out.u8string()), "SpgFile save failed.");
     const std::vector<std::uint8_t> written =

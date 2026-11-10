@@ -7,9 +7,11 @@
 #include "ScumSpotCatalog.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 
 namespace MapEditor {
 
@@ -161,7 +163,107 @@ bool SpgFile::load(const std::string& path)
 
 bool SpgFile::save(const std::string& path) const
 {
+    syncOriginalSaveName(path);
     return doc_.save(path);
+}
+
+// The mission descriptor's originalSaveName drives the in-game "Again"
+// restart: MissionDescription::restart() re-resolves the mission from THAT
+// path (setSaveName(originalSaveName)) and loads its SavePrm and the sibling
+// .gmp. A map created from a template inherits the TEMPLATE's
+// originalSaveName, so the restart would load the template's .spg/.gmp over
+// this world (wrong units/frame and the template's terrain difference
+// stamped on top). Rewrite the field to this map's own resource-relative
+// path on every save — the vanilla maps carry exactly that (their own path).
+void SpgFile::syncOriginalSaveName(const std::string& path) const
+{
+    XPrmDocument::Block* block = doc_.block("MissionDescriptionPrm");
+    if (!block || !block->object) {
+        return;
+    }
+    XPrmObject* mission = block->object.get();
+    const std::string fileName =
+        std::filesystem::u8path(path).filename().u8string();
+    std::string lowerName = fileName;
+    std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+
+    // Desired key: the CURRENT originalSaveName's directory (the map family
+    // — battle/missions/worlds) with THIS file's name. Keeps the value right
+    // for every save location; the template's directory would be wrong only
+    // if the map moved folders, which the editor does not do.
+    std::string dir = "resource\\battle";
+    for (const auto& field : mission->fields) {
+        if (field.name == "originalSaveName") {
+            // scalar: "resource\\battle\\compass.spg" -> unescape -> dir.
+            std::string value = field.scalar;
+            if (value.size() >= 2 && value.front() == '"' &&
+                value.back() == '"') {
+                value = value.substr(1, value.size() - 2);
+            }
+            std::string unescaped;
+            for (size_t i = 0; i < value.size(); ++i) {
+                if (value[i] == '\\' && i + 1 < value.size()) {
+                    unescaped += value[++i];
+                } else {
+                    unescaped += value[i];
+                }
+            }
+            const size_t sep = unescaped.find_last_of("\\/");
+            if (sep != std::string::npos) {
+                dir = unescaped.substr(0, sep);
+                std::replace(dir.begin(), dir.end(), '/', '\\');
+                std::transform(dir.begin(), dir.end(), dir.begin(),
+                               [](unsigned char c) { return std::tolower(c); });
+            }
+            break;
+        }
+    }
+    const std::string key = dir + "\\" + lowerName;
+    // XPrm string literal: quotes + doubled backslashes.
+    std::string scalar = "\"";
+    for (const char c : key) {
+        scalar += c;
+        if (c == '\\') {
+            scalar += '\\';
+        }
+    }
+    scalar += "\"";
+
+    for (auto& field : mission->fields) {
+        if (field.name != "originalSaveName") {
+            continue;
+        }
+        if (field.scalar == scalar) {
+            // Already correct — leave the document untouched so an
+            // unmodified map still round-trips byte-exact.
+            return;
+        }
+        // Surgical patch: swap the field's original text slice inside the
+        // block's raw so everything else stays byte-exact (the block stays
+        // unedited and renders its patched raw verbatim).
+        const std::string entry = "originalSaveName = " + scalar + ";";
+        if (!field.raw.empty()) {
+            const size_t pos = block->raw.find(field.raw);
+            if (pos != std::string::npos) {
+                block->raw.replace(pos, field.raw.size(), entry);
+                field.scalar = scalar;
+                field.raw = entry;
+                return;
+            }
+        }
+        // Fallback: structured edit (regenerates the block).
+        field.scalar = scalar;
+        field.raw.clear();
+        field.edited = true;
+        return;
+    }
+    XPrmObject::Field field;
+    field.name = "originalSaveName";
+    field.scalar = scalar;
+    field.terminator = ';';
+    field.edited = true;
+    mission->addField(std::move(field));
 }
 
 // ---------------------------------------------------------------------------

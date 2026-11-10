@@ -39,6 +39,7 @@ ADD_EXECUTABLE(map_editor_tests
         NatureObjectsTests.cpp
         McpServerTests.cpp
         GameColorDiagnosticTests.cpp
+        SpgOriginalSaveNameTests.cpp
         ScriptedBrushTests.cpp
         SculptBrushTests.cpp
         BrushHeightGateTests.cpp

@@ -566,17 +566,31 @@ void MainWindow::updateCursorInfo(int mapX, int mapY)
     // Both view modes report the cell under the cursor: TopDown maps the
     // screen linearly, Oblique ray-picks the rendered voxel surface.
     QString info = QString(tr("X: %1  Y: %2")).arg(mapX).arg(mapY);
-    // T4.2 — also show the palette entry and RGB of the pixel: a SurBuf
-    // value indexes the palette of the cell's own layer (T4.1 model), so the
-    // readout resolves it the same way the renderer does (geo/dam).
     if (session_ && session_->isWorldLoaded() && mapX >= 0 && mapY >= 0) {
+        // The exact surface height at the picked point, including the 1/32
+        // fixed-point fraction (n/32 is exact in 5 decimals — strip the
+        // trailing zeros: 10.50000 -> "10.5", 10.00000 -> "10").
+        QString heightText =
+            QString::number(session_->terrainHeightExact(mapX, mapY), 'f', 5);
+        if (heightText.contains(QLatin1Char('.'))) {
+            while (heightText.endsWith(QLatin1Char('0'))) {
+                heightText.chop(1);
+            }
+            if (heightText.endsWith(QLatin1Char('.'))) {
+                heightText.chop(1);
+            }
+        }
+        info += QString(tr("  H: %1 vox")).arg(heightText);
+        // T4.2 — also show the palette entry and RGB of the pixel: a SurBuf
+        // value indexes the palette of the cell's own layer (T4.1 model), so
+        // the readout resolves it the same way the renderer does (geo/dam).
         const int surIndex = session_->surBufAt(mapX, mapY);
         const bool dam = session_->cellIsDam(mapX, mapY);
         const unsigned int rgb =
             session_->paletteRgb(dam ? MapEditor::EditorSession::PaletteLayer::Dam
                                      : MapEditor::EditorSession::PaletteLayer::Geo,
                                  surIndex);
-        info += QString(tr("  Sur: %1 (%2)  %3"))
+        info += QString(tr("  Palette Index: %1 (%2)  %3"))
                     .arg(surIndex)
                     .arg(dam ? tr("Dam") : tr("Geo"))
                     .arg(rgb, 6, 16, QLatin1Char('0'));

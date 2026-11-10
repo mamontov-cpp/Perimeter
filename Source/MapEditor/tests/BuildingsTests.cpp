@@ -81,7 +81,9 @@ bool runBuildingsTests()
         std::ifstream in(source, std::ios::binary);
         const std::string original((std::istreambuf_iterator<char>(in)),
                                    std::istreambuf_iterator<char>());
-        const fs::path out = ctx.tempRoot / "spg" / "buildings_untouched.spg";
+        // Same file name in a subfolder (save() rewrites originalSaveName to
+        // the map's own path, so byte equality requires an equal name).
+        const fs::path out = ctx.tempRoot / "spg" / "copy" / "02PYRAMIDA.spg";
         fs::create_directories(out.parent_path());
         TEST_REQUIRE(spg.save(out.u8string()), "save failed.");
         std::ifstream back(out, std::ios::binary);

@@ -477,6 +477,17 @@ int EditorSession::terrainHeightAt(int x, int y) const
     return vMap.SGetAlt(x, y) >> VX_FRACTION;
 }
 
+double EditorSession::terrainHeightExact(int x, int y) const
+{
+    const unsigned w = mapWidth();
+    const unsigned h = mapHeight();
+    if (w == 0 || x < 0 || y < 0 ||
+        static_cast<unsigned>(x) >= w || static_cast<unsigned>(y) >= h) {
+        return -1.0;
+    }
+    return static_cast<double>(vMap.SGetAlt(x, y)) / (1 << VX_FRACTION);
+}
+
 bool EditorSession::terrainSample(int x, int y, TerrainSample& out) const
 {
     const unsigned w = mapWidth();
