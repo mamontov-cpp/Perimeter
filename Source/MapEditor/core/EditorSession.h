@@ -188,6 +188,10 @@ public:
         unsigned int attributes = 0;
         unsigned int geoRgb = 0; ///< 0xRRGGBB of surfaceIndex in the geo palette.
         unsigned int damRgb = 0; ///< 0xRRGGBB of surfaceIndex in the dam palette.
+        /// True-color override of the cell (0xRRGGBB), valid only when
+        /// hasTrueColor — the effective color the renderer shows.
+        unsigned int trueColorRgb = 0;
+        bool hasTrueColor = false;
     };
     bool terrainSample(int x, int y, TerrainSample& out) const;
 

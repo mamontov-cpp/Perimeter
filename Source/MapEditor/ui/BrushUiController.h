@@ -4,6 +4,8 @@
 
 #include <QString>
 
+class QToolButton;
+
 #include "BrushTool.h"
 #include "ImageDecal.h"
 #include "ScriptEditorDialog.h" // ScriptStampShape
@@ -70,10 +72,10 @@ public:
     /// recomputes the active image stamp from its un-scaled original at
     /// maskScalePercent_.
     void applyMaskScale();
-    // The color swatch + index spin follow params().colorIndex.
+    // The color button + swatch follow params().colorRgb.
     void syncColorControls();
-    /// Push a palette index into the color spin without firing its signal.
-    void setColorIndex(int index);
+    /// Push an RGB color into the color button without firing its signal.
+    void setColorRgb(unsigned int rgb);
     /// Dialog-free image-mask loading, shared by the UI picker (onLoadBrushImage)
     /// and the MCP load_brush_image tool: the image's alpha channel becomes
     /// the stamp influence (fully transparent pixels do not stamp at all).
@@ -95,11 +97,8 @@ public:
 signals:
     void statusMessage(const QString &message, int timeoutMs);
     void actionStatesNeedUpdate();
-    /// A decal/model import changed the palettes — repaint everything and
-    /// refresh the palette panel.
-    void palettesNeedRefresh();
-    /// The palette panel highlight follows the brush color/layer.
-    void syncPaletteSelection(int index, bool dam);
+    /// The color picker panel follows the brush color.
+    void syncBrushColor(unsigned int rgb);
 
 private:
     void buildBrushToolbar();
@@ -221,15 +220,14 @@ private:
     QAction *actBrushDam_ = nullptr;
     // T3.2 — AlignVariableH target height (whole voxels 0..255).
     QSpinBox *brushLevelSpin_ = nullptr;
-    // T3.3 — palette index spinbox for the color brush (0..255).
-    QSpinBox *brushColorIndexSpin_ = nullptr;
-    // T3.3 — color swatch label showing the current color preview.
-    QLabel *brushColorSwatch_ = nullptr;
+    // The color button: swatch showing the current paint RGB; clicking opens
+    // the color picker dialog.
+    QToolButton *brushColorButton_ = nullptr;
     // T3.5 — the image-mask scale control and the un-scaled original mask.
     QSpinBox *brushMaskScaleSpin_ = nullptr;
     MapEditor::BrushMask brushMaskOriginal_;
     int maskScalePercent_ = 100;
-    // ImageDecal — the un-scaled palette-index decal.
+    // ImageDecal — the un-scaled true-color decal.
     MapEditor::ImageDecal::DecalImage decalOriginal_;
     // Exclusivity group of the common + sculpting brush-type actions.
     QActionGroup *brushTypeGroup_ = nullptr;

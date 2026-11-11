@@ -42,7 +42,9 @@
 #include <QMainWindow>
 #include <QMenu>
 #include <QMessageBox>
+#include <QColorDialog>
 #include <QSpinBox>
+#include <QToolButton>
 #include <QToolBar>
 #include <QWidgetAction>
 
@@ -336,12 +338,12 @@ void BrushUiController::updateEnabledStates(bool worldLoaded)
                 : tr("Scale of the loaded brush image relative to its original "
                      "pixel size (the mask stays centred under the cursor)."));
     }
-    // T3.3/T4.2 — color spinbox: painting and pick readout.
-    if (brushColorIndexSpin_) {
+    // The color button: painting and pick readout.
+    if (brushColorButton_) {
         const MapEditor::BrushEffect effect =
             brushTool_ ? brushTool_->params().effect
                        : MapEditor::BrushEffect::None;
-        brushColorIndexSpin_->setEnabled(
+        brushColorButton_->setEnabled(
             worldLoaded &&
             (effect == MapEditor::BrushEffect::SetColor ||
              effect == MapEditor::BrushEffect::PickColor));
@@ -358,14 +360,9 @@ void BrushUiController::updateEnabledStates(bool worldLoaded)
              effect == MapEditor::BrushEffect::AlignVariableH));
     }
 }
-void BrushUiController::setColorIndex(int index)
+void BrushUiController::setColorRgb(unsigned int rgb)
 {
-    if (!brushColorIndexSpin_) {
-        return;
-    }
-    brushColorIndexSpin_->blockSignals(true);
-    brushColorIndexSpin_->setValue(index);
-    brushColorIndexSpin_->blockSignals(false);
+    syncColorControls();
 }
 
 void BrushUiController::buildSculptToolbar()
@@ -1538,32 +1535,35 @@ void BrushUiController::buildBrushToolbar()
 
     bar->addSeparator();
 
-    // T3.3/T4.3 — color palette index spinbox (0..255): the index into the
-    // palette of the brush's current layer (T4.1 model).
-    brushColorIndexSpin_ = new QSpinBox(bar);
-    brushColorIndexSpin_->setRange(0, 255);
-    brushColorIndexSpin_->setToolTip(
-        tr("Palette index for the \"Paint Color\" brush — an entry of the "
-           "palette of the brush's current layer (Geo or Dam)."));
-    connect(brushColorIndexSpin_, &QSpinBox::valueChanged, this, [this](int value) {
-        MapEditor::BrushParams params = brushTool_->params();
-        params.colorIndex = value;
-        brushTool_->setParams(params);
-        syncColorControls();
+    // The color button: shows the current paint RGB as a swatch; clicking
+    // opens the color picker dialog. Painting is true-color — the exact
+    // picked RGB is written to the map (the nearest palette entry is kept
+    // as the surface type).
+    brushColorButton_ = new QToolButton(bar);
+    brushColorButton_->setFixedSize(28, 24);
+    brushColorButton_->setToolTip(
+        tr("Paint color for the \"Paint Color\" brush — the exact 24-bit RGB "
+           "is painted (click to change). The eyedropper picks into this."));
+    connect(brushColorButton_, &QToolButton::clicked, this, [this]() {
+        const MapEditor::BrushParams params = brushTool_->params();
+        const QColor initial(
+            static_cast<int>((params.colorRgb >> 16) & 0xFF),
+            static_cast<int>((params.colorRgb >> 8) & 0xFF),
+            static_cast<int>(params.colorRgb & 0xFF));
+        const QColor chosen = QColorDialog::getColor(initial, window_,
+                                                     tr("Paint Color"));
+        if (!chosen.isValid()) {
+            return;
+        }
+        MapEditor::BrushParams next = brushTool_->params();
+        next.colorRgb = (static_cast<unsigned int>(chosen.red()) << 16) |
+                        (static_cast<unsigned int>(chosen.green()) << 8) |
+                        static_cast<unsigned int>(chosen.blue());
+        brushTool_->setParams(next);
+        syncControls();
     });
     bar->addWidget(new QLabel(tr("Color:"), bar));
-    bar->addWidget(brushColorIndexSpin_);
-
-    // Color swatch: a label with a colored rectangle showing the current
-    // palette index color (read from the geo/dam palette).
-    brushColorSwatch_ = new QLabel(bar);
-    brushColorSwatch_->setFixedSize(24, 24);
-    brushColorSwatch_->setStyleSheet(
-        QStringLiteral("QLabel { border: 1px solid #808080; }"));
-    brushColorSwatch_->setAlignment(Qt::AlignCenter);
-    brushColorSwatch_->setToolTip(
-        tr("Current color index preview."));
-    bar->addWidget(brushColorSwatch_);
+    bar->addWidget(brushColorButton_);
 
     // T3.3/T4.2 — the paint/pick color types next to their color controls
     // (the same actions the Edit menu carries).
@@ -1854,15 +1854,7 @@ void BrushUiController::syncControls()
         }
     }
 
-    // T3.3/T4.2 — the color index spinbox paints (SetColor) and displays the
-    // last sampled pixel (PickColor).
-    if (brushColorIndexSpin_) {
-        if (brushColorIndexSpin_->value() != params.colorIndex) {
-            brushColorIndexSpin_->blockSignals(true);
-            brushColorIndexSpin_->setValue(params.colorIndex);
-            brushColorIndexSpin_->blockSignals(false);
-        }
-    }
+    // The color button is restyled from params by syncColorControls() below.
 
     // Mirror the tool into the viewport cursor preview: the square silhouette
     // for the square forms and for the image mask (a rectangle), the circle
@@ -1946,48 +1938,28 @@ void BrushUiController::syncControls()
     // of truth for both.
     emit actionStatesNeedUpdate();
 
-    // The palette panel highlight follows the brush: the entry the brush
-    // paints with, in the grid of the brush's current layer. (selectIndex
-    // only restyles swatches — no feedback loop into the brush.)
-    emit syncPaletteSelection(
-        params.colorIndex, params.mode == MapEditor::BrushMode::Dam);
+    // The color picker panel follows the brush: it always shows the color
+    // the brush will paint (setColor only restyles the panel — no feedback
+    // loop into the brush).
+    emit syncBrushColor(params.colorRgb & 0x00FFFFFFu);
 
     syncColorControls();
 }
 
 void BrushUiController::syncColorControls()
 {
-    if (!brushTool_ || !brushColorIndexSpin_) {
+    if (!brushTool_ || !brushColorButton_) {
         return;
     }
 
-    // Build the color swatch from the palette via the session helper.
-    // The colorIndex is a SurBuf value: it indexes the palette of the
-    // brush's current layer (T4.1 model, docs/architecture.md §5.13).
-    if (!session_ || !session_->isWorldLoaded()) {
-        // No palette to resolve the index through — drop any color left
-        // over from a previously loaded world instead of keeping it stale.
-        brushColorSwatch_->setStyleSheet(
-            QStringLiteral("QLabel { border: 1px solid #808080; }"));
-        return;
-    }
-    {
-        const int idx = brushColorIndexSpin_->value();
-        const bool dam = brushTool_->params().mode == MapEditor::BrushMode::Dam;
-        const unsigned int rgb =
-            session_->paletteRgb(dam ? MapEditor::EditorSession::PaletteLayer::Dam
-                                     : MapEditor::EditorSession::PaletteLayer::Geo,
-                                 idx);
-        QColor color(static_cast<int>((rgb >> 16) & 0xFF),
-                     static_cast<int>((rgb >> 8) & 0xFF),
-                     static_cast<int>(rgb & 0xFF));
-        if (rgb != 0 || idx == 0) {
-            brushColorSwatch_->setStyleSheet(
-                QStringLiteral("QLabel { border: 1px solid #808080; "
-                               "background-color: %1; }")
-                    .arg(color.name()));
-        }
-    }
+    const unsigned int rgb = brushTool_->params().colorRgb & 0x00FFFFFFu;
+    const QColor color(static_cast<int>((rgb >> 16) & 0xFF),
+                       static_cast<int>((rgb >> 8) & 0xFF),
+                       static_cast<int>(rgb & 0xFF));
+    brushColorButton_->setStyleSheet(
+        QStringLiteral("QToolButton { border: 1px solid #808080; "
+                       "background-color: %1; }")
+            .arg(color.name()));
 }
 
 QString BrushUiController::loadBrushImage(const QString &filePath)

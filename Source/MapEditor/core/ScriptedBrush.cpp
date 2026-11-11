@@ -110,27 +110,6 @@ void (*g_messageBoxHook)(bool isError, const std::string& text) = nullptr;
 /// the edit still lands, only the views stay stale until the next repaint.
 void (*g_paletteHook)() = nullptr;
 
-/// Nearest palette entry (squared RGB distance) in a 768-byte RGB table.
-unsigned char nearestPaletteEntry(const unsigned char* palette, int r, int g,
-                                  int b)
-{
-    int bestIndex = 0;
-    long bestDist = LONG_MAX;
-    for (int i = 0; i < 256; ++i) {
-        const int dr = static_cast<int>(palette[i * 3 + 0]) - r;
-        const int dg = static_cast<int>(palette[i * 3 + 1]) - g;
-        const int db = static_cast<int>(palette[i * 3 + 2]) - b;
-        const long dist =
-            static_cast<long>(dr) * dr + static_cast<long>(dg) * dg +
-            static_cast<long>(db) * db;
-        if (dist < bestDist) {
-            bestDist = dist;
-            bestIndex = i;
-        }
-    }
-    return static_cast<unsigned char>(bestIndex);
-}
-
 /// Reads the {x, y} position object at `idx`.
 bool readPosition(duk_context* ctx, int idx, int& x, int& y)
 {
@@ -192,16 +171,11 @@ duk_ret_t applyOp(duk_context* ctx, BrushEffect effect, double value,
     case BrushEffect::AlignVariableH:
         op.heightLevel = BrushTool::clampHeightLevel(value);
         break;
-    case BrushEffect::SetColor: {
-        const int packed = static_cast<int>(value);
-        const std::vector<unsigned char> pal =
-            env->session->paletteBytes(EditorSession::PaletteLayer::Dam);
-        if (pal.size() == 768) {
-            op.colorIndex = nearestPaletteEntry(pal.data(), (packed >> 16) & 0xFF,
-                                                (packed >> 8) & 0xFF, packed & 0xFF);
-        }
+    case BrushEffect::SetColor:
+        // Exact 24-bit RGB — no palette quantization: the value carries the
+        // packed color straight from paintColor(red, green, blue).
+        op.colorRgb = static_cast<std::uint32_t>(value) & 0x00FFFFFFu;
         break;
-    }
     default:
         break;
     }

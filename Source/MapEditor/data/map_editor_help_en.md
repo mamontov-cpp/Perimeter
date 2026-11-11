@@ -201,7 +201,7 @@ continuous stroke.
 | **Raise / Lower** | raise/lower the relief by *Strength* per stamp |
 | **Level to Zeroplast** | level to the zeroplast height and mark the cells as zeroplast in one stamp; the brush strength has no effect (Dam mode only) |
 | **Level to Height** | set the relief exactly to the chosen height in one stamp (the spinbox next to the brushes); overlapping stamps never rise above the target |
-| **Color** | paint the surface with the selected palette index, without changing the height |
+| **Color** | paint the surface with the exact 24-bit RGB from the color panel, without changing the height; the nearest palette entry of the layer is kept as the surface type |
 | **Image Decal** | stamp a picture in exact 24-bit colors on the dam surface: the button immediately asks for a PNG/TGA/BMP (at most 2048 px per side), colors pass through unquantized (the nearest Dam palette entry is kept as the cell's surface type). Dam mode only; transparent pixels do not paint |
 | **Pick Color** | eyedropper: take the color of the cell under the cursor |
 | **Soot** | "soot" — a cosmetic dark mark |
@@ -305,7 +305,7 @@ number ≥ 1, the circle radius or the square half-side, up to 512; `square`
 | `setToZP(pos, radius, square)` | level to the zeroplast + mark |
 | `paintSoot(pos, radius, square)` | soot |
 | `paintVeryLightDam(pos, radius, square)` | "very light dam" |
-| `paintColor(pos, red, green, blue, radius, square)` | paint: the Dam palette entry nearest to RGB (0..255) |
+| `paintColor(pos, red, green, blue, radius, square)` | paint: the exact RGB (0..255), no palette quantization |
 | `applyBlur(pos, radius, blurRadius, effect, square)` | Gaussian Blur: smooth the heights with a Gaussian kernel; `blurRadius` is clamped to `1..radius-1`, `effect` — the effect fraction 0..1 (1.0 = reach in one stamp) |
 | `applySmooth(pos, radius, effect, square)` | Tricubic: smooth towards the tricubic (bicubic Catmull-Rom) interpolation of the lattice under the stamp — like the Tricubic brush on the Sculpting toolbar; `effect` — the fraction 0..1 |
 | `applyHeightFn(pos, radius, fn, square)` | set the height **by a function**: `fn(x, y, h)` is called for every covered cell with its coordinates and the PRE-EDIT dam surface height `h` (fractional, 1/32 step; 0 where there is no dam) and returns the cell's new **absolute** height (fractional — like raiseHeight); all reads see the original surface before any write, so cells never influence each other |

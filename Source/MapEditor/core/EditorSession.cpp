@@ -505,6 +505,18 @@ bool EditorSession::terrainSample(int x, int y, TerrainSample& out) const
     out.attributes = vMap.AtrBuf[off];
     out.geoRgb = paletteRgb(PaletteLayer::Geo, out.surfaceIndex);
     out.damRgb = paletteRgb(PaletteLayer::Dam, out.surfaceIndex);
+    // The effective surface color: the true-color override when the cell
+    // carries one (the extended-palette path), else the palette color.
+    out.hasTrueColor = vMap.cellHasTrueColor(off);
+    if (out.hasTrueColor) {
+        out.trueColorRgb = vMap.SurColBuf[off] & 0x00FFFFFFu;
+    } else {
+        out.trueColorRgb =
+            paletteRgb(vMap.VxDBuf[off] != 0 ? PaletteLayer::Dam
+                                             : PaletteLayer::Geo,
+                       out.surfaceIndex) &
+            0x00FFFFFFu;
+    }
     return true;
 }
 

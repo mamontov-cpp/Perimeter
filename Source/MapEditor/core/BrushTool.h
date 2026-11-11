@@ -183,7 +183,13 @@ struct BrushParams
                             ///< influence* (fractional voxels allowed - converted
                             ///< to the 1/32 fixed point at stamp time).
     BrushMode mode = BrushMode::Geo;   ///< Geo/Dam target layer (rules per effect, T3.2).
-    int colorIndex = 0;                ///< palette index for SetColor (0..255), geosurface<128, dam>=128.
+    int colorIndex = 0;                ///< legacy palette index (eyedropper side band).
+    /// Exact paint color for SetColor, 0x00RRGGBB. Written into the
+    /// true-color layer (vrtMap::SurColBuf); the nearest palette entry of
+    /// the cell's layer is kept in SurBuf as the surface type. Set by the
+    /// color picker, the eyedropper (effective cell color) and the
+    /// script/MCP paint calls — never quantized.
+    std::uint32_t colorRgb = 0x00FFFFFF;
     BrushEffect effect = BrushEffect::ChangeHeight;
 
     /// Height effect direction: +1 raise, -1 lower, 0 — no height change.
@@ -293,6 +299,7 @@ struct BrushParams
         return shape == other.shape && radius == other.radius &&
                strength == other.strength && mode == other.mode &&
                colorIndex == other.colorIndex && effect == other.effect &&
+               colorRgb == other.colorRgb &&
                direction == other.direction &&
                heightLevel == other.heightLevel &&
                thickness == other.thickness &&
@@ -482,6 +489,11 @@ public:
     /// away; read lastPickedColorIndex() for the value. One pick = no undo
     /// entry. Returns true when a pixel was sampled.
     bool pickColorAt(int cx, int cy);
+
+    /// Nearest palette entry of the given layer for `rgb` (the SurBuf
+    /// surface-type side band of an RGB paint). Computed once per
+    /// (layer, rgb) and cached — see nearestCache* members.
+    unsigned char nearestPaletteIndexFor(bool dam, std::uint32_t rgb);
     /// The last index pickColorAt() sampled (valid after hasPickedColor()).
     unsigned char lastPickedColorIndex() const { return lastPickedColorIndex_; }
     /// Whether pickColorAt() has already sampled at least one pixel.
@@ -632,6 +644,13 @@ private:
     /// T4.2: the last index pickColorAt() sampled (SurBuf at the click cell).
     unsigned char lastPickedColorIndex_ = 0;
     bool hasPickedColor_ = false;
+
+    /// SetColor side-band cache: the nearest palette entry of (layer, rgb)
+    /// is identical for every cell of one stamp, so it is computed once and
+    /// reused (a per-cell 256-entry scan would be pure waste).
+    int nearestCacheLayer_ = -1; ///< -1 = empty; else PaletteLayer as int.
+    std::uint32_t nearestCacheRgb_ = 0;
+    unsigned char nearestCacheIndex_ = 0;
 
     /// Scripted brush: message of the last failed evaluation (see
     /// lastScriptError()).

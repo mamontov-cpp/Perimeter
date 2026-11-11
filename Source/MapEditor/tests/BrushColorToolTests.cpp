@@ -2,13 +2,16 @@
 // T3.3 — color brush (SetSurf) and eyedropper.
 //
 // Test 61 (color brush):
-//   * SetColor paints SurBuf at the selected palette index without changing
-//     VxGBuf, VxDBuf, or AtrBuf (height remains byte-exact);
+//   * SetColor paints the params().colorRgb EXACT RGB into the true-color
+//     layer and the nearest palette entry of the cell's layer into SurBuf
+//     (the surface-type side band), without changing VxGBuf, VxDBuf, or
+//     AtrBuf (height remains byte-exact);
 //   * the paint honours the brush layer (T4.3): Geo mode recolors geo cells
 //     only, Dam mode recolors existing dam cells only — it never seeds or
 //     removes a dam;
-//   * every cell under the stamp mask gets the correct SurBuf index;
-//   * undo restores the stamp region byte-exact; redo re-applies it;
+//   * every cell under the stamp mask gets the exact color + side band;
+//   * undo restores the stamp region byte-exact (colors included); redo
+//     re-applies it;
 //   * a line application is one undo entry for SetColor too.
 //
 // The stamp/line anchors are searched layer matching patches near the map
@@ -36,6 +39,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <limits>
 #include <filesystem>
 #include <vector>
 
@@ -72,15 +76,47 @@ struct CellState
         cell.dam = vMap.VxDBuf[off];
         cell.atr = vMap.AtrBuf[off];
         cell.sur = vMap.SurBuf[off];
+        cell.col = vMap.SurColBuf ? vMap.SurColBuf[off] : 0;
         cell.height = vMap.SGetAlt(off);
         return cell;
     }
 
+    std::uint32_t col = 0;
+
     bool buffersEqual(const CellState& o) const
     {
-        return geo == o.geo && dam == o.dam && atr == o.atr && sur == o.sur;
+        return geo == o.geo && dam == o.dam && atr == o.atr && sur == o.sur &&
+               col == o.col;
     }
 };
+
+/// Nearest palette entry of the layer (the SurBuf side band the paint
+/// writes) — the same squared-distance rule the brush uses.
+unsigned char nearestIndex(const MapEditor::EditorSession& session,
+                           bool dam, std::uint32_t rgb)
+{
+    const std::vector<unsigned char> pal =
+        session.paletteBytes(dam ? MapEditor::EditorSession::PaletteLayer::Dam
+                                 : MapEditor::EditorSession::PaletteLayer::Geo);
+    int best = 0;
+    long long bestDist = std::numeric_limits<long long>::max();
+    const int r = static_cast<int>((rgb >> 16) & 0xFF);
+    const int g = static_cast<int>((rgb >> 8) & 0xFF);
+    const int b = static_cast<int>(rgb & 0xFF);
+    for (int i = 0; i < 256; ++i) {
+        const int dr = static_cast<int>(pal[static_cast<std::size_t>(i) * 3 + 0]) - r;
+        const int dg = static_cast<int>(pal[static_cast<std::size_t>(i) * 3 + 1]) - g;
+        const int db = static_cast<int>(pal[static_cast<std::size_t>(i) * 3 + 2]) - b;
+        const long long dist = static_cast<long long>(dr) * dr +
+                               static_cast<long long>(dg) * dg +
+                               static_cast<long long>(db) * db;
+        if (dist < bestDist) {
+            bestDist = dist;
+            best = i;
+        }
+    }
+    return static_cast<unsigned char>(best);
+}
 
 /// Snapshot a rectangular region of cells (row-major).
 struct RegionSnapshot
@@ -256,7 +292,7 @@ bool runBrushColorToolTests()
     params.strength = 30;
     params.mode = BrushMode::Geo;
     params.effect = BrushEffect::SetColor;
-    params.colorIndex = 42; // arbitrary geo palette index
+    params.colorRgb = 0x00123456; // arbitrary exact RGB from the picker
 
     TEST_REQUIRE(MapEditor::BrushTool::effectSupported(BrushEffect::SetColor),
                   "SetColor must be supported in T3.3.");
@@ -288,8 +324,15 @@ bool runBrushColorToolTests()
 
             if (inMask) {
                 ++maskCellsHit;
-                TEST_REQUIRE(cell.sur == 42,
-                             "SurBuf at (%d,%d) must be 42, got %d.",
+                TEST_REQUIRE(cell.col == 0xFF123456u,
+                             "the true-color layer at (%d,%d) must hold the "
+                             "exact RGB, got 0x%08X.",
+                             px, py, cell.col);
+                const unsigned char expectIdx =
+                    nearestIndex(session, false, 0x00123456);
+                TEST_REQUIRE(cell.sur == expectIdx,
+                             "SurBuf at (%d,%d) must be the nearest geo entry, "
+                             "got %d.",
                              px, py, cell.sur);
                 // Height buffers must be unchanged.
                 TEST_REQUIRE(cell.geo == orig.geo,
@@ -313,8 +356,8 @@ bool runBrushColorToolTests()
         }
     }
     TEST_REQUIRE(maskCellsHit > 0, "the stamp mask covered no cells.");
-    std::printf("[PASS] SetColor painted %d cells to SurBuf=42, height "
-                "buffers unchanged.\n",
+    std::printf("[PASS] SetColor painted %d cells with the exact RGB + the "
+                "nearest-entry side band, height buffers unchanged.\n",
                 maskCellsHit);
 
     // ------------------------------------------------------------------
@@ -338,7 +381,7 @@ bool runBrushColorToolTests()
 
     session.redo();
     const CellState afterRedo = CellState::read(stampX, stampY);
-    TEST_REQUIRE(afterRedo.sur == 42,
+    TEST_REQUIRE(afterRedo.col == 0xFF123456u,
                   "redo did not re-apply the SetColor stamp.");
     std::printf("[PASS] undo/redo round-trips SetColor byte-exact.\n");
 
@@ -364,13 +407,13 @@ bool runBrushColorToolTests()
                   "the SetColor line was refused.");
     TEST_REQUIRE(session.canUndo(), "the line must enter the undo stack.");
 
-    // Verify line cells got SurBuf=42.
+    // Verify line cells got the exact color.
     for (int dx = -10 - 1; dx <= 10 + 1; ++dx) {
         const int px = cx + dx;
         const CellState cell = CellState::read(px, lineY);
-        TEST_REQUIRE(cell.sur == 42,
-                     "line cell (%d,%d) SurBuf must be 42, got %d.",
-                     px, lineY, cell.sur);
+        TEST_REQUIRE(cell.col == 0xFF123456u,
+                     "line cell (%d,%d) must carry the exact RGB, got 0x%08X.",
+                     px, lineY, cell.col);
     }
 
     // Undo the line.
@@ -391,10 +434,8 @@ bool runBrushColorToolTests()
     TEST_REQUIRE(findLayerPatch(cx, cy, radius, true, damX, damY),
                  "no all-dam patch found for the SetColor dam test.");
 
-    // First check the Geo mode gate: a geo palette index must not touch a
-    // dam cell (the renderer would resolve it through the wrong palette).
+    // First check the Geo mode gate: Geo mode must not touch a dam cell.
     params.mode = BrushMode::Geo;
-    params.colorIndex = 42;
     const CellState damBefore = CellState::read(damX, damY);
     TEST_REQUIRE(brush.applyStamp(damX, damY, params),
                  "the Geo-mode SetColor stamp on a dam cell was refused.");
@@ -404,12 +445,15 @@ bool runBrushColorToolTests()
 
     // Now the Dam mode paint on a genuine dam cell.
     params.mode = BrushMode::Dam;
-    params.colorIndex = 200; // dam palette index
+    params.colorRgb = 0x00AA5500; // an exact RGB from the picker
     TEST_REQUIRE(brush.applyStamp(damX, damY, params),
-                 "the SetColor stamp with dam index was refused.");
+                 "the Dam-mode SetColor stamp was refused.");
     const CellState afterDam = CellState::read(damX, damY);
-    TEST_REQUIRE(afterDam.sur == 200,
-                  "SurBuf with dam index must be 200, got %d.",
+    TEST_REQUIRE(afterDam.col == 0xFFAA5500u,
+                  "the dam cell must carry the exact RGB, got 0x%08X.",
+                  afterDam.col);
+    TEST_REQUIRE(afterDam.sur == nearestIndex(session, true, 0x00AA5500),
+                  "SurBuf must be the nearest dam entry, got %d.",
                   afterDam.sur);
     TEST_REQUIRE(afterDam.geo == damBefore.geo,
                   "VxGBuf must be unchanged with dam index.");
@@ -428,8 +472,8 @@ bool runBrushColorToolTests()
     TEST_REQUIRE(geoSkip.buffersEqual(geoBefore) &&
                      geoSkip.height == geoBefore.height,
                  "Dam-mode SetColor must not touch geo cells.");
-    std::printf("[PASS] SetColor honours the layer: dam index 200 recolors "
-                "dam cells, geo cells stay untouched.\n");
+    std::printf("[PASS] SetColor honours the layer: Dam mode recolors dam "
+                "cells, geo cells stay untouched.\n");
 
     return true;
 }

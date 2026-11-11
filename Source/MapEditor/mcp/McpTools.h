@@ -575,9 +575,13 @@ inline QVector<McpToolSpec> mcpToolCatalog()
     t.append({QStringLiteral("get_terrain_at"),
               QStringLiteral("Terrain sample at (x, y) in map cells: geo "
                              "height, dam height (0 where no dam layer), the "
-                             "geo/dam palette indices and RGB colors of the "
-                             "cell, and the raw surface attribute bitmask "
-                             "(zero layer, soot, etc.)."),
+                             "surface index, the geo/dam palette RGB colors "
+                             "of that index, the EFFECTIVE surface color "
+                             "('color' — the true-color override when the "
+                             "cell carries one, else the palette color of "
+                             "the cell's layer; 'hasTrueColor' tells which), "
+                             "and the raw surface attribute bitmask (zero "
+                             "layer, soot, etc.)."),
               obj({{QStringLiteral("type"), QStringLiteral("object")},
                    {QStringLiteral("properties"),
                     obj({{QStringLiteral("x"),

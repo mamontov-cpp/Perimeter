@@ -1214,32 +1214,25 @@ QVariantMap MapEditor::McpBridge::mcpApplyBrush(const QVariantMap& args)
     } else if (effectName == QLatin1String("paintColor")) {
         op.effect = MapEditor::BrushEffect::SetColor;
         int colorIndex = mcpArgInt(args, "colorIndex", -1);
-        if (colorIndex < 0 && args.contains(QStringLiteral("colorR"))) {
-            // Nearest entry of the layer palette, like the JS paintColor.
-            const int r = mcpArgInt(args, "colorR");
-            const int g = mcpArgInt(args, "colorG");
-            const int b = mcpArgInt(args, "colorB");
-            int best = 0;
-            long bestDist = LONG_MAX;
-            for (int i = 0; i < 256; ++i) {
-                const unsigned rgb =
-                    session_->paletteRgb(EditorSession::PaletteLayer::Dam, i);
-                const long dr = r - static_cast<int>((rgb >> 16) & 0xFF);
-                const long dg = g - static_cast<int>((rgb >> 8) & 0xFF);
-                const long db = b - static_cast<int>(rgb & 0xFF);
-                const long dist = dr * dr + dg * dg + db * db;
-                if (dist < bestDist) {
-                    bestDist = dist;
-                    best = i;
-                }
-            }
-            colorIndex = best;
-        }
-        if (colorIndex < 0 || colorIndex > 255) {
+        if (colorIndex >= 0 && colorIndex <= 255) {
+            // Legacy index form: resolve to the palette color so the paint
+            // carries an exact RGB like the RGB form.
+            op.colorRgb = session_->paletteRgb(
+                              EditorSession::PaletteLayer::Dam, colorIndex) &
+                          0x00FFFFFFu;
+        } else if (args.contains(QStringLiteral("colorR"))) {
+            // Exact 24-bit RGB — no palette quantization (the nearest
+            // palette entry is stored as the surface type by the brush).
+            const int r = std::clamp(mcpArgInt(args, "colorR"), 0, 255);
+            const int g = std::clamp(mcpArgInt(args, "colorG"), 0, 255);
+            const int b = std::clamp(mcpArgInt(args, "colorB"), 0, 255);
+            op.colorRgb = (static_cast<std::uint32_t>(r) << 16) |
+                          (static_cast<std::uint32_t>(g) << 8) |
+                          static_cast<std::uint32_t>(b);
+        } else {
             return mcpError(QStringLiteral(
                 "paintColor needs colorIndex (0..255) or colorR/colorG/colorB"));
         }
-        op.colorIndex = colorIndex;
     } else if (effectName == QLatin1String("smooth")) {
         op.effect = MapEditor::BrushEffect::Smooth;
         setSculpt();
@@ -1356,6 +1349,11 @@ QVariantMap MapEditor::McpBridge::mcpHandleTerrain(const QString& name,
             {QStringLiteral("attributes"), static_cast<int>(sample.attributes)},
             {QStringLiteral("geoColor"), rgbMap(sample.geoRgb)},
             {QStringLiteral("damColor"), rgbMap(sample.damRgb)},
+            // The effective surface color (true-color override when the
+            // cell carries one — the extended-palette path — else the
+            // palette color of the cell's layer).
+            {QStringLiteral("color"), rgbMap(sample.trueColorRgb)},
+            {QStringLiteral("hasTrueColor"), sample.hasTrueColor},
         });
     }
 

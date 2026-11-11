@@ -431,6 +431,11 @@ bool runScriptedBrushTests()
             return static_cast<int>(vMap.SGetAlt(x, y)) >> VX_FRACTION;
         };
         const int paintOff = cy * mapW + (cx - 8);
+        // paintColor writes the EXACT RGB (no palette quantization).
+        TEST_REQUIRE(vMap.SurColBuf != nullptr &&
+                         vMap.SurColBuf[paintOff] == 0xFFFF0000u,
+                     "paintColor must write the exact RGB (got 0x%08X).",
+                     vMap.SurColBuf ? vMap.SurColBuf[paintOff] : 0u);
         const int index = vMap.SurBuf[paintOff];
         const unsigned int geoRgb = session.paletteRgb(
             MapEditor::EditorSession::PaletteLayer::Geo, index);

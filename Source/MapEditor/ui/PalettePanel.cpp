@@ -1,5 +1,18 @@
 // ============================================================================
-// MapEditor UI — PalettePanel implementation (T4.1). See PalettePanel.h.
+// MapEditor UI — Krita-style advanced color picker + the panel around it.
+//
+// GradientStrip — one horizontal gradient for a single HSV channel:
+//   * Hue:        H 0..359 at the current S and V,
+//   * Saturation: S 0..255 at the current H and V,
+//   * Value:      V 0..255 at the current H and S.
+// A marker shows the current channel value; press/drag sets the channel
+// from the cursor position. Because every gradient is drawn through the
+// CURRENT color, clicking one strip re-renders the other two (Krita's
+// advanced color selector behaviour).
+//
+// KritaColorPicker — the three strips + a swatch + a hex readout.
+// PalettePanel — the dock panel (picker + hint), keeping the outer API the
+// MainWindow already talks to (setSession/setColor/colorChanged).
 // ============================================================================
 
 #include "PalettePanel.h"
@@ -7,287 +20,308 @@
 #include "EditorSession.h"
 
 #include <QColor>
-#include <QColorDialog>
-#include <QEvent>
-#include <QGridLayout>
+#include <QFrame>
+#include <QHBoxLayout>
 #include <QLabel>
+#include <QLocale>
 #include <QMouseEvent>
-#include <QScrollArea>
-#include <QToolButton>
+#include <QPainter>
+#include <QPixmap>
 #include <QVBoxLayout>
+
+#include <algorithm>
+#include <cmath>
 
 namespace MapEditor {
 
 namespace {
 
-/// Swatches per grid row (16 rows of 16 per 256-entry palette).
-constexpr int kColumnsPerRow = 16;
-constexpr int kSwatchSize = 18; // px
-
-/// Object properties identifying the palette entry of a swatch widget.
-constexpr char kPaletteIndexProperty[] = "paletteIndex";
-constexpr char kPaletteDamProperty[] = "paletteDam";
-
-/// Slot index of a swatch widget inside swatches_.
-inline int swatchSlot(int paletteIndex, bool dam)
+unsigned int rgbOf(const QColor& c)
 {
-    return dam ? 256 + paletteIndex : paletteIndex;
-}
-
-inline bool slotIsDam(int slot)
-{
-    return slot >= 256;
-}
-
-/// Frame/background stylesheet of a swatch (2px blue border when selected).
-inline QString swatchStyleSheet(bool selected, unsigned int rgb)
-{
-    const QString style = selected
-        ? QStringLiteral("QToolButton { border: 2px solid #0078d7; "
-                         "background-color: #%1; }")
-        : QStringLiteral("QToolButton { border: 1px solid #909090; "
-                         "background-color: #%1; }");
-    return style.arg(rgb, 6, 16, QLatin1Char('0'));
+    return (static_cast<unsigned int>(c.red()) << 16) |
+           (static_cast<unsigned int>(c.green()) << 8) |
+           static_cast<unsigned int>(c.blue());
 }
 
 } // namespace
 
 // ---------------------------------------------------------------------------
 
-PalettePanel::PalettePanel(QWidget *parent)
-    : QWidget(parent)
+class GradientStrip : public QWidget
 {
-    QVBoxLayout *layout = new QVBoxLayout(this);
-    layout->setContentsMargins(4, 4, 4, 4);
-    layout->setSpacing(4);
+    Q_OBJECT
 
-    gridsHost_ = new QWidget(this);
+public:
+    enum class Channel
     {
-        QVBoxLayout *grids = new QVBoxLayout(gridsHost_);
-        grids->setContentsMargins(0, 0, 0, 0);
-        grids->setSpacing(6);
+        Hue,
+        Saturation,
+        Value,
+    };
 
-        // Both grids are built identically, one per palette layer.
-        const char *labels[2] = {
-            QT_TRANSLATE_NOOP(
-                "PalettePanel", "Geo palette (GeoPal) — entries 0..255"),
-            QT_TRANSLATE_NOOP(
-                "PalettePanel", "Dam palette (DamPal) — entries 0..255"),
-        };
-        for (int grid = 0; grid < 2; ++grid) {
-            const bool dam = grid == 1;
-            QLabel *title = new QLabel(tr(labels[grid]), gridsHost_);
-            grids->addWidget(title);
-            QGridLayout *gridLayout = new QGridLayout;
-            gridLayout->setSpacing(1);
-            for (int entry = 0; entry < 256; ++entry) {
-                QToolButton *swatch = new QToolButton(gridsHost_);
-                swatch->setProperty(kPaletteIndexProperty, entry);
-                swatch->setProperty(kPaletteDamProperty, dam ? 1 : 0);
-                swatch->setFixedSize(kSwatchSize, kSwatchSize);
-                swatch->setCheckable(false);
-                swatch->setFocusPolicy(Qt::NoFocus);
-                // Click + double-click routing through the panel's filter —
-                // keeps the swatches plain QToolButtons (no Q_OBJECT subclass).
-                swatch->installEventFilter(this);
-                gridLayout->addWidget(swatch,
-                                      entry / kColumnsPerRow,
-                                      entry % kColumnsPerRow);
-                swatches_.push_back(swatch);
-            }
-            grids->addLayout(gridLayout);
-        }
-        grids->addStretch(1);
+    explicit GradientStrip(Channel channel, QWidget* parent = nullptr)
+        : QWidget(parent)
+        , channel_(channel)
+    {
+        setMinimumHeight(26);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        setCursor(Qt::PointingHandCursor);
+        setToolTip(channel == Channel::Hue
+                       ? tr("Hue — click or drag to set the hue")
+                       : channel == Channel::Saturation
+                             ? tr("Saturation — click or drag to set it")
+                             : tr("Value (lightness) — click or drag to set it"));
     }
 
-    // The 512 swatches scroll vertically; the container grows above them.
-    QScrollArea *scroll = new QScrollArea(this);
-    scroll->setWidget(gridsHost_);
-    scroll->setWidgetResizable(true);
-    scroll->setFrameShape(QFrame::NoFrame);
+    /// Reflect the new current color: the strip's gradient is rebuilt
+    /// through it and the marker moves.
+    void setColor(const QColor& c)
+    {
+        color_ = c.toHsv();
+        rebuildGradient();
+        update();
+    }
+
+    QSize sizeHint() const override { return QSize(180, 26); }
+
+signals:
+    /// The user picked a channel value (hue 0..359, others 0..255).
+    void channelChanged(int value);
+
+protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter p(this);
+        p.drawPixmap(0, 0, gradient_);
+        // Marker at the current value: a black-white-black vertical line so
+        // it reads on any gradient.
+        const int x = markerX();
+        p.fillRect(x - 1, 0, 3, height(), QColor(0, 0, 0, 160));
+        p.fillRect(x, 0, 1, height(), QColor(255, 255, 255, 220));
+    }
+
+    void mousePressEvent(QMouseEvent* event) override
+    {
+        if (event->button() == Qt::LeftButton) {
+            pick(event->position().x());
+        }
+    }
+
+    void mouseMoveEvent(QMouseEvent* event) override
+    {
+        if (event->buttons() & Qt::LeftButton) {
+            pick(event->position().x());
+        }
+    }
+
+private:
+    int channelMax() const
+    {
+        return channel_ == Channel::Hue ? 359 : 255;
+    }
+
+    int currentValue() const
+    {
+        switch (channel_) {
+        case Channel::Hue:
+            // Achromatic colors report hue -1; pin the marker at 0 there.
+            return color_.hue() < 0 ? 0 : color_.hue();
+        case Channel::Saturation:
+            return color_.saturation();
+        case Channel::Value:
+            return color_.value();
+        }
+        return 0;
+    }
+
+    int markerX() const
+    {
+        const int w = std::max(1, width() - 1);
+        return std::clamp(currentValue() * w / channelMax(), 0, w);
+    }
+
+    void pick(double x)
+    {
+        const int w = std::max(1, width() - 1);
+        const int value =
+            std::clamp(static_cast<int>(std::lround(x * channelMax() / w)),
+                       0, channelMax());
+        emit channelChanged(value);
+    }
+
+    QColor colorFor(int channelValue) const
+    {
+        const int h = color_.hue() < 0 ? 0 : color_.hue();
+        const int s = color_.saturation();
+        const int v = color_.value();
+        switch (channel_) {
+        case Channel::Hue:
+            return QColor::fromHsv(channelValue, s, v);
+        case Channel::Saturation:
+            return QColor::fromHsv(h, channelValue, v);
+        case Channel::Value:
+            return QColor::fromHsv(h, s, channelValue);
+        }
+        return color_;
+    }
+
+    /// Per-pixel gradient: every column shows this strip's channel at that
+    /// position with the OTHER two channels taken from the current color.
+    void rebuildGradient()
+    {
+        const int w = std::max(1, width());
+        const int h = std::max(1, height());
+        gradient_ = QPixmap(w, h);
+        QPainter p(&gradient_);
+        for (int x = 0; x < w; ++x) {
+            const int channelValue = x * channelMax() / (w - 1 > 0 ? w - 1 : 1);
+            p.fillRect(x, 0, 1, h, colorFor(channelValue));
+        }
+        // Thin frame like Krita's strips.
+        p.setPen(QColor(60, 60, 60));
+        p.drawRect(0, 0, w - 1, h - 1);
+    }
+
+    void resizeEvent(QResizeEvent*) override
+    {
+        rebuildGradient();
+    }
+
+    Channel channel_;
+    QColor color_ = QColor(255, 255, 255).toHsv();
+    QPixmap gradient_;
+};
+
+// ---------------------------------------------------------------------------
+
+class KritaColorPicker : public QWidget
+{
+    Q_OBJECT
+
+public:
+    explicit KritaColorPicker(QWidget* parent = nullptr)
+        : QWidget(parent)
+    {
+        QVBoxLayout* layout = new QVBoxLayout(this);
+        layout->setContentsMargins(2, 2, 2, 2);
+        layout->setSpacing(4);
+
+        // Swatch + hex readout of the current color.
+        QHBoxLayout* top = new QHBoxLayout;
+        top->setSpacing(6);
+        swatch_ = new QLabel(this);
+        swatch_->setFixedSize(48, 24);
+        swatch_->setFrameShape(QFrame::StyledPanel);
+        top->addWidget(swatch_);
+        readout_ = new QLabel(this);
+        top->addWidget(readout_, 1);
+        layout->addLayout(top);
+
+        hue_ = new GradientStrip(GradientStrip::Channel::Hue, this);
+        saturation_ = new GradientStrip(GradientStrip::Channel::Saturation, this);
+        value_ = new GradientStrip(GradientStrip::Channel::Value, this);
+        layout->addWidget(hue_);
+        layout->addWidget(saturation_);
+        layout->addWidget(value_);
+        layout->addStretch(1);
+
+        connect(hue_, &GradientStrip::channelChanged, this,
+                [this](int h) {
+                    const QColor c = color_.toHsv();
+                    apply(QColor::fromHsv(h, c.saturation(), c.value()));
+                });
+        connect(saturation_, &GradientStrip::channelChanged, this,
+                [this](int s) {
+                    const QColor c = color_.toHsv();
+                    apply(QColor::fromHsv(c.hue() < 0 ? 0 : c.hue(), s, c.value()));
+                });
+        connect(value_, &GradientStrip::channelChanged, this,
+                [this](int v) {
+                    const QColor c = color_.toHsv();
+                    apply(QColor::fromHsv(c.hue() < 0 ? 0 : c.hue(), c.saturation(), v));
+                });
+
+        apply(QColor(255, 255, 255));
+    }
+
+    QColor color() const { return color_; }
+
+public slots:
+    void setColor(const QColor& c)
+    {
+        apply(c);
+    }
+
+signals:
+    void colorChanged(const QColor& color);
+
+private:
+    void apply(const QColor& c)
+    {
+        color_ = c;
+        const QColor hsv = c.toHsv();
+        hue_->setColor(hsv);
+        saturation_->setColor(hsv);
+        value_->setColor(hsv);
+        swatch_->setStyleSheet(
+            QStringLiteral("background-color: %1;").arg(c.name()));
+        readout_->setText(QLocale().toUpper(
+            QStringLiteral("#%1  H:%2 S:%3 V:%4")
+                .arg(rgbOf(c), 6, 16, QLatin1Char('0'))
+                .arg(hsv.hue() < 0 ? 0 : hsv.hue())
+                .arg(hsv.saturation())
+                .arg(hsv.value())));
+        emit colorChanged(color_);
+    }
+
+    QLabel* swatch_ = nullptr;
+    QLabel* readout_ = nullptr;
+    GradientStrip* hue_ = nullptr;
+    GradientStrip* saturation_ = nullptr;
+    GradientStrip* value_ = nullptr;
+    QColor color_ = QColor(255, 255, 255);
+};
+
+// ---------------------------------------------------------------------------
+
+PalettePanel::PalettePanel(QWidget* parent)
+    : QWidget(parent)
+{
+    QVBoxLayout* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(4, 4, 4, 4);
+    layout->setSpacing(4);
 
     hint_ = new QLabel(tr("No world loaded."), this);
     hint_->setAlignment(Qt::AlignCenter);
 
+    picker_ = new KritaColorPicker(this);
+    connect(picker_, &KritaColorPicker::colorChanged, this,
+            [this](const QColor& c) {
+                currentRgb_ = rgbOf(c) & 0x00FFFFFFu;
+                emit colorChanged(currentRgb_);
+            });
+
     layout->addWidget(hint_);
-    layout->addWidget(scroll, 1);
+    layout->addWidget(picker_, 1);
 }
 
-// ---------------------------------------------------------------------------
-
-bool PalettePanel::hasPalette() const
-{
-    return session_ && session_->isWorldLoaded();
-}
-
-void PalettePanel::setSession(EditorSession *session)
+void PalettePanel::setSession(EditorSession* session)
 {
     session_ = session;
-
-    const bool has = hasPalette();
-    gridsHost_->setEnabled(has);
+    const bool has = session_ && session_->isWorldLoaded();
+    picker_->setEnabled(has);
     hint_->setVisible(!has);
-    selectedIndex_ = -1;
-    selectedIsDam_ = false;
-    if (has) {
-        updateSwatches();
-    } else {
-        // No palette — drop the stale colors and keep only the frames.
-        for (QWidget *swatch : swatches_) {
-            swatch->setEnabled(false);
-            swatch->setStyleSheet(QString());
-            swatch->setToolTip(QString());
-        }
-    }
 }
 
-void PalettePanel::refresh()
+void PalettePanel::setColor(unsigned int rgb)
 {
-    if (hasPalette()) {
-        updateSwatches();
-        applySelectionStyle(selectedIndex_, selectedIsDam_);
-    }
-}
-
-void PalettePanel::selectIndex(int paletteIndex, bool dam)
-{
-    const int newSlot = (paletteIndex >= 0 && paletteIndex < 256 && hasPalette())
-                            ? swatchSlot(paletteIndex, dam)
-                            : -1;
-    const bool newDam = slotIsDam(newSlot);
-    const int newEntry =
-        newSlot < 0 ? -1 : swatches_[static_cast<size_t>(newSlot)]
-                               ->property(kPaletteIndexProperty)
-                               .toInt();
-    if (newSlot == swatchSlot(selectedIndex_, selectedIsDam_) &&
-        selectedIndex_ >= 0) {
-        applySelectionStyle(selectedIndex_, selectedIsDam_);
-        return;
-    }
-    if (selectedIndex_ >= 0) {
-        const int oldSlot =
-            swatchSlot(selectedIndex_, selectedIsDam_);
-        const int oldEntry =
-            swatches_[static_cast<size_t>(oldSlot)]
-                ->property(kPaletteIndexProperty)
-                .toInt();
-        const bool oldDam = slotIsDam(oldSlot);
-        const unsigned int oldRgb =
-            session_->paletteRgb(oldDam ? EditorSession::PaletteLayer::Dam
-                                        : EditorSession::PaletteLayer::Geo,
-                                 oldEntry);
-        swatches_[static_cast<size_t>(oldSlot)]
-            ->setStyleSheet(swatchStyleSheet(false, oldRgb));
-    }
-    selectedIndex_ = newSlot < 0 ? -1 : newEntry;
-    selectedIsDam_ = newSlot < 0 ? false : newDam;
-    applySelectionStyle(selectedIndex_, selectedIsDam_);
-}
-
-void PalettePanel::applySelectionStyle(int index, bool dam)
-{
-    const bool has = hasPalette();
-    if (has && index >= 0 && index < 256) {
-        QWidget *swatch =
-            swatches_[static_cast<size_t>(swatchSlot(index, dam))];
-        const unsigned int rgb =
-            session_->paletteRgb(dam ? EditorSession::PaletteLayer::Dam
-                                     : EditorSession::PaletteLayer::Geo,
-                                 index);
-        swatch->setStyleSheet(swatchStyleSheet(true, rgb));
-        swatch->update();
-    }
-}
-
-void PalettePanel::updateSwatches()
-{
-    if (!hasPalette()) {
-        return;
-    }
-    for (int slot = 0; slot < 512; ++slot) {
-        QWidget *swatch = swatches_[static_cast<size_t>(slot)];
-        const int entry =
-            static_cast<int>(swatch->property(kPaletteIndexProperty).toInt());
-        const bool dam = swatch->property(kPaletteDamProperty).toInt() != 0;
-        const unsigned int rgb =
-            session_->paletteRgb(dam ? EditorSession::PaletteLayer::Dam
-                                     : EditorSession::PaletteLayer::Geo,
-                                 entry);
-        swatch->setEnabled(true);
-        swatch->setStyleSheet(
-            slot == swatchSlot(selectedIndex_, selectedIsDam_)
-                ? swatchStyleSheet(true, rgb)
-                : swatchStyleSheet(false, rgb));
-        swatch->setToolTip(tr("Index %1 — #%2 (%3)")
-                               .arg(entry)
-                               .arg(rgb, 6, 16, QLatin1Char('0'))
-                               .arg(dam ? tr("Dam") : tr("Geo")));
-    }
-}
-
-void PalettePanel::editIndex(int paletteIndex, bool dam)
-{
-    if (!hasPalette() || paletteIndex < 0 || paletteIndex >= 256) {
-        return;
-    }
-
-    const EditorSession::PaletteLayer layer =
-        dam ? EditorSession::PaletteLayer::Dam
-            : EditorSession::PaletteLayer::Geo;
-    const unsigned int oldRgb = session_->paletteRgb(layer, paletteIndex);
-    const QColor initial(static_cast<int>((oldRgb >> 16) & 0xFF),
-                         static_cast<int>((oldRgb >> 8) & 0xFF),
-                         static_cast<int>(oldRgb & 0xFF));
-    const QColor chosen = QColorDialog::getColor(
-        initial, this, tr("Palette entry %1 (%2)")
-                           .arg(paletteIndex)
-                           .arg(dam ? tr("Dam") : tr("Geo")));
-    if (!chosen.isValid()) {
-        return;
-    }
-    const unsigned int rgb = (static_cast<unsigned int>(chosen.red()) << 16) |
-                             (static_cast<unsigned int>(chosen.green()) << 8) |
-                             static_cast<unsigned int>(chosen.blue());
-    if (rgb == oldRgb) {
-        return;
-    }
-
-    // T4.1 — RGB editing: write the bytes, rebuild the surface color tables
-    // (convertPal2TableSurCol, exactly what the game runs after loading).
-    if (!session_->setPaletteRgb(layer, paletteIndex, rgb) ||
-        !session_->applyPalettes()) {
-        return;
-    }
-    refresh();
-    emit paletteEdited(paletteIndex, dam);
-}
-
-bool PalettePanel::eventFilter(QObject *watched, QEvent *event)
-{
-    QWidget *swatch = qobject_cast<QWidget *>(watched);
-    if (swatch && swatch->property(kPaletteIndexProperty).isValid()) {
-        const int entry =
-            swatch->property(kPaletteIndexProperty).toInt();
-        const bool dam =
-            swatch->property(kPaletteDamProperty).toInt() != 0;
-        if (event->type() == QEvent::MouseButtonPress) {
-            auto *mouse = static_cast<QMouseEvent *>(event);
-            if (mouse->button() == Qt::LeftButton) {
-                selectIndex(entry, dam);
-                emit colorSelected(entry, dam);
-                return true;
-            }
-        } else if (event->type() == QEvent::MouseButtonDblClick) {
-            auto *mouse = static_cast<QMouseEvent *>(event);
-            if (mouse->button() == Qt::LeftButton) {
-                selectIndex(entry, dam);
-                emit colorSelected(entry, dam);
-                editIndex(entry, dam);
-                return true;
-            }
-        }
-    }
-    return QWidget::eventFilter(watched, event);
+    currentRgb_ = rgb & 0x00FFFFFFu;
+    const QSignalBlocker blocker(picker_);
+    picker_->setColor(QColor(static_cast<int>((currentRgb_ >> 16) & 0xFF),
+                             static_cast<int>((currentRgb_ >> 8) & 0xFF),
+                             static_cast<int>(currentRgb_ & 0xFF)));
 }
 
 } // namespace MapEditor
+
+#include "PalettePanel.moc"

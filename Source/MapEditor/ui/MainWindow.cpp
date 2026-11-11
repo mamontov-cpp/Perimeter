@@ -109,17 +109,10 @@ MainWindow::MainWindow(QWidget *parent)
     connect(brushUI_,
             &MapEditor::BrushUiController::actionStatesNeedUpdate, this,
             [this]() { updateActionStates(); });
-    connect(brushUI_, &MapEditor::BrushUiController::palettesNeedRefresh,
-            this, [this]() {
-                refreshPaletteRenderers();
+    connect(brushUI_, &MapEditor::BrushUiController::syncBrushColor,
+            this, [this](unsigned int rgb) {
                 if (palettePanel_) {
-                    palettePanel_->refresh();
-                }
-            });
-    connect(brushUI_, &MapEditor::BrushUiController::syncPaletteSelection,
-            this, [this](int index, bool dam) {
-                if (palettePanel_) {
-                    palettePanel_->selectIndex(index, dam);
+                    palettePanel_->setColor(rgb);
                 }
             });
     createBrushActions();
@@ -467,29 +460,16 @@ void MainWindow::buildPaletteDock()
         viewMenu_->addAction(toggleAction);
     }
 
-    // A selected swatch becomes the color the brush paints: the palette the
-    // swatch lives in follows the brush (Geo / Dam layer, T4.1 model — a
-    // SurBuf value indexes the palette of the cell's layer directly).
-    connect(palettePanel_, &MapEditor::PalettePanel::colorSelected,
-            this, [this](int paletteIndex, bool dam) {
+    // A picker change becomes the color the brush paints (true-color paint:
+    // the exact RGB is written to the map).
+    connect(palettePanel_, &MapEditor::PalettePanel::colorChanged,
+            this, [this](unsigned int rgb) {
         if (brushTool_) {
             MapEditor::BrushParams params = brushTool_->params();
-            params.mode = dam ? MapEditor::BrushMode::Dam
-                              : MapEditor::BrushMode::Geo;
-            params.colorIndex = paletteIndex;
+            params.colorRgb = rgb & 0x00FFFFFFu;
             brushTool_->setParams(params);
         }
-        brushUI_->setColorIndex(paletteIndex);
         brushUI_->syncControls();
-        brushUI_->syncColorControls();
-    });
-
-    // An edited palette re-tints the whole world: rebuild both render paths.
-    connect(palettePanel_, &MapEditor::PalettePanel::paletteEdited,
-            this, [this](int, bool) {
-        refreshPaletteRenderers();
-        // The current brush color swatch may be the entry that was edited.
-        brushUI_->syncColorControls();
     });
 
     // Push the session that may already be bound.
@@ -515,15 +495,13 @@ void MainWindow::onWorldLoaded()
                                            : QPolygonF());
     }
     editorTrace("onWorldLoaded: setting palette session");
-    // Rebuild the palette panel grids (T4.1) — the palette belongs to the
-    // newly loaded world. setSession() resets the swatch selection, so push
-    // the brush state back in: the highlighted entry must keep showing the
-    // color the brush will paint.
+    // Rebind the color picker panel — it belongs to the newly loaded world.
+    // setSession() disables the picker without a world, so push the brush
+    // color back in: the picker must keep showing the color the brush paints.
     if (palettePanel_ && session_) {
         palettePanel_->setSession(session_);
         const MapEditor::BrushParams &params = brushTool_->params();
-        palettePanel_->selectIndex(params.colorIndex,
-                                   params.mode == MapEditor::BrushMode::Dam);
+        palettePanel_->setColor(params.colorRgb & 0x00FFFFFFu);
     }
     editorTrace("onWorldLoaded: sync brush controls");
     // The brush-dependent controls (color swatch, spinboxes, cursor preview)
@@ -732,33 +710,30 @@ void MainWindow::onBrushScriptError(const QString& message)
 
 void MainWindow::onEyedropperPicked(int mapX, int mapY, unsigned char surIndex)
 {
-
-    // T4.2 — BrushTool::pickColorAt already stored the sampled pixel and put
-    // it into params().colorIndex; the eyedropper readout slots the color
-    // brush in for painting the sampled color afterwards. The SurBuf value
-    // indexes the palette of the sampled cell's layer — point the brush at
-    // the same layer so the color readout and the paint resolve it exactly
-    // like the renderer does (T4.1 model).
+    // T4.2 — BrushTool::pickColorAt already stored the EFFECTIVE color of the
+    // cell in params().colorRgb (the true-color override when the cell
+    // carries one, else the palette color of the cell's layer); the
+    // eyedropper readout slots the color brush in for painting exactly that
+    // color afterwards. The picked RGB also becomes the color picker's value.
     const bool dam = session_ && session_->cellIsDam(mapX, mapY);
     MapEditor::BrushParams params = brushTool_->params();
     params.effect = MapEditor::BrushEffect::SetColor;
-    params.colorIndex = surIndex;
+    params.colorIndex = surIndex; // side band: the SurBuf index of the cell
     params.mode = dam ? MapEditor::BrushMode::Dam : MapEditor::BrushMode::Geo;
+    const unsigned int rgb = params.colorRgb & 0x00FFFFFFu;
     brushTool_->setParams(params);
 
-    brushUI_->setColorIndex(surIndex);
-    brushUI_->syncColorControls();
     brushUI_->syncControls();
 
-    // T4.1 — mirror the pick into the palette panel selection.
+    // Mirror the picked color into the picker panel.
     if (palettePanel_) {
-        palettePanel_->selectIndex(static_cast<int>(surIndex), dam);
+        palettePanel_->setColor(rgb);
     }
 
     statusBar()->showMessage(
-        tr("Eyedropper: SurBuf(%1,%2) = %3")
-            .arg(mapX)
-            .arg(mapY)
+        tr("Eyedropper: color #%1 (SurBuf %2)")
+            .arg(rgb, 6, 16, QLatin1Char('0'))
+            .toUpper()
             .arg(static_cast<int>(surIndex)),
         5000);
 }
@@ -1949,10 +1924,9 @@ void MainWindow::onActionHelp()
 void MainWindow::refreshAfterScriptPaletteEdit()
 {
     // Every pixel may have changed colour: full 2D cache repaint + 3D redraw.
+    // The picker panel shows the brush color (not the palettes), so nothing
+    // to refresh there.
     refreshPaletteRenderers();
-    if (palettePanel_) {
-        palettePanel_->refresh();
-    }
 }
 
 void MainWindow::onActionRunScript()

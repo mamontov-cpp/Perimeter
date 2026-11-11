@@ -2087,26 +2087,21 @@ void BrushTool::applyEffectToCell(const BrushParams& params, int x, int y, unsig
         break;
     }
     case BrushEffect::SetColor: {
-        // T3.3/T4.3 — paint the surface buffer with the selected palette
-        // index, honouring the brush layer. SurBuf is a direct palette index
-        // of the cell's layer (T4.1), and the renderer resolves the color
-        // through the *layer's* palette (RnrBuf bit 7 is derived from
-        // VxDBuf at render time, LAND.cpp:1461-1462), so painting a dam
-        // index on a geo cell (or vice versa) would show an arbitrary color
-        // from the wrong palette. Layer selection therefore gates the paint:
-        //   Geo mode recolors geo cells only (VxDBuf == 0),
-        //   Dam mode recolors existing dam cells only (VxDBuf != 0) —
-        // the color brush never seeds or removes a dam; the merged
-        // zeroplast brush / VeryLightDam own dam creation. Height buffers
-        // stay untouched.
+        // Paint the picker's exact 24-bit RGB into the true-color layer;
+        // SurBuf keeps the nearest palette entry of the cell's layer as the
+        // surface type (materials, palette fallback). Layer selection gates
+        // the paint: Geo mode recolors geo cells only (VxDBuf == 0), Dam
+        // mode — existing dam cells only (VxDBuf != 0); the color brush
+        // never seeds or removes a dam. Height buffers stay untouched.
         const bool isDamCell = vMap.VxDBuf[off] != 0;
         if ((params.mode == BrushMode::Dam) != isDamCell) {
             break; // wrong layer for this cell — skip, keep SurBuf as-is
         }
-        vMap.SetTer(x, y, static_cast<unsigned char>(params.colorIndex));
-        // A palette-index paint makes the cell follow the palette again:
-        // any direct RGB override recorded earlier is dropped.
-        vMap.clearTrueColor(off);
+        const std::uint32_t rgb = params.colorRgb & 0x00FFFFFFu;
+        vMap.putTrueColor(off, static_cast<unsigned char>((rgb >> 16) & 0xFF),
+                          static_cast<unsigned char>((rgb >> 8) & 0xFF),
+                          static_cast<unsigned char>(rgb & 0xFF));
+        vMap.SetTer(x, y, nearestPaletteIndexFor(isDamCell, rgb));
         break;
     }
     case BrushEffect::ImageDecal: {
@@ -2162,12 +2157,30 @@ void BrushTool::applyEffectToCell(const BrushParams& params, int x, int y, unsig
 // ---------------------------------------------------------------------------
 // T4.2 — eyedropper brush type (PickColor).
 //
-// SurBuf carries the pixel the renderer shows: indices 0..127 are Geo palette
-// colors, 128..255 Dam palette colors (the same split the SetColor brush
-// paints with). The sampled index feeds params().colorIndex so the common
-// brush interface round-trips the pick: the click samples the Geo/Dam pixel
-// of the layer that is actually displayed at that cell.
+// Samples the EFFECTIVE color of the cell: the true-color override when the
+// cell carries one (vrtMap::SurColBuf), otherwise the palette color of the
+// cell's layer at the SurBuf index. The result feeds params().colorRgb so
+// the color picker and the SetColor brush paint exactly what was sampled.
 // ---------------------------------------------------------------------------
+
+unsigned char BrushTool::nearestPaletteIndexFor(bool dam, std::uint32_t rgb)
+{
+    const int layer = dam ? 1 : 0;
+    if (nearestCacheLayer_ == layer && nearestCacheRgb_ == rgb) {
+        return nearestCacheIndex_;
+    }
+    const std::vector<unsigned char> pal =
+        session_.paletteBytes(dam ? EditorSession::PaletteLayer::Dam
+                                  : EditorSession::PaletteLayer::Geo);
+    nearestCacheIndex_ =
+        pal.size() == 768
+            ? static_cast<unsigned char>(
+                  ImageDecal::nearestPaletteEntry(pal.data(), rgb))
+            : 0;
+    nearestCacheLayer_ = layer;
+    nearestCacheRgb_ = rgb;
+    return nearestCacheIndex_;
+}
 
 bool BrushTool::pickColorAt(int cx, int cy)
 {
@@ -2182,9 +2195,20 @@ bool BrushTool::pickColorAt(int cx, int cy)
     const int off = cy * mapW + cx;
     lastPickedColorIndex_ = vMap.SurBuf[off];
     hasPickedColor_ = true;
-    // The pick result belongs to the color brush: keep it in the shared
-    // parameters so switching the brush type back to SetColor paints the
-    // sampled color without any extra UI round-trip.
+    // The effective color drives the picker: true-color override when
+    // present, else the palette color of the cell's layer.
+    const bool dam = vMap.VxDBuf[off] != 0;
+    if (vMap.cellHasTrueColor(off)) {
+        params_.colorRgb = vMap.SurColBuf[off] & 0x00FFFFFFu;
+    } else {
+        params_.colorRgb =
+            session_.paletteRgb(dam ? EditorSession::PaletteLayer::Dam
+                                    : EditorSession::PaletteLayer::Geo,
+                                lastPickedColorIndex_) &
+            0x00FFFFFFu;
+    }
+    // The SurBuf index is kept as the side band (compatibility with the
+    // palette-driven consumers); the RGB above is what paints.
     params_.colorIndex = lastPickedColorIndex_;
     return true;
 }

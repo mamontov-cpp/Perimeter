@@ -2,14 +2,16 @@
 // T4.2 — the eyedropper as a brush type (PickColor).
 //
 //   * PickColor is a supported BrushEffect and a BrushTool point operation:
-//     the "stamp" samples the Geo/Dam pixel (the SurBuf entry — indices
-//     0..127 are the geo palette, 128..255 the dam palette) at the click
-//     cell into lastPickedColorIndex()/params().colorIndex;
+//     the "stamp" samples the EFFECTIVE color of the click cell — the
+//     true-color override when present, else the palette color of the
+//     cell's layer — into params().colorRgb (the color picker's value);
+//     the SurBuf index is kept as the side band in
+//     lastPickedColorIndex()/params().colorIndex;
 //   * the sample writes no buffer and creates no undo entry (byte-exact
-//     region comparison over voxels/attributes/surface + empty redo/undo);
+//     region comparison over voxels/attributes/surface/colors);
 //   * sky/off-map picks return false;
 //   * the pick round-trips: painting a cell with a SetColor stamp and picking
-//     it later produces exactly the painted index without touching the world;
+//     it later produces exactly the painted RGB without touching the world;
 //   * the Line shape refuses the point-operated PickColor effect.
 //
 // Runs after the world round-trip (its temporary world copy is reused).
@@ -175,7 +177,8 @@ bool runBrushPickColorTests()
 
     TEST_REQUIRE(brush.applyStamp(cx, cy, pickParams),
                  "the PickColor stamp was refused.");
-    const unsigned char surAtCell = vMap.SurBuf[mapOffset(cx, cy)];
+    const int pickOff = mapOffset(cx, cy);
+    const unsigned char surAtCell = vMap.SurBuf[pickOff];
     TEST_REQUIRE(brush.hasPickedColor(),
                  "the pick did not report a sampled pixel.");
     TEST_REQUIRE(brush.lastPickedColorIndex() == surAtCell,
@@ -185,6 +188,18 @@ bool runBrushPickColorTests()
     TEST_REQUIRE(brush.params().colorIndex ==
                      static_cast<int>(brush.lastPickedColorIndex()),
                  "the pick must feed params().colorIndex.");
+    // No override on a fresh world: the sampled RGB is the palette color of
+    // the cell's layer at the SurBuf index.
+    const bool pickDam = vMap.VxDBuf[pickOff] != 0;
+    const unsigned int expectedRgb =
+        session.paletteRgb(pickDam ? MapEditor::EditorSession::PaletteLayer::Dam
+                                   : MapEditor::EditorSession::PaletteLayer::Geo,
+                           surAtCell) &
+        0x00FFFFFFu;
+    TEST_REQUIRE(brush.params().colorRgb == expectedRgb,
+                 "the pick must feed params().colorRgb with the effective "
+                 "color (0x%06X, got 0x%06X).",
+                 expectedRgb, brush.params().colorRgb);
 
     // The pick writes nothing and enters no undo entry.
     TEST_REQUIRE(RegionSnapshot::capture(cx - 3, cy - 3, 7, 7)
@@ -192,8 +207,9 @@ bool runBrushPickColorTests()
                  "the PickColor stamp must leave the world byte-exact.");
     TEST_REQUIRE(!session.canUndo(),
                  "the pick must not create an undo entry.");
-    std::printf("[PASS] PickColor sampled SurBuf=%d with no world change.\n",
-                static_cast<int>(surAtCell));
+    std::printf("[PASS] PickColor sampled #%06X (SurBuf=%d) with no world "
+                "change.\n",
+                brush.params().colorRgb, static_cast<int>(surAtCell));
 
     // ------------------------------------------------------------------
     // 63.2: sky/off-map picks are refused.
@@ -208,13 +224,13 @@ bool runBrushPickColorTests()
 
     // ------------------------------------------------------------------
     // 63.3: the pick round-trips the color brush: paint with SetColor, then
-    // pick the painted pixel — the sampled index equals the painted one and
-    // params().colorIndex carries it for the next painting stroke.
+    // pick the painted pixel — the sampled RGB equals the painted one and
+    // params().colorRgb carries it for the next painting stroke.
     // ------------------------------------------------------------------
-    const int paintColor = 110;
+    const std::uint32_t paintRgb = 0x0055AA33;
     BrushParams paintParams = pickParams;
     paintParams.effect = BrushEffect::SetColor;
-    paintParams.colorIndex = paintColor;
+    paintParams.colorRgb = paintRgb;
     paintParams.radius = 1;
     // The color paint honours the brush layer (T4.3), so the mode must match
     // the layer of the painted cell.
@@ -225,31 +241,32 @@ bool runBrushPickColorTests()
 
     TEST_REQUIRE(brush.applyStamp(cx + 40, cy + 40, paintParams),
                  "the SetColor stamp around the center was refused.");
-    TEST_REQUIRE(vMap.SurBuf[mapOffset(cx + 40, cy + 40)] == paintColor,
-                 "the SetColor paint must produce SurBuf=%d.", paintColor);
+    TEST_REQUIRE(vMap.SurColBuf != nullptr &&
+                     vMap.SurColBuf[mapOffset(cx + 40, cy + 40)] ==
+                         (0xFF000000u | paintRgb),
+                 "the SetColor paint must write the exact RGB.");
 
     // Back to the pick: the effect is forced by the caller (the viewport
     // does the same in the Eyedropper mode).
     TEST_REQUIRE(brush.applyStamp(cx + 40, cy + 40, pickParams),
                  "the pick over the painted cell was refused.");
-    TEST_REQUIRE(brush.lastPickedColorIndex() == paintColor,
-                 "the pick must sample the painted index (%d, got %d).",
-                 paintColor, static_cast<int>(brush.lastPickedColorIndex()));
-    TEST_REQUIRE(brush.params().colorIndex == paintColor,
-                 "the pick must carry the painted index into colorIndex.");
+    TEST_REQUIRE(brush.params().colorRgb == paintRgb,
+                 "the pick must sample the painted RGB (0x%06X, got 0x%06X).",
+                 paintRgb, brush.params().colorRgb);
 
-    // ...and the picked index paints again (the eyedropper → color brush
+    // ...and the picked RGB paints again (the eyedropper → color brush
     // round-trip the UI performs after every pick).
-    paintParams.colorIndex = brush.params().colorIndex;
+    paintParams.colorRgb = brush.params().colorRgb;
     const int px = cx + 60;
     paintParams.mode = cellMode(px, cy + 40);
     TEST_REQUIRE(brush.applyStamp(px, cy + 40, paintParams),
-                 "the follow-up paint with the picked index was refused.");
-    TEST_REQUIRE(vMap.SurBuf[mapOffset(px, cy + 40)] == paintColor,
-                 "the picked index must paint SurBuf=%d (got %d).",
-                 paintColor, static_cast<int>(vMap.SurBuf[mapOffset(px, cy + 40)]));
-    std::printf("[PASS] paint → pick → paint round-trip with index %d.\n",
-                paintColor);
+                 "the follow-up paint with the picked RGB was refused.");
+    TEST_REQUIRE(vMap.SurColBuf[mapOffset(px, cy + 40)] ==
+                     (0xFF000000u | paintRgb),
+                 "the picked RGB must paint the exact color (got 0x%08X).",
+                 vMap.SurColBuf[mapOffset(px, cy + 40)]);
+    std::printf("[PASS] paint → pick → paint round-trip with #%06X.\n",
+                paintRgb);
 
     // ------------------------------------------------------------------
     // 63.4: the Line shape refuses the point-operated pick.
