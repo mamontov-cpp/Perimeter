@@ -273,12 +273,21 @@ bool exportHeightmapTga(const std::filesystem::path& path)
     }
     const unsigned width = vMap.H_SIZE;
     const unsigned height = vMap.V_SIZE;
+    // 8-битный грейскейл: диапазон 0..maxWhole растягивается на 0..255,
+    // иначе высоты >255 вокселей заворачивались бы по модулю 256.
+    int maxWhole = 1;
+    for (unsigned y = 0; y < height; ++y) {
+        for (unsigned x = 0; x < width; ++x) {
+            maxWhole = std::max(maxWhole, vMap.SGetAlt(x, y) >> VX_FRACTION);
+        }
+    }
     std::vector<unsigned char> gray(static_cast<std::size_t>(width) * height);
     for (unsigned y = 0; y < height; ++y) {
         for (unsigned x = 0; x < width; ++x) {
             // Whole voxels of the visible surface (dam priority included).
+            const int whole = vMap.SGetAlt(x, y) >> VX_FRACTION;
             gray[static_cast<std::size_t>(y) * width + x] =
-                static_cast<unsigned char>(vMap.SGetAlt(x, y) >> VX_FRACTION);
+                static_cast<unsigned char>(whole * 255 / maxWhole);
         }
     }
     return writeTga8Gray(path, width, height, gray);

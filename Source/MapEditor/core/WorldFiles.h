@@ -146,6 +146,9 @@ public:
     static constexpr const char* GeoPalFile          = "inGeo.act";
     static constexpr const char* DamPalFile          = "inDam.act";
     static constexpr const char* HardnessFile        = "hardness.bin";
+    // 16-bit heights sidecar (optional; written by Terra save3BufOnly only
+    // when some whole height exceeds 255 — see docs/map_logic.md)
+    static constexpr const char* Heights16File       = "heights16.bin";
     static constexpr const char* GeoPalXmlFile       = "geoPal.xml";
     static constexpr const char* GeoTxXmlFile        = "geoTx.xml";
     static constexpr const char* LeveledTextureFile  = "leveledSurfaceTexture.tga";

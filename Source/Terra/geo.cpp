@@ -391,8 +391,8 @@ CGeoInfluence::CGeoInfluence(int _x, int _y, int _sx, int _sy)
 	tmpltGeo=new int[sx*sy];
 	tmpltSur=new unsigned char[sx*sy];
 	prepTmplt();
-	unsigned char* geo=vMap.VxGBuf;
-	unsigned char* dam=vMap.VxDBuf;
+	auto* geo=vMap.VxGBuf;
+	auto* dam=vMap.VxDBuf;
 	unsigned char* atr=vMap.AtrBuf;
 	int i,j,cnt=0;
 	int vmin=MAX_VX_HEIGHT;
@@ -610,8 +610,8 @@ CWormOut::CWormOut(int _x, int _y)
 		}
 	}
 
-	unsigned char* geo=vMap.VxGBuf;
-	unsigned char* dam=vMap.VxDBuf;
+	auto* geo=vMap.VxGBuf;
+	auto* dam=vMap.VxDBuf;
 	unsigned char* atr=vMap.AtrBuf;
 	//int i,j,cnt=0;
 	cnt=0;
@@ -2114,8 +2114,8 @@ CLandslip::CLandslip(int _x, int _y, int _sx, int _sy, int _hmin, int _hmax, flo
 	surVxB=new short[sx*sy];
 	tmpltGeo=new int[sx*sy];
 	prepTmplt();
-	unsigned char* geo=vMap.VxGBuf;
-	unsigned char* dam=vMap.VxDBuf;
+	auto* geo=vMap.VxGBuf;
+	auto* dam=vMap.VxDBuf;
 	unsigned char* atr=vMap.AtrBuf;
 	unsigned char* sur=vMap.SurBuf;
 	int i,j,cnt=0;
@@ -2197,8 +2197,8 @@ int CLandslip::geoQuant(void)
 /*	static float al=0;//XM_PI/4.0;//+XM_PI/18.0;
 	srBmp rbmp(al, sx, sy);
 	al=al+XM_PI/18.0;
-	unsigned char* geo=vMap.VxGBuf;
-	unsigned char* dam=vMap.VxDBuf;
+	auto* geo=vMap.VxGBuf;
+	auto* dam=vMap.VxDBuf;
 	unsigned char* atr=vMap.AtrBuf;
 	int i,j,cnt=0;
 	for(i=-2*sy; i<2*sy; i++){
@@ -2272,8 +2272,8 @@ int CLandslip::geoQuant(void)
 	short* outBuf=new short[bufSize];
 	for(int k=0; k<bufSize; k++) { buf[k]=0; } //outBuf[k]=0; }
 
-	unsigned char* geo=vMap.VxGBuf;
-	unsigned char* dam=vMap.VxDBuf;
+	auto* geo=vMap.VxGBuf;
+	auto* dam=vMap.VxDBuf;
 	unsigned char* atr=vMap.AtrBuf;
 	unsigned char* sur=vMap.SurBuf;
 
@@ -2547,8 +2547,8 @@ sTVolcano::sTVolcano(int _x, int _y, int _sx, int _sy)
 	sx = _sx; 
 	sy = _sy;
 	inVx = new unsigned short[sx*sy];
-	unsigned char* geo=vMap.VxGBuf;
-	unsigned char* dam=vMap.VxDBuf;
+	auto* geo=vMap.VxGBuf;
+	auto* dam=vMap.VxDBuf;
 	unsigned char* atr=vMap.AtrBuf;
 	int cnt = 0;
 	int vmin = MAX_VX_HEIGHT;
@@ -2801,8 +2801,8 @@ sTBubble::sTBubble(int _x, int _y, int _sx, int _sy, bool _flag_occurrenceGeo)
 	inVx=new short[sx*sy];
 	tmpVx=new short[sx*sy];
 	substare=new short[sx*sy];
-	unsigned char* geo=vMap.VxGBuf;
-	unsigned char* dam=vMap.VxDBuf;
+	auto* geo=vMap.VxGBuf;
+	auto* dam=vMap.VxDBuf;
 	unsigned char* atr=vMap.AtrBuf;
 	int i,j,cnt=0;
 	int vmin=MAX_VX_HEIGHT;
@@ -3525,7 +3525,7 @@ sUPoligon::sUPoligon(point4UP* _pArr)
 			for(xWrk=leftBorder; xWrk< xL; xWrk++) {arrayA[cnt]=0; arrayVx[cnt++]=vMap.SGetAlt(vMap.XCYCL(xWrk), vMap.YCYCL(yWrk));}
 			for(/*xWrk=xL*/; xWrk<=xR; xWrk++) {
 				arrayA[cnt]=1;
-				short vx=vMap.SGetAlt(vMap.XCYCL(xWrk), vMap.YCYCL(yWrk));
+				int vx=vMap.SGetAlt(vMap.XCYCL(xWrk), vMap.YCYCL(yWrk));
 				if(vx<vMin)vMin=vx;
 				if(vx>vMax)vMax=vx;
 				arrayVx[cnt++]=vx;
@@ -3565,7 +3565,7 @@ loc_begDraw2Part:
 			for(xWrk=leftBorder; xWrk< xL; xWrk++){ arrayA[cnt]=0; arrayVx[cnt++]=vMap.SGetAlt(vMap.XCYCL(xWrk), vMap.YCYCL(yWrk));}
 			for(/*xWrk=xL*/; xWrk<=xR; xWrk++) {
 				arrayA[cnt]=1;
-				short vx=vMap.SGetAlt(vMap.XCYCL(xWrk), vMap.YCYCL(yWrk));
+				int vx=vMap.SGetAlt(vMap.XCYCL(xWrk), vMap.YCYCL(yWrk));
 				if(vx<vMin)vMin=vx;
 				if(vx>vMax)vMax=vx;
 				arrayVx[cnt++]=vx;
@@ -4455,7 +4455,7 @@ sUPoligonN::sUPoligonN(point4UP* _basePntArr, int maxAddPnt, point4UP* _addPntAr
 			for(xWrk=leftBorder; xWrk< xL; xWrk++) {arrayA[cnt]=0; arrayVx[cnt++]=vMap.SGetAlt(vMap.XCYCL(xWrk), vMap.YCYCL(yWrk));}
 			for(/*xWrk=xL*/; xWrk<=xR; xWrk++) {
 				arrayA[cnt]=1;
-				short vx=vMap.SGetAlt(vMap.XCYCL(xWrk), vMap.YCYCL(yWrk));
+				int vx=vMap.SGetAlt(vMap.XCYCL(xWrk), vMap.YCYCL(yWrk));
 				if(vx<vMin)vMin=vx;
 				if(vx>vMax)vMax=vx;
 				arrayVx[cnt++]=vx;
@@ -4495,7 +4495,7 @@ loc_begDraw2Part:
 			for(xWrk=leftBorder; xWrk< xL; xWrk++){ arrayA[cnt]=0; arrayVx[cnt++]=vMap.SGetAlt(vMap.XCYCL(xWrk), vMap.YCYCL(yWrk));}
 			for(/*xWrk=xL*/; xWrk<=xR; xWrk++) {
 				arrayA[cnt]=1;
-				short vx=vMap.SGetAlt(vMap.XCYCL(xWrk), vMap.YCYCL(yWrk));
+				int vx=vMap.SGetAlt(vMap.XCYCL(xWrk), vMap.YCYCL(yWrk));
 				if(vx<vMin)vMin=vx;
 				if(vx>vMax)vMax=vx;
 				arrayVx[cnt++]=vx;
@@ -6004,8 +6004,8 @@ void s_EarthUnit::init(int xMap, int yMap)
 	tmpVx=new short[meshDate->sizeX*meshDate->sizeY];
 	substare=new short[meshDate->sizeX*meshDate->sizeY];
 
-	unsigned char* geo=vMap.VxGBuf;
-	unsigned char* dam=vMap.VxDBuf;
+	auto* geo=vMap.VxGBuf;
+	auto* dam=vMap.VxDBuf;
 	unsigned char* atr=vMap.AtrBuf;
 	int i,j,cnt=0;
 	int vmin=MAX_VX_HEIGHT;
@@ -6093,8 +6093,8 @@ bool s_EarthUnit::quant()
 	unsigned short sy=meshDate->sizeY;
 
 	if(flag_move){
-		unsigned char* geo=vMap.VxGBuf;
-		unsigned char* dam=vMap.VxDBuf;
+	auto* geo=vMap.VxGBuf;
+		auto* dam=vMap.VxDBuf;
 		unsigned char* atr=vMap.AtrBuf;
 		int i,j,cnt=0;
 		for(i=0; i<meshDate->sizeY; i++){

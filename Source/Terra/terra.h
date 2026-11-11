@@ -28,9 +28,13 @@ const int MAX_SURFACE_LIGHTING =128; //максимальная освещенн
 const int VX_FRACTION=5; // 6 младших бит - дробь вокселя
 const int VX_FRACTION_MASK= ((1<<VX_FRACTION)-1);
 
-const int MAX_VX_HEIGHT=((1<<(VX_FRACTION + 8))-1);//это 0x3fff//0xFFFF;
+// Целая часть высоты хранится в 16-битных слоях VxGBuf/VxDBuf (см. VxWholeHeight
+// в VMAP.h), поэтому диапазон 0..65535 вокселей; движок клампит до MAX_VX_HEIGHT.
+// Раньше целая часть была 8-битной (0..255 вокселей) — см. sidecar heights16.bin
+// в docs/map_logic.md: миры с высотами <=255 хранятся в старом формате output.vmp.
+const int MAX_VX_HEIGHT_WHOLE=8191;
+const int MAX_VX_HEIGHT=((MAX_VX_HEIGHT_WHOLE<<VX_FRACTION)|(VX_FRACTION_MASK));
 const int MIN_VX_HEIGHT=0;
-const int MAX_VX_HEIGHT_WHOLE=(MAX_VX_HEIGHT>>VX_FRACTION);
 
 const int MAX_SIMPLE_DAM_SURFACE=10;
 

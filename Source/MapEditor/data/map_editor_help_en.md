@@ -462,7 +462,7 @@ zeroplast marks of moved cells are cleared. One stamp — one Undo entry
 A separate **Model** toolbar (its own row): **Import Model...** — imports a
 PLY (ASCII or binary), **Use Model Brush** — enables the brush (after an
 import with a world loaded), the **Place / Add / Subtract** mode buttons
-and the **Height** (0–255 voxels) and **X/Y scale** (0–1) spinboxes. The
+and the **Height** (0–8191 voxels) and **X/Y scale** (0–1) spinboxes. The
 preview is the placement rectangle in both views.
 
 The import takes the model's vertex XY bounding rectangle and treats the
@@ -548,7 +548,7 @@ brush — its operations inherit the params and pass the gate too):
   height of THAT voxel is strictly above the threshold;
 - **Apply Below Height** — the same, but strictly below the threshold.
 
-The threshold is the **Gate Height** spinbox (0..255 voxels) next to the
+The threshold is the **Gate Height** spinbox (0..8191 voxels) next to the
 buttons (and in the menu); active while at least one modifier is on. Rules:
 
 - the check is per **individual voxels**, not the stamp area: one stamp can
@@ -569,7 +569,7 @@ buttons (and in the menu); active while at least one modifier is on. Rules:
   do not rely on it.
 - **Strength** — the Raise/Lower step per stamp. It has no effect on Level
   to Zeroplast: that brush reaches the zeroplast height in one stamp.
-- **Height** — the target height of the Level to Height brush (0..255
+- **Height** — the target height of the Level to Height brush (0..8191
   voxels); the brush sets it absolutely in one stamp, strength does not
   affect it.
 - **Sculpt effect** (0..1) — the fraction of the way to the target per
@@ -587,7 +587,7 @@ buttons (and in the menu); active while at least one modifier is on. Rules:
 - **Blur radius** (1..stamp radius − 1) — the Gaussian kernel radius of the
   **Gaussian Blur** brush; available only when that brush is selected. The
   spinbox upper bound follows the stamp radius and shrinks with it.
-- **Gate Height** (0..255 voxels) — the threshold of the **Apply Above /
+- **Gate Height** (0..8191 voxels) — the threshold of the **Apply Above /
   Below Height** modifiers from the **Brush Modifiers** toolbar (and Edit →
   Brush Modifiers); active while at least one of them is on. The brush acts
   only on voxels strictly above / strictly below the threshold.

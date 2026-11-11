@@ -194,6 +194,10 @@ struct vrtMap {
 	static const char* worldDamPalFile;
 	static const char* worldLeveledTextureFile;
 	static const char* worldHardnessFile;
+	// Sidecar с 16-битными целыми высотами обоих слоев. Файл пишется только
+	// когда хотя бы одна высота > 255 (мир целиком <= 255 вокселей хранится
+	// в старом 8-битном output.vmp без sidecar — см. docs/map_logic.md).
+	static const char* worldHeights16File;
 
 	static const char* worldRGBCache;
 
@@ -264,11 +268,17 @@ struct vrtMap {
 
 	int hCamera,fCamera;
 
+	// Тип целой части высоты вокселя. Раньше был unsigned char (0..255 вокселей);
+	// теперь 16 бит — см. MAX_VX_HEIGHT_WHOLE в terra.h. Файлы мира/сохранений
+	// по-прежнему хранят 8 бит на слой; полные высоты идут в sidecar
+	// (heights16.bin для миров, расширенный чанк для saveGameMap — VMAP.cpp).
+	typedef uint16_t VxWholeHeight;
+
 	unsigned char* Buf; 
 
-	unsigned char* VxGBuf; //гео VxBuf
-	unsigned char* VxDBuf; // насыпной(Dam) VxBuf
-	unsigned char* WVxBuf; // текущий VxBuf (или VxGBuf или VxDBuf)
+	VxWholeHeight* VxGBuf; //гео VxBuf (целая часть высоты)
+	VxWholeHeight* VxDBuf; // насыпной(Dam) VxBuf (целая часть высоты, 0 = дамбы нет)
+	VxWholeHeight* WVxBuf; // текущий VxBuf (или VxGBuf или VxDBuf)
 	unsigned char* AtrBuf;
 	unsigned char* SurBuf;
 	unsigned char* RnrBuf;
@@ -285,13 +295,13 @@ struct vrtMap {
 	unsigned char LvdTex_SPEC_SHIFT_X;
 	unsigned char LvdTex_SPEC_SHIFT_Y;
 
-	unsigned char* GVBuf; //Сетка вокселей
+	VxWholeHeight* GVBuf; //Сетка вокселей (целые высоты 4x4-усреднения)
 	unsigned short* GABuf; //сетка атрибутов
 	unsigned int GH_SIZE;
 	unsigned int clip_mask_x_g;
 	unsigned int GV_SIZE;
 	unsigned int clip_mask_y_g;
-	unsigned char hZeroPlast;
+	unsigned short hZeroPlast;
 	tColor colZeroPlast;
 
 	void initGrid(void);
@@ -767,29 +777,29 @@ struct vrtMap {
 	// НизкоУровневые функции работы с поверхностью GetAltGeo GetAltDam
 	//Высота вокселя складывается из целой части(в Vx(G|D)Buf) и дробной (в AtrBuf)
 	/////////// FUNCTION GetAltGeo ///////////
-	unsigned short GetAltGeo(int offset) {
+	int GetAltGeo(int offset) {
 		if(VxDBuf[offset]==0) return ( (VxGBuf[offset]<<VX_FRACTION)|(AtrBuf[offset]&VX_FRACTION_MASK) );
 		else return (VxGBuf[offset]<<VX_FRACTION);
 	}
-	unsigned short GetAltGeo(int x,int y) {
+	int GetAltGeo(int x,int y) {
 		return GetAltGeo(offsetBuf(x,y));
 	}
 	//.........................................
 	/////////// FUNCTION GetAltDam ///////////
-	unsigned short GetAltDam(int offset) {
+	int GetAltDam(int offset) {
 		int whole=(VxDBuf[offset]);
 		if(whole) return ( (whole<<VX_FRACTION)|(AtrBuf[offset]&VX_FRACTION_MASK) );
 		else return 0; //Если нет целой части Dam-а, то тогда возвращается 0
 		//else return GetAltGeo(offset); //Если нет целой части Dam-а, то тогда возвращается Geo слой
 	}
-	unsigned short GetAltDam(int x,int y) {
+	int GetAltDam(int x,int y) {
 		return GetAltDam(offsetBuf(x,y));
 	}
 	//.........................................
 	//Высокоуровневая функция работы с поверхностью GetAlt
 	/////////// FUNCTION GetAlt ///////////
-	unsigned short GetAlt(int offset) {
-		unsigned short V = 0;
+	int GetAlt(int offset) {
+		int V = 0;
 		switch(VxBufWorkMode){
 		case GEOONLY:
 			V=GetAltGeo(offset);
@@ -811,22 +821,22 @@ struct vrtMap {
 		}
 		return V;
 	}
-	unsigned short GetAlt(int x,int y) {
+	int GetAlt(int x,int y) {
 		return GetAlt(offsetBuf(x,y));
 	}
 	//.......................................
-	unsigned short GetAltC(int x,int y){ return GetAlt(XCYCL(x), YCYCL(y)); }
+	int GetAltC(int x,int y){ return GetAlt(XCYCL(x), YCYCL(y)); }
 
 
 	//........................................
 	/////////// FUNCTION Simple GetAlt ///////////
-	unsigned short SGetAlt(int offset) {
-		unsigned short whole=(VxDBuf[offset]);
-		unsigned char fraction=(AtrBuf[offset]&VX_FRACTION_MASK);
+	int SGetAlt(int offset) {
+		int whole=(VxDBuf[offset]);
+		int fraction=(AtrBuf[offset]&VX_FRACTION_MASK);
 		if(whole) return ( (whole<<VX_FRACTION)|fraction);
-		else return ((unsigned short)(VxGBuf[offset]<<VX_FRACTION)|fraction);//Если нет целой части Dam-а, то тогда возвращается Geo слой
+		else return ((VxGBuf[offset]<<VX_FRACTION)|fraction);//Если нет целой части Dam-а, то тогда возвращается Geo слой
 	}
-	unsigned short SGetAlt(int x,int y) {
+	int SGetAlt(int x,int y) {
 		return SGetAlt(offsetBuf(x,y));
 	}
 	//........................................

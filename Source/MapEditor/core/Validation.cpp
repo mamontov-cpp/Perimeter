@@ -103,10 +103,11 @@ ValidationReport validateWorldFiles(const WorldFiles& files)
     }
 
     const std::optional<int> hzp = files.readHZeroPlast();
-    if (!hzp || *hzp < 0 || *hzp > 255) {
+    if (!hzp || *hzp < 0 || *hzp > MAX_VX_HEIGHT_WHOLE) {
         report.issues.push_back(issue(
             Severity::Error,
-            "hZeroPlast missing or out of range (0..255) in world.ini."));
+            std::string("hZeroPlast missing or out of range (0..")
+                + std::to_string(MAX_VX_HEIGHT_WHOLE) + ") in world.ini."));
     }
 
     // Palettes must be 768 bytes (writePalettes validates on write; check the

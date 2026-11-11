@@ -804,9 +804,10 @@ void swapSnapshotWithBuffers(UndoAreaSnapshot& snap)
         const int row = (snap.y + j) * H + snap.x;
         for (int i = 0; i < snap.sx; ++i, ++cnt) {
             const int off = row + i;
+            uint16_t t16;
+            t16 = vMap.VxGBuf[off]; vMap.VxGBuf[off] = snap.geo[cnt]; snap.geo[cnt] = t16;
+            t16 = vMap.VxDBuf[off]; vMap.VxDBuf[off] = snap.dam[cnt]; snap.dam[cnt] = t16;
             unsigned char t;
-            t = vMap.VxGBuf[off]; vMap.VxGBuf[off] = snap.geo[cnt]; snap.geo[cnt] = t;
-            t = vMap.VxDBuf[off]; vMap.VxDBuf[off] = snap.dam[cnt]; snap.dam[cnt] = t;
             t = vMap.AtrBuf[off]; vMap.AtrBuf[off] = snap.atr[cnt]; snap.atr[cnt] = t;
             t = vMap.SurBuf[off]; vMap.SurBuf[off] = snap.sur[cnt]; snap.sur[cnt] = t;
         }
@@ -875,23 +876,24 @@ void EditorSession::resyncDiffRect(int x0, int y0, int x1, int y1)
     const int ax1 = std::min(gw - 1, (std::max(x0, x1 - 1)) >> kmGridChA);
     const int ay1 = std::min(gh - 1, (std::max(y0, y1 - 1)) >> kmGridChA);
     const int stride = static_cast<int>(vMap.H_SIZE);
-    const unsigned char* bases[4] = {baseGeo_.data(), baseDam_.data(),
-                                     baseAtr_.data(), baseSur_.data()};
-    const unsigned char* live[4] = {vMap.VxGBuf, vMap.VxDBuf, vMap.AtrBuf,
-                                    vMap.SurBuf};
+    const uint16_t* liveG = vMap.VxGBuf;
+    const uint16_t* liveD = vMap.VxDBuf;
+    const unsigned char* liveA = vMap.AtrBuf;
+    const unsigned char* liveS = vMap.SurBuf;
     for (int ay = ay0; ay <= ay1; ++ay) {
         for (int ax = ax0; ax <= ax1; ++ax) {
             const int area = ay * gw + ax;
             const int baseOff = (ay << kmGridChA) * stride + (ax << kmGridChA);
             bool differs = false;
-            for (int b = 0; b < 4 && !differs; ++b) {
-                for (int k = 0; k < sizeCellGridCA && !differs; ++k) {
-                    const int row = baseOff + k * stride;
-                    for (int m = 0; m < sizeCellGridCA; ++m) {
-                        if (live[b][row + m] != bases[b][row + m]) {
-                            differs = true;
-                            break;
-                        }
+            for (int k = 0; k < sizeCellGridCA && !differs; ++k) {
+                const int row = baseOff + k * stride;
+                for (int m = 0; m < sizeCellGridCA; ++m) {
+                    if (liveG[row + m] != baseGeo_[row + m] ||
+                        liveD[row + m] != baseDam_[row + m] ||
+                        liveA[row + m] != baseAtr_[row + m] ||
+                        liveS[row + m] != baseSur_[row + m]) {
+                        differs = true;
+                        break;
                     }
                 }
             }
@@ -902,15 +904,20 @@ void EditorSession::resyncDiffRect(int x0, int y0, int x1, int y1)
                 continue;
             }
             DiffArea entry;
-            for (int b = 0; b < 4; ++b) {
-                entry.buf[static_cast<std::size_t>(b)].resize(
-                    sizeCellGridCA * sizeCellGridCA);
-                for (int k = 0; k < sizeCellGridCA; ++k) {
-                    const int row = baseOff + k * stride;
-                    std::memcpy(entry.buf[static_cast<std::size_t>(b)].data() +
-                                    k * sizeCellGridCA,
-                                live[b] + row, sizeCellGridCA);
-                }
+            entry.geo.resize(sizeCellGridCA * sizeCellGridCA);
+            entry.dam.resize(sizeCellGridCA * sizeCellGridCA);
+            entry.atr.resize(sizeCellGridCA * sizeCellGridCA);
+            entry.sur.resize(sizeCellGridCA * sizeCellGridCA);
+            for (int k = 0; k < sizeCellGridCA; ++k) {
+                const int row = baseOff + k * stride;
+                std::copy_n(liveG + row, sizeCellGridCA,
+                            entry.geo.begin() + k * sizeCellGridCA);
+                std::copy_n(liveD + row, sizeCellGridCA,
+                            entry.dam.begin() + k * sizeCellGridCA);
+                std::copy_n(liveA + row, sizeCellGridCA,
+                            entry.atr.begin() + k * sizeCellGridCA);
+                std::copy_n(liveS + row, sizeCellGridCA,
+                            entry.sur.begin() + k * sizeCellGridCA);
             }
             diffAreas_[area] = std::move(entry);
             diffModified_ = true;
@@ -922,8 +929,8 @@ void EditorSession::applyDiffToBuffers()
 {
     const std::size_t cells =
         static_cast<std::size_t>(vMap.H_SIZE) * vMap.V_SIZE;
-    std::memcpy(vMap.VxGBuf, baseGeo_.data(), cells);
-    std::memcpy(vMap.VxDBuf, baseDam_.data(), cells);
+    std::memcpy(vMap.VxGBuf, baseGeo_.data(), cells * sizeof(uint16_t));
+    std::memcpy(vMap.VxDBuf, baseDam_.data(), cells * sizeof(uint16_t));
     std::memcpy(vMap.AtrBuf, baseAtr_.data(), cells);
     std::memcpy(vMap.SurBuf, baseSur_.data(), cells);
     const int gw = static_cast<int>(vMap.H_SIZE) >> kmGridChA;
@@ -932,14 +939,16 @@ void EditorSession::applyDiffToBuffers()
         const int ax = area % gw;
         const int ay = area / gw;
         const int baseOff = (ay << kmGridChA) * stride + (ax << kmGridChA);
-        for (int b = 0; b < 4; ++b) {
-            const unsigned char* src = entry.buf[static_cast<std::size_t>(b)].data();
-            unsigned char* dst[4] = {vMap.VxGBuf, vMap.VxDBuf, vMap.AtrBuf,
-                                     vMap.SurBuf};
-            for (int k = 0; k < sizeCellGridCA; ++k) {
-                std::memcpy(dst[b] + baseOff + k * stride,
-                            src + k * sizeCellGridCA, sizeCellGridCA);
-            }
+        for (int k = 0; k < sizeCellGridCA; ++k) {
+            const int row = baseOff + k * stride;
+            std::copy_n(entry.geo.data() + k * sizeCellGridCA, sizeCellGridCA,
+                        vMap.VxGBuf + row);
+            std::copy_n(entry.dam.data() + k * sizeCellGridCA, sizeCellGridCA,
+                        vMap.VxDBuf + row);
+            std::copy_n(entry.atr.data() + k * sizeCellGridCA, sizeCellGridCA,
+                        vMap.AtrBuf + row);
+            std::copy_n(entry.sur.data() + k * sizeCellGridCA, sizeCellGridCA,
+                        vMap.SurBuf + row);
         }
     }
     // Full re-render: every cell may have changed.
@@ -966,17 +975,17 @@ void EditorSession::runWithBaseTerrain(const std::function<void()>& fn)
     }
     const std::size_t cells =
         static_cast<std::size_t>(vMap.H_SIZE) * vMap.V_SIZE;
-    std::vector<unsigned char> effG(vMap.VxGBuf, vMap.VxGBuf + cells);
-    std::vector<unsigned char> effD(vMap.VxDBuf, vMap.VxDBuf + cells);
+    std::vector<uint16_t> effG(vMap.VxGBuf, vMap.VxGBuf + cells);
+    std::vector<uint16_t> effD(vMap.VxDBuf, vMap.VxDBuf + cells);
     std::vector<unsigned char> effA(vMap.AtrBuf, vMap.AtrBuf + cells);
     std::vector<unsigned char> effS(vMap.SurBuf, vMap.SurBuf + cells);
-    std::memcpy(vMap.VxGBuf, baseGeo_.data(), cells);
-    std::memcpy(vMap.VxDBuf, baseDam_.data(), cells);
+    std::memcpy(vMap.VxGBuf, baseGeo_.data(), cells * sizeof(uint16_t));
+    std::memcpy(vMap.VxDBuf, baseDam_.data(), cells * sizeof(uint16_t));
     std::memcpy(vMap.AtrBuf, baseAtr_.data(), cells);
     std::memcpy(vMap.SurBuf, baseSur_.data(), cells);
     fn();
-    std::memcpy(vMap.VxGBuf, effG.data(), cells);
-    std::memcpy(vMap.VxDBuf, effD.data(), cells);
+    std::memcpy(vMap.VxGBuf, effG.data(), cells * sizeof(uint16_t));
+    std::memcpy(vMap.VxDBuf, effD.data(), cells * sizeof(uint16_t));
     std::memcpy(vMap.AtrBuf, effA.data(), cells);
     std::memcpy(vMap.SurBuf, effS.data(), cells);
     // The effective content is back: repaint everything.
@@ -1033,8 +1042,8 @@ bool EditorSession::setDiffMode(bool on)
         // the base terrain for display/editing.
         resyncDiffRect(0, 0, static_cast<int>(vMap.H_SIZE),
                        static_cast<int>(vMap.V_SIZE));
-        std::memcpy(vMap.VxGBuf, baseGeo_.data(), cells);
-        std::memcpy(vMap.VxDBuf, baseDam_.data(), cells);
+        std::memcpy(vMap.VxGBuf, baseGeo_.data(), cells * sizeof(uint16_t));
+        std::memcpy(vMap.VxDBuf, baseDam_.data(), cells * sizeof(uint16_t));
         std::memcpy(vMap.AtrBuf, baseAtr_.data(), cells);
         std::memcpy(vMap.SurBuf, baseSur_.data(), cells);
         baseGeo_.clear();
@@ -1067,30 +1076,63 @@ bool EditorSession::saveDiffToGmp(const std::string& path)
                 path.c_str());
         return false;
     }
-    // The game's legacy format (loadGameMap, VMAP.cpp:952): world index,
+    // The game's legacy format (loadGameMap, VMAP.cpp): world index,
     // the coarse changed-area flags, then per flagged area the four absolute
-    // buffer blocks (geo, dam, atr, sur).
+    // buffer blocks (geo, dam, atr, sur). The legacy section is 8-bit per
+    // height layer (values >255 are clamped); when any difference height
+    // exceeds 255 an "XH16" trailer with the full 16-bit geo/dam blocks is
+    // appended (flagged areas in ascending order), which vrtMap::loadGameMap
+    // reads back. Old builds loading such a .gmp see the clamped heights.
+    const std::size_t block =
+        static_cast<std::size_t>(sizeCellGridCA) * sizeCellGridCA;
     int worldIndex = vMap.cWorld;
     out.write(reinterpret_cast<const char*>(&worldIndex), sizeof(worldIndex));
     std::vector<unsigned char> flags(static_cast<std::size_t>(gw) * gh, 0);
+    bool hasExtended = false;
     for (const auto& [area, entry] : diffAreas_) {
-        if (area >= 0 && area < gw * gh &&
-            entry.buf[0].size() ==
-                static_cast<std::size_t>(sizeCellGridCA) * sizeCellGridCA) {
+        if (area >= 0 && area < gw * gh && entry.geo.size() == block &&
+            entry.dam.size() == block && entry.atr.size() == block &&
+            entry.sur.size() == block) {
             flags[static_cast<std::size_t>(area)] = 1;
+            for (std::size_t i = 0; i < block; ++i) {
+                if (entry.geo[i] > 255 || entry.dam[i] > 255) {
+                    hasExtended = true;
+                }
+            }
         }
     }
     out.write(reinterpret_cast<const char*>(flags.data()),
               static_cast<std::streamsize>(flags.size()));
+    std::vector<unsigned char> block8(block);
     for (int area = 0; area < gw * gh; ++area) {
         const auto it = diffAreas_.find(area);
         if (it == diffAreas_.end()) {
             continue;
         }
-        for (int b = 0; b < 4; ++b) {
-            out.write(reinterpret_cast<const char*>(
-                          it->second.buf[static_cast<std::size_t>(b)].data()),
-                      sizeCellGridCA * sizeCellGridCA);
+        const DiffArea& entry = it->second;
+        for (std::size_t i = 0; i < block; ++i) {
+            block8[i] = static_cast<unsigned char>(std::min<int>(entry.geo[i], 255));
+        }
+        out.write(reinterpret_cast<const char*>(block8.data()), block);
+        for (std::size_t i = 0; i < block; ++i) {
+            block8[i] = static_cast<unsigned char>(std::min<int>(entry.dam[i], 255));
+        }
+        out.write(reinterpret_cast<const char*>(block8.data()), block);
+        out.write(reinterpret_cast<const char*>(entry.atr.data()), block);
+        out.write(reinterpret_cast<const char*>(entry.sur.data()), block);
+    }
+    if (hasExtended) {
+        const char extId[4] = {'X', 'H', '1', '6'};
+        out.write(extId, 4);
+        for (int area = 0; area < gw * gh; ++area) {
+            const auto it = diffAreas_.find(area);
+            if (it == diffAreas_.end()) {
+                continue;
+            }
+            out.write(reinterpret_cast<const char*>(it->second.geo.data()),
+                      block * sizeof(uint16_t));
+            out.write(reinterpret_cast<const char*>(it->second.dam.data()),
+                      block * sizeof(uint16_t));
         }
     }
     if (!out.good()) {
@@ -1126,27 +1168,57 @@ bool EditorSession::loadDiffFromGmp(const std::string& path)
         return false;
     }
     std::map<int, DiffArea> loaded;
-    const std::streamsize block = sizeCellGridCA * sizeCellGridCA;
+    const std::size_t block =
+        static_cast<std::size_t>(sizeCellGridCA) * sizeCellGridCA;
     for (int area = 0; area < gw * gh; ++area) {
         if (flags[static_cast<std::size_t>(area)] != 1) {
             continue;
         }
         DiffArea entry;
-        bool ok = true;
-        for (int b = 0; b < 4 && ok; ++b) {
-            entry.buf[static_cast<std::size_t>(b)].resize(
-                static_cast<std::size_t>(block));
-            in.read(reinterpret_cast<char*>(
-                        entry.buf[static_cast<std::size_t>(b)].data()),
-                    block);
-            ok = static_cast<bool>(in);
+        entry.geo.resize(block);
+        entry.dam.resize(block);
+        entry.atr.resize(block);
+        entry.sur.resize(block);
+        std::vector<unsigned char> block8(block);
+        in.read(reinterpret_cast<char*>(block8.data()), block);
+        for (std::size_t i = 0; i < block; ++i) {
+            entry.geo[i] = block8[i];
         }
+        in.read(reinterpret_cast<char*>(block8.data()), block);
+        for (std::size_t i = 0; i < block; ++i) {
+            entry.dam[i] = block8[i];
+        }
+        bool ok = static_cast<bool>(in);
+        in.read(reinterpret_cast<char*>(entry.atr.data()), block);
+        in.read(reinterpret_cast<char*>(entry.sur.data()), block);
+        ok = ok && static_cast<bool>(in);
         if (!ok) {
             fprintf(stderr, "EditorSession::loadDiffFromGmp: truncated area "
                     "data in '%s'.\n", path.c_str());
             return false;
         }
         loaded[area] = std::move(entry);
+    }
+    // Optional "XH16" trailer: full 16-bit geo/dam blocks for the flagged
+    // areas (same ascending order). Absent in legacy files — then the 8-bit
+    // heights read above are the whole truth.
+    char extId[4] = {0, 0, 0, 0};
+    if (in.read(extId, 4) && memcmp(extId, "XH16", 4) == 0) {
+        for (int area = 0; area < gw * gh; ++area) {
+            if (flags[static_cast<std::size_t>(area)] != 1) {
+                continue;
+            }
+            auto it = loaded.find(area);
+            in.read(reinterpret_cast<char*>(it->second.geo.data()),
+                    block * sizeof(uint16_t));
+            in.read(reinterpret_cast<char*>(it->second.dam.data()),
+                    block * sizeof(uint16_t));
+        }
+        if (!in) {
+            fprintf(stderr, "EditorSession::loadDiffFromGmp: truncated XH16 "
+                    "trailer in '%s'.\n", path.c_str());
+            return false;
+        }
     }
     diffAreas_ = std::move(loaded);
     diffModified_ = false; // freshly loaded == the saved state

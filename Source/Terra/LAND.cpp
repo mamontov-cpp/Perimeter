@@ -25,7 +25,9 @@ int h_l=160;
 //const  h_l=120; //интенсивность 255 // 1/2 - 180
 int d_x=4;
 int d_xw=8;
-int delta_s;
+// Наклон света: затухание тени на клетку в 16.16-фиксе от высоты.
+// 64 бита — высоты до 8191 вокселя (18 бит + 16 дробных = 34 бита).
+int64_t delta_s;
 int l_ras=32;
 int RENDER_BORDER_ZONE;
 /* ----------------------------- EXTERN SECTION ---------------------------- */
@@ -510,7 +512,7 @@ void vrtMap::gaussFilter(int _x,int _y,int _rad, double _filter_scaling)
 			f = 0;
 			for(y = -H;y < H;y++)
 				for(x = -H;x < H;x++){
-					unsigned short alt=GetAlt(XCYCL(xBeg + xx + x), YCYCL(yBeg+yy+y));
+					int alt=GetAlt(XCYCL(xBeg + xx + x), YCYCL(yBeg+yy+y));
 					f += filter_array[H + y][H + x]*double(alt);
 					}
 			unsigned char c = xm::round(f * norma_inv);
@@ -562,7 +564,7 @@ void vrtMap::squareGaussFilter(int _x,int _y,int _rad, double _filter_scaling)
 			f = 0;
 			for(y = -H;y < H;y++)
 				for(x = -H;x < H;x++){
-					unsigned short alt=GetAlt(XCYCL(xBeg + xx + x), YCYCL(yBeg+yy+y));
+					int alt=GetAlt(XCYCL(xBeg + xx + x), YCYCL(yBeg+yy+y));
 					f += filter_array[H + y][H + x]*double(alt);
 					}
 			unsigned char c = xm::round(f * norma_inv);
@@ -610,8 +612,8 @@ void vrtMap::AllworldGaussFilter(double _filter_scaling)
 				short yV=yy+y; if(yV>=V_SIZE)yV=V_SIZE-1; if(yV<0) yV=0;
 				for(x = -H;x < H;x++){
 					short xV=xx+x; if(xV>=H_SIZE)xV=H_SIZE-1; if(xV<0)xV=0;
-					//unsigned short alt=GetAlt(XCYCL(xx + x), YCYCL(yy+y));
-					unsigned short alt=GetAlt(xV, yV);
+					//int alt=GetAlt(XCYCL(xx + x), YCYCL(yy+y));
+					int alt=GetAlt(xV, yV);
 					f += filter_array[H + y][H + x]*double(alt);
 				}
 			}
@@ -1038,7 +1040,7 @@ void vrtMap::ShadowControl(bool shadow)
 		delta_s= xm::round(k * (1 << 16) * (1 << VX_FRACTION)); 
 	}
 	else{
-		delta_s=MAX_VX_HEIGHT*(1<<16);///
+		delta_s=static_cast<int64_t>(MAX_VX_HEIGHT)*(1<<16);///
 	}
 }
 
@@ -1145,8 +1147,10 @@ int vrtMap::RenderStr(int XL, int Y, int dx)
 	pc = &(RnrBuf[Y*XS_Buf]);
 
 	int j=XL+dx;
-	int SumHShadow=0;
-	int h_s=0,vv,ob;
+	int64_t SumHShadow=0;
+	int64_t h_s=0;
+	int64_t vv;
+	int ob;
 	if(j<(H_SIZE-1)){
 		do{
 			j++;
@@ -1163,11 +1167,11 @@ int vrtMap::RenderStr(int XL, int Y, int dx)
 			//*(pa+XCYCL(j))|=At_ZEROPLAST; //For DEBUG
 		//Проверка на окончание тени и высота снижения тени не уменьшала высоту максимально возможного вокселя ниже текущей высоты тени
 		//Надо решить вопрос со смещением для GetAlt и AtrBuf-pa
-		}while( ((*(pa+XCYCL(j))&At_SHADOW) !=0) && (((MAX_VX_HEIGHT<<16)-h_s) > SumHShadow) && j<H_SIZE ); //j<H_SIZE прверка на границу карты
+		}while( ((*(pa+XCYCL(j))&At_SHADOW) !=0) && (((static_cast<int64_t>(MAX_VX_HEIGHT)<<16)-h_s) > SumHShadow) && j<H_SIZE ); //j<H_SIZE прверка на границу карты
 	}
 	//подразумевается что dx не выходит за границы мира и left point не выходит за ганицы мира
 	j=dx; //+( 256*(1<<VX_FRACTION)*(1<<8)/delta_s )+1;
-	unsigned short Vr,V,Vh;
+	int Vr,V,Vh;
 	int i;
 	Vr=SGetAlt(XCYCL(XL+dx+1),Y);
 	unsigned char prevShadow=0;
@@ -1223,8 +1227,10 @@ int vrtMap::RenderStr(int XL, int Y, int dx)
 
 			*(pa+i)&=~At_SHADOW;
 
-//расчет - full int
-			int A=((Vr<<2)-(V<<2)),B=((V<<2)-(Vh<<2)), C=-(1<<8); //C=-1<<7//7дробных! //сдвиг на 8для большей плавности рельефа т.к. точность была потеряна при переходе на VX_FRACTION=5
+			//расчет - full int. 64 бита: высоты до 8191 вокселя (18 бит
+			//фикса + сдвиг <<2), квадраты компонент нормали не влезают
+			//в 32 бита.
+			int64_t A=(static_cast<int64_t>(Vr<<2)-(V<<2)),B=((int64_t)(V<<2)-(Vh<<2)), C=-(1<<8); //C=-1<<7//7дробных! //сдвиг на 8для большей плавности рельефа т.к. точность была потеряна при переходе на VX_FRACTION=5
 			//float A=(float)(Vr-V)/(float)(1<<VX_FRACTION);
 			//float B=(float)(V-Vh)/(float)(1<<VX_FRACTION);
 			//float C=-1;
@@ -1232,7 +1238,7 @@ int vrtMap::RenderStr(int XL, int Y, int dx)
 			//int L=xm::round(xm::sqrt(A*A+B*B+C*C)); 
 			///extern inline float fastsqrt(float n);
 			///int L=xm::round(fastsqrt(A*A+B*B+C*C));
-			int L=fastsqrtI(A*A+B*B+C*C);
+			int64_t L=static_cast<int64_t>(xm::sqrt(static_cast<double>(A*A+B*B+C*C)));
 
 			//A=(A<<8)/L; B=(B<<8)/L; C=(C<<8)/L;
 
@@ -1242,10 +1248,10 @@ int vrtMap::RenderStr(int XL, int Y, int dx)
 			int lght = 0;
 			if((material&FLAG_SPECULAR_MATERIAL)==0){//только диффузный цвет
 				material>>=SHIFT_4TYPE_MATERIALS;
-				if( h_s > ((int)V<<16)) {
+				if( h_s > (static_cast<int64_t>(V)<<16)) {
 					//float cosAS=(A*A_lightS + B*B_lightS + C*C_lightS)/256.;
-					int icosAS=(A*iA_lightS + B*iB_lightS + C*iC_lightS)/L;
-					int shI=(h_s-((int)V<<16))>>(16+2); 
+					int icosAS=static_cast<int>((A*iA_lightS + B*iB_lightS + C*iC_lightS)/L);
+					int shI=static_cast<int>((h_s-(static_cast<int64_t>(V)<<16))>>(16+2)); 
 					//if(shI > 31) shI=31;
 					//lght=round(AmbientLight*cosAS*shL[31-shI]) + xm::round((Light*cosA+AmbientLight)*shL[shI]);
 					//lght=( (AmbientLight*icosAS*shI) + ((Light*icosA+(AmbientLight<<15))*(31-shI)) )>>(15+5);
@@ -1254,14 +1260,14 @@ int vrtMap::RenderStr(int XL, int Y, int dx)
 						lght+=AmbientLightShadow;
 					}
 					else {
-						icosA=(A*iA_light + B*iB_light + C*iC_light)/L;
+						icosA=static_cast<int>((A*iA_light + B*iB_light + C*iC_light)/L);
 						lght=( ((LightShadow*icosAS+(AmbientLightShadow<<15))*shI) + ((Light*icosA+(AmbientLight<<15))*(31-shI)) )>>(15+5);
 					}
 					prevShadow=1;
 					*(pa+i)|=At_SHADOWV;
 				}
 				else{
-					icosA=(A*iA_light + B*iB_light + C*iC_light)/L;
+					icosA=static_cast<int>((A*iA_light + B*iB_light + C*iC_light)/L);
 					//lght=round(Light*cosA);// + xm::round(AmbientLt*cosAS);
 					lght=(Light*icosA)>>15;// + xm::round(AmbientLt*cosAS);
 					lght+=AmbientLight;
@@ -1417,7 +1423,7 @@ int vrtMap::RenderStr(int XL, int Y, int dx)
 			*(pc+i)=lght;
 			//if(h_s  <= (V<<8)) { h_s=V<<8; }
 
-			if(h_s  <= (V<<16)) { h_s=V<<16; }
+			if(h_s  <= (static_cast<int64_t>(V)<<16)) { h_s=static_cast<int64_t>(V)<<16; }
 
 
 /*			float cosA=(A*A_light + B*B_light + C*C_light)/256.;

@@ -158,6 +158,7 @@ const static char* GAME_ALLOWED_PATH_LIST[] = {
     "resource/worlds/*/geopal.xml",
     "resource/worlds/*/geolattice.bin",
     "resource/worlds/*/hardness.bin",
+    "resource/worlds/*/heights16.bin",
     "resource/worlds/*/ingeo.act",
     "resource/worlds/*/indam.act",
     "resource/worlds/*/output.vmp",

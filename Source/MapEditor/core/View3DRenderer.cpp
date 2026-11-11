@@ -894,8 +894,8 @@ bool View3DRenderer::pickGroundCell(int cx, int cy, int col, int row,
     const int x0 = vMap.XCYCL(cx) << 16;
     const int y0 = vMap.YCYCL(cy) << 16;
 
-    const unsigned char *lvG = vMap.VxGBuf;
-    const unsigned char *lvD = vMap.VxDBuf;
+    const vrtMap::VxWholeHeight *lvG = vMap.VxGBuf;
+    const vrtMap::VxWholeHeight *lvD = vMap.VxDBuf;
 
     // Walk the frustum rows near → far exactly like the renderer above
     // (including the mirrored behind-nadir mapping — see renderSmooth) and

@@ -356,7 +356,7 @@ bool runImageDecalTests()
     params.mode = BrushMode::Dam;
 
     // Snapshot the patch for the undo check.
-    struct Cell { unsigned char geo, dam, atr, sur; };
+    struct Cell { uint16_t geo, dam; unsigned char atr, sur; };
     std::vector<Cell> before;
     const int half = 12;
     for (int y = cy - half; y <= cy + half; ++y) {

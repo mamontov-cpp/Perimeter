@@ -60,8 +60,8 @@ struct UndoAreaSnapshot
     int y = 0;
     int sx = 0; // clamped width  in cells (0..H_SIZE)
     int sy = 0; // clamped height in cells (0..V_SIZE)
-    std::vector<unsigned char> geo;
-    std::vector<unsigned char> dam;
+    std::vector<uint16_t> geo; // целые высоты гео-слоя (VxWholeHeight)
+    std::vector<uint16_t> dam; // целые высоты дам-слоя (VxWholeHeight)
     std::vector<unsigned char> atr;
     std::vector<unsigned char> sur;
 };
@@ -474,18 +474,24 @@ private:
     /// Difference model: one entry per coarse 64x64 area (kmGridChA) that
     /// holds at least one cell differing from the base terrain. The blocks
     /// are ABSOLUTE buffer values (the .gmp format), keyed by the area
-    /// index (row-major over the coarse grid).
+    /// index (row-major over the coarse grid). Geo/dam are 16-bit whole
+    /// heights (VxWholeHeight) so difference data survives worlds above
+    /// 255 voxels; the on-disk legacy section stays 8-bit, full heights go
+    /// to an "XH16" trailer (saveDiffToGmp, mirrors vrtMap::saveGameMap).
     struct DiffArea
     {
-        std::array<std::vector<unsigned char>, 4> buf; ///< geo, dam, atr, sur.
+        std::vector<uint16_t> geo;
+        std::vector<uint16_t> dam;
+        std::vector<unsigned char> atr;
+        std::vector<unsigned char> sur;
     };
     std::map<int, DiffArea> diffAreas_;
     /// The difference data changed since the last saveDiffToGmp (or load).
     bool diffModified_ = false;
     /// Base terrain snapshot, kept while the difference mode is ON (vMap
-    /// buffers then carry BASE+DIFF).
-    std::vector<unsigned char> baseGeo_;
-    std::vector<unsigned char> baseDam_;
+    /// buffers then carry BASE+DIFF). Geo/dam are 16-bit (VxWholeHeight).
+    std::vector<uint16_t> baseGeo_;
+    std::vector<uint16_t> baseDam_;
     std::vector<unsigned char> baseAtr_;
     std::vector<unsigned char> baseSur_;
     bool diffMode_ = false;

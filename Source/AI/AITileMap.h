@@ -14,14 +14,14 @@ struct AITile
 		tile_area = tile_size*tile_size // нормировка
 		};
 
-	unsigned char height; // Средняя высота точки 
-	unsigned char height_min; // Средняя высота точки 
-	unsigned char delta_height; // Средняя высота точки 
+	uint16_t height; // Средняя высота точки (целые воксели сетки)
+	uint16_t height_min; // минимальная высота точки
+	uint16_t delta_height; // перепад высот в тайле
 	int dig_work;	// Работа по выравниванию
 	bool dig_less; // Не копается
 	bool building;
 
-	AITile() : height(0),dig_work(0),dig_less(0),building(false) {}
+	AITile() : height(0),height_min(0),delta_height(0),dig_work(0),dig_less(0),building(false) {}
 	bool update(int x,int y); // returns whether the state (completeness) was changed
 	bool completed() const { return !dig_work; } // обработан
 };

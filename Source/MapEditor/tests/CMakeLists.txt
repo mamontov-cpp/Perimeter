@@ -64,7 +64,8 @@ ADD_EXECUTABLE(map_editor_tests
         GameCameraPresetTests.cpp
         ValidationTests.cpp
         View3DHazeTests.cpp
-        NewBattleMapFlowTests.cpp)
+        NewBattleMapFlowTests.cpp
+        Heights16Tests.cpp)
 
 SET_TARGET_PROPERTIES(map_editor_tests PROPERTIES
         WIN32_EXECUTABLE OFF
@@ -133,6 +134,7 @@ IF(MSVC)
             BrushZeroplastGeoTests.cpp
             BrushZeroplastHardnessTests.cpp
             GmpDiffTests.cpp
+            Heights16Tests.cpp
             ImageDecalTests.cpp
             ImageImportExportTests.cpp
             MinimapRasterTests.cpp

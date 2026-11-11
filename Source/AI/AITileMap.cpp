@@ -10,7 +10,7 @@ bool AITile::update(int x,int y)
 {
 	bool prev_log = completed();
 	
-	height_min = 255;
+	height_min = 0xFFFF;
 	int height_max = 0;
 	dig_work = 0;
 	dig_less = false;
@@ -20,12 +20,12 @@ bool AITile::update(int x,int y)
 	for(int yy = 0;yy < tile_size;yy++)
 	{
 		int offset = vMap.offsetGBuf(x*tile_size, y*tile_size + yy);
-		unsigned char* h_buffer = vMap.GVBuf + offset;
+		uint16_t* h_buffer = vMap.GVBuf + offset;
 		unsigned short* attr_buffer = vMap.GABuf + offset;
 
 		for(int xx = 0;xx < tile_size;xx++)
 		{
-			unsigned char h = h_buffer[xx];
+			int h = h_buffer[xx];
 			height_avr += h;
 			unsigned short attr = attr_buffer[xx];
 			

@@ -346,7 +346,7 @@ bool runShape3DBrushTests()
     const int triInX = cx + radius - 1;  // 0 deg: the vertex direction.
     const int triInY = cy;
     const int altOutBefore = altAt(triOutX, triOutY);
-    const unsigned char damOutBefore = vMap.VxDBuf[triOutY * mapW + triOutX];
+    const uint16_t damOutBefore = vMap.VxDBuf[triOutY * mapW + triOutX];
     const int altInBefore = altAt(triInX, triInY);
     params.shape3d = Shape3DKind::Pyramid;
     params.polygonSides = 3;

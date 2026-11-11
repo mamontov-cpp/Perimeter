@@ -31,6 +31,7 @@ const char* vrtMap::worldLeveledTextureFile= "leveledSurfaceTexture.surf";
 const char* vrtMap::worldLeveledTextureFile= "leveledSurfaceTexture.tga";
 #endif
 const char* vrtMap::worldHardnessFile= "hardness.bin";
+const char* vrtMap::worldHeights16File = "heights16.bin";
 
 const char* vrtMap::worldDataFile= "world.cls";
 const char* vrtMap::worldDataFileSection= "WorldData";
@@ -85,6 +86,85 @@ std::string GetTargetName(const char* name)
 
 bool isWorldIDValid(int worldID) {
 	return (worldID < vMap.maxWorld && worldID >= 0);
+}
+
+/////////////////////////////////////////////////////////////////////////////
+// 16-битные высоты: sidecar heights16.bin
+//
+// output.vmp (S2T0/S2T1) хранит целые высоты 8 битами на слой — формат не
+// меняется, старые миры читаются как раньше. Когда в мире есть высоты
+// больше 255 вокселей, рядом с output.vmp пишется sidecar с полными
+// 16-битными слоями. Формат sidecar:
+//   char[4] id = "H16\0", uint32 версия = 1, uint32 XS, uint32 YS,
+//   uint16 VxGBuf[XS*YS], uint16 VxDBuf[XS*YS] (LE, без сжатия).
+// Sidecar отсутствует <=> все высоты мира <= 255 (тогда bytes VMP точны).
+
+static const char HEIGHTS16_ID[4] = {'H', '1', '6', '\0'};
+
+struct sHeights16Header {
+	char id[4];
+	uint32_t version;
+	uint32_t XS;
+	uint32_t YS;
+};
+
+// true, если хотя бы одна целая высота слоев больше 255 вокселей
+static bool worldHasExtendedHeights(const vrtMap& m) {
+	const size_t cells = static_cast<size_t>(m.XS_Buf) * m.YS_Buf;
+	for (size_t i = 0; i < cells; i++) {
+		if (m.VxGBuf[i] > 255 || m.VxDBuf[i] > 255) return true;
+	}
+	return false;
+}
+
+// Чтение sidecar: при успехе полностью перезаписывает 16-битные слои.
+// Любая неконсистентность (нет файла, чужой id/версия/размер) — false,
+// остаются 8-битные высоты из VMP.
+static bool loadHeights16Sidecar(vrtMap& m) {
+	XStream fstream;
+	fstream.ErrHUsed = false;
+	if (!fstream.open(GetTargetName(vrtMap::worldHeights16File), XS_IN)) {
+		return false;
+	}
+	if (fstream.size() < static_cast<int64_t>(sizeof(sHeights16Header))) {
+		return false;
+	}
+	sHeights16Header header;
+	fstream.read(&header, sizeof(header));
+	if (memcmp(header.id, HEIGHTS16_ID, 4) != 0 || header.version != 1 ||
+		header.XS != static_cast<uint32_t>(m.XS_Buf) ||
+		header.YS != static_cast<uint32_t>(m.YS_Buf)) {
+		return false;
+	}
+	const int64_t need = static_cast<int64_t>(sizeof(sHeights16Header)) +
+		2 * sizeof(uint16_t) * static_cast<int64_t>(m.XS_Buf) * m.YS_Buf;
+	if (fstream.size() < need) {
+		return false;
+	}
+	fstream.read(m.VxGBuf, sizeof(uint16_t) * static_cast<int64_t>(m.XS_Buf) * m.YS_Buf);
+	fstream.read(m.VxDBuf, sizeof(uint16_t) * static_cast<int64_t>(m.XS_Buf) * m.YS_Buf);
+	fstream.close();
+	return true;
+}
+
+static void saveHeights16Sidecar(vrtMap& m) {
+	XStream fmap(GetTargetName(vrtMap::worldHeights16File), XS_OUT);
+	sHeights16Header header;
+	memcpy(header.id, HEIGHTS16_ID, 4);
+	header.version = 1;
+	header.XS = m.XS_Buf;
+	header.YS = m.YS_Buf;
+	fmap.write(&header, sizeof(header));
+	fmap.write(m.VxGBuf, sizeof(uint16_t) * static_cast<int64_t>(m.XS_Buf) * m.YS_Buf);
+	fmap.write(m.VxDBuf, sizeof(uint16_t) * static_cast<int64_t>(m.XS_Buf) * m.YS_Buf);
+	fmap.close();
+}
+
+static void deleteHeights16Sidecar() {
+	std::string path = convert_path_content(GetTargetName(vrtMap::worldHeights16File));
+	if (!path.empty()) {
+		std::remove(path.c_str());
+	}
 }
 
 void vrtMap::compressWorlds(int mode) {
@@ -269,9 +349,9 @@ void vrtMap::allocMem4Buf(void)
 	//AtBuf  = new unsigned char [YS_Buf*XS_Buf];//(unsigned char(*)[YS_Buf][XS_Buf])(Buf+offsetAt);
 	//ClTrBuf= new unsigned char [YS_Buf*XS_Buf];//(unsigned char(*)[YS_Buf][XS_Buf])(Buf+offsetClTr);
 
-	VxGBuf = new unsigned char [YS_Buf*XS_Buf];
+	VxGBuf = new VxWholeHeight [YS_Buf*XS_Buf];
 	WVxBuf = VxGBuf; //Текущие редактируемые воксели - гео-слой
-	VxDBuf = new unsigned char [YS_Buf*XS_Buf];
+	VxDBuf = new VxWholeHeight [YS_Buf*XS_Buf];
 	SurBuf = new unsigned char [YS_Buf*XS_Buf];
 	AtrBuf = new unsigned char [YS_Buf*XS_Buf];
 	RnrBuf = new unsigned char [YS_Buf*XS_Buf];
@@ -282,7 +362,7 @@ void vrtMap::allocMem4Buf(void)
 #endif
 //	TgaBuf = new unsigned char [YS_Buf*XS_Buf]; //По идее только для SurMapa
 
-	GVBuf  = new unsigned char [(YS_Buf>>kmGrid)*(XS_Buf>>kmGrid)];
+	GVBuf  = new VxWholeHeight [(YS_Buf>>kmGrid)*(XS_Buf>>kmGrid)];
 	GABuf  = new unsigned short [(YS_Buf>>kmGrid)*(XS_Buf>>kmGrid)];
 	//GKABuf  = new unsigned char [(YS_Buf>>kmGridK)*(XS_Buf>>kmGridK)];
 
@@ -901,10 +981,20 @@ void vrtMap::fullLoad(bool flag_fastLoad)
     
     fstream.close();
     if (0 < fmap.length()) {
-		fmap.read(&VxGBuf[0],XS_Buf*YS_Buf);
-		fmap.read(&VxDBuf[0],XS_Buf*YS_Buf);
+		// VMP хранит целые высоты 8 битами на слой: читаем во временный
+		// буфер и растягиваем в 16-битные слои. Высоты >255 при наличии
+		// sidecar heights16.bin перезаписываются ниже.
+		const size_t cells = static_cast<size_t>(XS_Buf) * YS_Buf;
+		std::vector<uint8_t> heights8(2 * cells);
+		fmap.read(&heights8[0], XS_Buf*YS_Buf);
+		fmap.read(&heights8[cells], XS_Buf*YS_Buf);
 		fmap.read(&AtrBuf[0],XS_Buf*YS_Buf);
 		fmap.read(&SurBuf[0],XS_Buf*YS_Buf);
+		for (size_t i = 0; i < cells; i++) {
+			VxGBuf[i] = heights8[i];
+			VxDBuf[i] = heights8[cells + i];
+		}
+		loadHeights16Sidecar(*this);
 
 		loadGeoDamPal();
 
@@ -1012,6 +1102,47 @@ bool vrtMap::loadGameMap(XBuffer& ff, bool flag_FastLoad)
         loadGrid(ff);
     }
 
+	// Расширенный чанк 16-битных высот измененных тайлов ("XH16"):
+	// новые сборки читают его поверх 8-битной секции; его отсутствие —
+	// обычное дело для старых сохранений (все высоты <=255).
+	if (ff.tell() + 4 <= ff.length()) {
+		const size_t pos = ff.tell();
+		char extId[4];
+		ff.read(extId, 4);
+		if (memcmp(extId, "XH16", 4) == 0) {
+			uint16_t buffer16[sizeCellGridCA*sizeCellGridCA];
+			cnt=0;
+			for(i=0; i<vSizeGCA; i++){
+				for(j=0; j<hSizeGCA; j++){
+					if(gridChAreas[cnt]==1){
+						int k, m, cnt2=0;
+						ff.read(buffer16, sizeof(buffer16));
+						for(k=0; k<sizeCellGridCA; k++){
+							int offB=offsetBuf( (j<<kmGridChA), k+(i<<kmGridChA) );
+							for(m=0; m<sizeCellGridCA; m++){
+								VxGBuf[offB+m]=buffer16[cnt2];
+								cnt2++;
+							}
+						}
+						cnt2=0;
+						ff.read(buffer16, sizeof(buffer16));
+						for(k=0; k<sizeCellGridCA; k++){
+							int offB=offsetBuf( (j<<kmGridChA), k+(i<<kmGridChA) );
+							for(m=0; m<sizeCellGridCA; m++){
+								VxDBuf[offB+m]=buffer16[cnt2];
+								cnt2++;
+							}
+						}
+					}
+					cnt++;
+				}
+			}
+		} else {
+			// Не наш чанк — возвращаем позицию, trailing-данные чужие.
+			ff.set(pos, XB_BEG);
+		}
+	}
+
 	checkAndRecover();
 #ifdef _PERIMETER_
 	//if(!IniManager("Perimeter.ini").getInt("TD","FastLoad"))	delAllZL();
@@ -1046,7 +1177,9 @@ bool vrtMap::saveGameMap(XBuffer& ff)
 				for(k=0; k<sizeCellGridCA; k++){
 					int offB=offsetBuf( (j<<kmGridChA), k+(i<<kmGridChA) );
 					for(m=0; m<sizeCellGridCA; m++){
-						buffer[cnt2]=VxGBuf[offB+m];
+						// 8-битная секция клампит высоты >255; полные
+						// значения идут в расширенный чанк "XH16" ниже.
+						buffer[cnt2]=static_cast<unsigned char>(std::min<int>(VxGBuf[offB+m],255));
 						cnt2++;
 					}
 				}
@@ -1055,7 +1188,7 @@ bool vrtMap::saveGameMap(XBuffer& ff)
 				for(k=0; k<sizeCellGridCA; k++){
 					int offB=offsetBuf( (j<<kmGridChA), k+(i<<kmGridChA) );
 					for(m=0; m<sizeCellGridCA; m++){
-						buffer[cnt2]=VxDBuf[offB+m];
+						buffer[cnt2]=static_cast<unsigned char>(std::min<int>(VxDBuf[offB+m],255));
 						cnt2++;
 					}
 				}
@@ -1084,6 +1217,41 @@ bool vrtMap::saveGameMap(XBuffer& ff)
 		}
 	}
 	saveGrid(ff);
+
+	// Расширенный чанк 16-битных высот измененных тайлов. Пишется только
+	// когда среди них есть высоты >255; иначе файлы байт-в-байт совпадают
+	// со старым форматом. Читается loadGameMap (см. выше).
+	if (worldHasExtendedHeights(*this)) {
+		const char extId[4]={'X','H','1','6'};
+		ff.write(extId,4);
+		uint16_t buffer16[sizeCellGridCA*sizeCellGridCA];
+		cnt=0;
+		for(i=0; i<vSizeGCA; i++){
+			for(j=0; j<hSizeGCA; j++){
+				if(gridChAreas2[cnt]==1){
+					int k, m, cnt2=0;
+					for(k=0; k<sizeCellGridCA; k++){
+						int offB=offsetBuf( (j<<kmGridChA), k+(i<<kmGridChA) );
+						for(m=0; m<sizeCellGridCA; m++){
+							buffer16[cnt2]=VxGBuf[offB+m];
+							cnt2++;
+						}
+					}
+					ff.write(buffer16, sizeof(buffer16));
+					cnt2=0;
+					for(k=0; k<sizeCellGridCA; k++){
+						int offB=offsetBuf( (j<<kmGridChA), k+(i<<kmGridChA) );
+						for(m=0; m<sizeCellGridCA; m++){
+							buffer16[cnt2]=VxDBuf[offB+m];
+							cnt2++;
+						}
+					}
+					ff.write(buffer16, sizeof(buffer16));
+				}
+				cnt++;
+			}
+		}
+	}
 
 	worldChanged=0;
 	return true;
@@ -1117,8 +1285,8 @@ void vrtMap::generateChAreasInformation(XBuffer& out)
 				unsigned char bufatr[sizeCellGridCA];
 				for(k=0; k<sizeCellGridCA; k++){
 					int offB=offsetBuf( (j<<kmGridChA), k+(i<<kmGridChA) );
-					crc=crc32(&VxGBuf[offB], sizeCellGridCA, crc);
-					crc=crc32(&VxDBuf[offB], sizeCellGridCA, crc);
+					crc=crc32(reinterpret_cast<const unsigned char*>(&VxGBuf[offB]), sizeCellGridCA*sizeof(VxGBuf[0]), crc);
+					crc=crc32(reinterpret_cast<const unsigned char*>(&VxDBuf[offB]), sizeCellGridCA*sizeof(VxDBuf[0]), crc);
 					for(unsigned int mm=0; mm<sizeCellGridCA; mm++){
 						bufatr[mm]=AtrBuf[offB+mm]&(~At_SHADOW);
 					}
@@ -1282,8 +1450,8 @@ unsigned int vrtMap::getWorldCRC(void)
 	unsigned int crc=startCRC32;
 	unsigned char * pBufTMP=new unsigned char [H_SIZE];
 	for(y=0; y<V_SIZE; y++){
-		crc=crc32(&VxGBuf[offB], H_SIZE, crc);
-		crc=crc32(&VxDBuf[offB], H_SIZE, crc);
+		crc=crc32(reinterpret_cast<const unsigned char*>(&VxGBuf[offB]), H_SIZE*sizeof(VxGBuf[0]), crc);
+		crc=crc32(reinterpret_cast<const unsigned char*>(&VxDBuf[offB]), H_SIZE*sizeof(VxDBuf[0]), crc);
 		for(unsigned int x=0; x<H_SIZE; x++){
 			pBufTMP[x]=AtrBuf[offB+x]&(~At_SHADOW);
 		}
@@ -1313,7 +1481,7 @@ unsigned int vrtMap::getGridCRC(bool fullGrid, int cnt, unsigned int beginCRC)
 		sizeScan=sizeGrid;
 	}
 	unsigned int crc=beginCRC;
-	crc=crc32(&GVBuf[begAdrScan], sizeScan*sizeof(GVBuf[0]), crc);
+	crc=crc32(reinterpret_cast<const unsigned char*>(&GVBuf[begAdrScan]), sizeScan*sizeof(GVBuf[0]), crc);
 	crc=crc32((unsigned char*)(&GABuf[begAdrScan]), sizeScan*sizeof(GABuf[0]), crc);
 	crc=~crc;
 	return crc;
@@ -1500,11 +1668,27 @@ void vrtMap::save3BufOnly(void)
 	VmpHeader.XS=H_SIZE;
 	VmpHeader.YS=V_SIZE;
 	fmap.write(&VmpHeader,sizeof(VmpHeader));
-	fmap.write(&VxGBuf[0],XS_Buf*YS_Buf);
-	fmap.write(&VxDBuf[0],XS_Buf*YS_Buf);
+	// Формат VMP 8-битный на слой: высоты >255 клампятся в файл, полные
+	// значения уходят в sidecar heights16.bin (ниже).
+	const size_t cells = static_cast<size_t>(XS_Buf) * YS_Buf;
+	std::vector<uint8_t> heights8(2 * cells);
+	for (size_t i = 0; i < cells; i++) {
+		heights8[i] = static_cast<uint8_t>(std::min<int>(VxGBuf[i], 255));
+		heights8[cells + i] = static_cast<uint8_t>(std::min<int>(VxDBuf[i], 255));
+	}
+	fmap.write(&heights8[0],XS_Buf*YS_Buf);
+	fmap.write(&heights8[cells],XS_Buf*YS_Buf);
 	fmap.write(&AtrBuf[0],XS_Buf*YS_Buf);
 	fmap.write(&SurBuf[0],XS_Buf*YS_Buf);
 	fmap.close();
+
+	// Sidecar пишется только когда он нужен (высоты >255); иначе старый
+	// sidecar удаляется, чтобы мир вернулся в чистый 8-битный формат.
+	if (worldHasExtendedHeights(*this)) {
+		saveHeights16Sidecar(*this);
+	} else {
+		deleteHeights16Sidecar();
+	}
 
 	for(int i=0;i<YS_Buf;i++){
 		changedT[i]=0;
@@ -1568,16 +1752,21 @@ void vrtMap::restore3Buf(void)
 	fmap.read(&VmpHeader,sizeof(VmpHeader));
 	if (VmpHeader.cmpID("S2T0")){ //(*(int*)VmpHeader.id == *(int*)id )
 		int i;
+		// VMP хранит 8 бит на слой: читаем строку во временный буфер
+		// и растягиваем в 16-битные слои.
+		std::vector<uint8_t> row8(XS_Buf);
 		for(i=0;i<YS_Buf;i++){
 			if(changedT[i]){
 				fmap.seek(sizeof(VmpHeader)+i*XS_Buf,XS_BEG);
-				fmap.read(&VxGBuf[i*XS_Buf],XS_Buf);
+				fmap.read(&row8[0],XS_Buf);
+				for(int x=0;x<XS_Buf;x++) VxGBuf[i*XS_Buf+x]=row8[x];
 			}
 		}
 		for(i=0;i<YS_Buf;i++){
 			if(changedT[i]){
 				fmap.seek(sizeof(VmpHeader)+i*XS_Buf+ XS_Buf*YS_Buf,XS_BEG);
-				fmap.read(&VxDBuf[i*XS_Buf],XS_Buf);
+				fmap.read(&row8[0],XS_Buf);
+				for(int x=0;x<XS_Buf;x++) VxDBuf[i*XS_Buf+x]=row8[x];
 			}
 		}
 		for(i=0;i<YS_Buf;i++){
@@ -1661,8 +1850,8 @@ void vrtMap::scaling16(int cx,int cy,int xc,int yc,int xside,int yside, unsigned
 	unsigned char* lc = &(RnrBuf[0]);//
 	unsigned char* ls = &(SurBuf[0]);
 
-	unsigned char* lvd  = &(VxDBuf[0]);
-	unsigned char* lvg = &(VxGBuf[0]);
+	VxWholeHeight* lvd  = &(VxDBuf[0]);
+	VxWholeHeight* lvg = &(VxGBuf[0]);
 	unsigned char* la = &(AtrBuf[0]);
 
 	unsigned char* dataRnr;
@@ -1799,8 +1988,8 @@ void vrtMap::scaling32(int cx,int cy,int xc,int yc,int xside,int yside, unsigned
 	unsigned char* lc = &(RnrBuf[0]);//
 	unsigned char* ls = &(SurBuf[0]);
 
-	unsigned char* lvd  = &(VxDBuf[0]);
-	unsigned char* lvg = &(VxGBuf[0]);
+	VxWholeHeight* lvd  = &(VxDBuf[0]);
+	VxWholeHeight* lvg = &(VxGBuf[0]);
 	unsigned char* la = &(AtrBuf[0]);
 
 	unsigned char* dataRnr;
@@ -2069,8 +2258,8 @@ void vrtMap::viewV2D(int cx,int cy,int xc,int yc,int xside,int yside, unsigned s
 	//hCamera=600;//Высота камеры над поверхностью
 
 //	unsigned char* lv = &(WVxBuf[0]); 
-	unsigned char* lvG = &(VxGBuf[0]); 
-	unsigned char* lvD = &(VxDBuf[0]); 
+	VxWholeHeight* lvG = &(VxGBuf[0]); 
+	VxWholeHeight* lvD = &(VxDBuf[0]); 
 
 	float tga=xm::tan(cameraAngleLean*3.14/180);
 	int dh=xm::round(65536*(xm::sin((cameraAngleLean - 90) * 3.14 / 180) * focusC / (focusC + cameraDZ)) );
@@ -3252,14 +3441,14 @@ void vrtMap::scalingHeighMap(int percent)
 		for(i = 0; i<H_SIZE; i++){
 			int offb=offsetBuf(i,j);
 			if(VxDBuf[offb]==0){ //geo
-				short v=SGetAlt(offb);
+				int v=SGetAlt(offb);
 				v=xm::round(v*k);
 				if(v>MAX_VX_HEIGHT)v=MAX_VX_HEIGHT; if(v<0)v=0;
 				SPutAltGeo(offb, v);
 			}
 			else { //dam
-				short v=xm::round((float)SGetAlt(offb)*k);
-				short cv=xm::round((float)VxGBuf[offb]*k);
+				int v=xm::round((float)SGetAlt(offb)*k);
+				int cv=xm::round((float)VxGBuf[offb]*k);
 				if(cv>MAX_VX_HEIGHT_WHOLE)cv=MAX_VX_HEIGHT_WHOLE; if(cv<0)cv=0;
 				VxGBuf[offb]=cv;
 				VxDBuf[offb]=v>>VX_FRACTION;

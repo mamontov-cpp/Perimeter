@@ -111,7 +111,7 @@ bool runGeoDimTests()
     // "dead floor" — the fixture world may not have a natural one). The
     // buffers are restored byte-exact below.
     const int geoOff = vMap.offsetBuf(geoX, geoY);
-    const unsigned char savedG = vMap.VxGBuf[geoOff];
+    const uint16_t savedG = vMap.VxGBuf[geoOff];
     const unsigned char savedAtr = vMap.AtrBuf[geoOff];
     vMap.VxGBuf[geoOff] = 0;
     vMap.AtrBuf[geoOff] = 0;

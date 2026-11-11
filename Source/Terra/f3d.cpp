@@ -130,7 +130,7 @@ void s_f3d::recalcWorld(void)
 		for(j=0; j<vMap.H_SIZE; j++){
 			int of=vMap.offsetBuf(j,i);
 			if(vMap.VxDBuf[of]==0) {
-				short v=(vMap.VxGBuf[of]<<VX_FRACTION)|(vMap.AtrBuf[of]&VX_FRACTION_MASK);
+				int v=(vMap.VxGBuf[of]<<VX_FRACTION)|(vMap.AtrBuf[of]&VX_FRACTION_MASK);
 #ifdef _PERIMETER_
 				if(v) 
 #endif

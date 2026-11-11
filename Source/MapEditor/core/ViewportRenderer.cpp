@@ -75,8 +75,8 @@ unsigned int dimGeoColor(unsigned int col)
 /// mesh: whole-voxel height 0 (dam height when present, otherwise geo).
 inline bool sunkenCell(int off)
 {
-    const unsigned char whole = vMap.VxDBuf[off] ? vMap.VxDBuf[off]
-                                                 : vMap.VxGBuf[off];
+    const unsigned int whole = vMap.VxDBuf[off] ? vMap.VxDBuf[off]
+                                                : vMap.VxGBuf[off];
     return whole < 1;
 }
 

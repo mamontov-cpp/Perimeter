@@ -1303,7 +1303,7 @@ void terTerraformLevelFull::AddFillDig(int x,int y,int& dig_layer,int& fill_laye
 {
 	int offset=vMap.offsetGBuf(x, y);
 	unsigned short p = vMap.GABuf[offset];
-	unsigned char a = vMap.GVBuf[offset];
+	int a = vMap.GVBuf[offset];
 	if(IsNoHardness(p) && !(p&GRIDAT_ZEROPLAST_IS_PRESENT))
 	{
 		if(a > Height)

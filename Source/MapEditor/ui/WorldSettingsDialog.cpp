@@ -4,6 +4,15 @@
 
 #include "WorldSettingsDialog.h"
 
+// Terra limits (MAX_VX_HEIGHT_WHOLE) for the height spinboxes.
+#ifndef _PERIMETER_
+#define _PERIMETER_ 1
+#endif
+#ifndef _TX3D_LIBRARY_
+#define _TX3D_LIBRARY_ 1
+#endif
+#include "terra.h"
+
 #include <algorithm>
 
 #include <QComboBox>
@@ -83,12 +92,12 @@ void WorldSettingsPanel::buildUi(Mode mode)
         sizeForm->addRow(tr("Size powers:"), powerRow);
     }
 
-    zeroPlastSpin_ = makeSpin(0, 255);
+    zeroPlastSpin_ = makeSpin(0, MAX_VX_HEIGHT_WHOLE);
     sizeForm->addRow(tr("Zero-layer height (hZeroPlast):"), zeroPlastSpin_);
 
     if (isNew) {
         geoHeightLabel_ = new QLabel(sizeGroup);
-        geoHeightSpin_ = makeSpin(0, 254);
+        geoHeightSpin_ = makeSpin(0, MAX_VX_HEIGHT_WHOLE);
         sizeForm->addRow(geoHeightLabel_, geoHeightSpin_);
         connect(zeroPlastSpin_, &QSpinBox::valueChanged, this,
                 &WorldSettingsPanel::onZeroPlastChanged);

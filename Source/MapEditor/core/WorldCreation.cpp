@@ -40,12 +40,14 @@ constexpr const char* kOptionalTemplateFiles[] = {
 
 /// Write a flat S2T0 output.vmp: geo voxels at `geoHeight`, no dams, no
 /// attributes, surface index 0 (f3d.recalcWorld() repaints the surface after
-/// the load).
+/// the load). Heights above 255 voxels also get a heights16.bin sidecar —
+/// without it Terra would clamp the world to 255 on load (VMP is 8-bit).
 bool writeFlatVmp(const fs::path& worldDir, int hSize, int vSize,
                   int geoHeight)
 {
-    const std::vector<unsigned char> geoRow(static_cast<std::size_t>(hSize),
-                                            static_cast<unsigned char>(geoHeight));
+    const std::vector<unsigned char> geoRow(
+        static_cast<std::size_t>(hSize),
+        static_cast<unsigned char>(std::min(geoHeight, 255)));
     const std::vector<unsigned char> zeroRow(static_cast<std::size_t>(hSize), 0);
 
     vrtMap::sVmpHeader header{}; // zero-init: id, XS, YS set below, NX/NY = 0
@@ -72,6 +74,38 @@ bool writeFlatVmp(const fs::path& worldDir, int hSize, int vSize,
         out.write(zeroRow.data(), zeroRow.size()); // Sur
     }
     out.close();
+
+    if (geoHeight > 255) {
+        struct Heights16Header {
+            char id[4];
+            uint32_t version;
+            uint32_t XS;
+            uint32_t YS;
+        } h16{{'H', '1', '6', '\0'}, 1,
+              static_cast<uint32_t>(hSize), static_cast<uint32_t>(vSize)};
+        const std::vector<uint16_t> geoRow16(static_cast<std::size_t>(hSize),
+                                             static_cast<uint16_t>(geoHeight));
+        const std::vector<uint16_t> zeroRow16(static_cast<std::size_t>(hSize), 0);
+        XStream sidecar;
+        sidecar.ErrHUsed = false;
+        if (!sidecar.open((worldDir / WorldFiles::Heights16File).u8string(),
+                          XS_OUT)) {
+            return false;
+        }
+        sidecar.write(&h16, sizeof(h16));
+        for (int y = 0; y < vSize; ++y) {
+            sidecar.write(geoRow16.data(),
+                          static_cast<int64_t>(geoRow16.size()) * sizeof(uint16_t));
+        }
+        for (int y = 0; y < vSize; ++y) {
+            sidecar.write(zeroRow16.data(),
+                          static_cast<int64_t>(zeroRow16.size()) * sizeof(uint16_t));
+        }
+        sidecar.close();
+    } else {
+        std::error_code ec;
+        fs::remove(worldDir / WorldFiles::Heights16File, ec);
+    }
     return true;
 }
 
@@ -225,7 +259,7 @@ WorldCreateResult createNewWorld(EditorSession& session,
         result.error = "Map size powers must be within 9..14.";
         return result;
     }
-    if (params.hZeroPlast < 0 || params.hZeroPlast > 255 ||
+    if (params.hZeroPlast < 0 || params.hZeroPlast > MAX_VX_HEIGHT_WHOLE ||
         params.geoLayerHeight < 0 || params.geoLayerHeight >= params.hZeroPlast) {
         result.error =
             "The geo layer height must be below the zero-layer height.";

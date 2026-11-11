@@ -522,7 +522,7 @@ bool runBrushAlignTests()
     // ------------------------------------------------------------------
     TEST_REQUIRE(MapEditor::BrushTool::clampHeightLevel(-10) == 0,
                  "the height level must clamp at 0.");
-    TEST_REQUIRE(MapEditor::BrushTool::clampHeightLevel(4000) ==
+    TEST_REQUIRE(MapEditor::BrushTool::clampHeightLevel(MAX_VX_HEIGHT_WHOLE + 1) ==
                      MAX_VX_HEIGHT_WHOLE,
                  "the height level must clamp at MAX_VX_HEIGHT_WHOLE.");
     BrushParams wild;

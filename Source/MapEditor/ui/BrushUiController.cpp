@@ -19,6 +19,15 @@
 #include "Shape3D.h"
 #include "ViewportWidget.h"
 
+// Terra limits (MAX_VX_HEIGHT_WHOLE) for the height spinboxes.
+#ifndef _PERIMETER_
+#define _PERIMETER_ 1
+#endif
+#ifndef _TX3D_LIBRARY_
+#define _TX3D_LIBRARY_ 1
+#endif
+#include "terra.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -123,7 +132,7 @@ void BrushUiController::addEditMenuSubMenus(QMenu *editMenu)
     modifiersMenu->addAction(actGateBelow_);
     modifiersMenu->addSeparator();
     gateHeightMenuSpin_ = new QSpinBox(window_);
-    gateHeightMenuSpin_->setRange(0, 255);
+    gateHeightMenuSpin_->setRange(0, MAX_VX_HEIGHT_WHOLE);
     gateHeightMenuSpin_->setSuffix(tr(" vox"));
     gateHeightMenuSpin_->setToolTip(
         tr("Gate height (whole voxels; 1 voxel = 1/32 m): the active "
@@ -439,7 +448,7 @@ void BrushUiController::buildSculptToolbar()
     // Height base in Lower / Set-to-Height modes (the dam is removed there).
     shapeHeightSpin_ = new QSpinBox(bar);
     shapeHeightSpin_->setObjectName(QStringLiteral("shapeHeightSpin"));
-    shapeHeightSpin_->setRange(0, 255);
+    shapeHeightSpin_->setRange(0, MAX_VX_HEIGHT_WHOLE);
     shapeHeightSpin_->setValue(32);
     shapeHeightSpin_->setSuffix(tr(" v"));
     shapeHeightSpin_->setToolTip(
@@ -568,7 +577,7 @@ void BrushUiController::buildModifierToolbar()
     // sync (see buildEditMenu / syncBrushControls).
     gateHeightSpin_ = new QSpinBox(bar);
     gateHeightSpin_->setObjectName(QStringLiteral("gateHeightSpin"));
-    gateHeightSpin_->setRange(0, 255);
+    gateHeightSpin_->setRange(0, MAX_VX_HEIGHT_WHOLE);
     gateHeightSpin_->setSuffix(tr(" vox"));
     gateHeightSpin_->setToolTip(
         tr("Gate height (whole voxels; 1 voxel = 1/32 m): the active "
@@ -707,7 +716,7 @@ void BrushUiController::buildModelToolbar()
     // (whole voxels).
     modelHeightSpin_ = new QSpinBox(bar);
     modelHeightSpin_->setObjectName(QStringLiteral("modelHeightSpin"));
-    modelHeightSpin_->setRange(0, 255);
+    modelHeightSpin_->setRange(0, MAX_VX_HEIGHT_WHOLE);
     modelHeightSpin_->setValue(32);
     modelHeightSpin_->setSuffix(tr(" v"));
     modelHeightSpin_->setToolTip(
@@ -1508,13 +1517,13 @@ void BrushUiController::buildBrushToolbar()
     bar->addAction(actBrushLevelZP_);
     bar->addAction(actBrushLevelHeight_);
 
-    // The height value of the height tools — whole voxels (0..255). One
+    // The height value of the height tools — whole voxels (0..MAX_VX_HEIGHT_WHOLE). One
     // control, meaning per type: the raise/lower step (per stamp at full
     // influence) for Raise/Lower Terrain, the target height for "Level to
     // Height" and the value getCurrentHeight() reports for the scripted
     // brush (the domain BrushTool::clampHeightLevel enforces too).
     brushLevelSpin_ = new QSpinBox(bar);
-    brushLevelSpin_->setRange(0, 255);
+    brushLevelSpin_->setRange(0, MAX_VX_HEIGHT_WHOLE);
     brushLevelSpin_->setSuffix(tr(" vox"));
     connect(brushLevelSpin_, &QSpinBox::valueChanged, this, [this](int value) {
         MapEditor::BrushParams params = brushTool_->params();
