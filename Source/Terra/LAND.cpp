@@ -1134,9 +1134,12 @@ int vrtMap::RenderStr(int XL, int Y, int dx)
 	//float ty=(float)Y/(V_SIZE>>1)-1.0f;
 	//ty=ty*ty; ty=ty*ty; ty=ty*ty; ty=ty*ty;
 	const unsigned char shift4Fraction=14;
-	const unsigned char firstShift4FractionX=shift4Fraction-H_SIZE_POWER;
-	const unsigned char firstShift4FractionY=shift4Fraction-V_SIZE_POWER;
-	int tty=(Y*2-V_SIZE)<<firstShift4FractionY;
+	// Знаковые сдвиги: при H/V_SIZE_POWER = 15 выражение 14-power = -1, в
+	// unsigned char превращалось бы в 255. Квадраты считаются в 64 битах —
+	// на картах 2^14+ (i*2-H_SIZE) уже не влезает в int32.
+	const int firstShift4FractionX=static_cast<int>(shift4Fraction)-static_cast<int>(H_SIZE_POWER);
+	const int firstShift4FractionY=static_cast<int>(shift4Fraction)-static_cast<int>(V_SIZE_POWER);
+	int64_t tty=(int64_t)(Y*2-V_SIZE)<<firstShift4FractionY;
 	tty=tty*tty>>shift4Fraction; tty=tty*tty>>shift4Fraction; tty=tty*tty>>shift4Fraction; //tty=tty*tty>>shift4Fraction;
 
 	unsigned char *pa,*pc; //*pah; 
@@ -1190,9 +1193,9 @@ int vrtMap::RenderStr(int XL, int Y, int dx)
 			//float f;//exp(-(tx+ty)/(.7f*.7f));
 			//f=1-(tx+ty);
 			//затенение по краям
-			int ttx=(i*2-H_SIZE)<<firstShift4FractionX;
+			int64_t ttx=(int64_t)(i*2-H_SIZE)<<firstShift4FractionX;
 			ttx=ttx*ttx>>shift4Fraction; ttx=ttx*ttx>>shift4Fraction; ttx=ttx*ttx>>shift4Fraction; //ttx=ttx*ttx>>shift4Fraction;
-			int f=(1<<shift4Fraction)-(ttx+tty);
+			int64_t f=(1<<shift4Fraction)-(ttx+tty);
 
 			//Обработка зеропласта
 			//if( ( (*(pa+i)) &At_ZEROPLAST)!=0 ) SurBuf[offY+i]=0xFF;//127
@@ -1415,7 +1418,7 @@ int vrtMap::RenderStr(int XL, int Y, int dx)
 			//lght=xm::round(f*lght);
 			//затенение по краям
 #ifdef _SURMAP_
-			if(ShadowingOnEdges)lght=f*lght>>shift4Fraction;
+			if(ShadowingOnEdges)lght=static_cast<int>(f*lght>>shift4Fraction);
 #else
 			//lght=f*lght>>shift4Fraction;
 #endif

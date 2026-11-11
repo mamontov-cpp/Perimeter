@@ -40,7 +40,8 @@ const char *const kF3dFunctionNames[] = {
 // Existing worlds outside the range still load; the limits only affect
 // creation (the wizard spins and WorldCreation::createNewWorld).
 constexpr int kMinSizePower = 9;
-constexpr int kMaxSizePower = 13;
+// Terra's MAX_H/V_SIZE_POWER — maps up to 32768 per side.
+constexpr int kMaxSizePower = 15;
 
 QSpinBox *makeSpin(int min, int max, int step = 1)
 {

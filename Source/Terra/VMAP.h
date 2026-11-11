@@ -48,31 +48,33 @@ struct sBorderDim {
 };
 
 struct sRectS {
-	int16_t x, y;
-	int16_t dx, dy;
+	// 32-битные координаты: на картах 2^15 ребро прямоугольника достигает
+	// 32768 и в int16 заворачивалось бы в отрицательное значение.
+	int32_t x, y;
+	int32_t dx, dy;
 
 	sRectS(){ x = y = dx = dy = 0; }
-	sRectS(int16_t _x, int16_t _y, int16_t _dx, int16_t _dy){ x = _x; y = _y; dx = _dx; dy = _dy; }
-	void addBound(const Vect2i& v) { 
-		if(dx){ 
-			if(x > v.x) 
-				x = v.x; 
-			if(y > v.y) 
-				y = v.y; 
-			if(dx < v.x - x) 
-				dx = v.x - x; 
+	sRectS(int32_t _x, int32_t _y, int32_t _dx, int32_t _dy){ x = _x; y = _y; dx = _dx; dy = _dy; }
+	void addBound(const Vect2i& v) {
+		if(dx){
+			if(x > v.x)
+				x = v.x;
+			if(y > v.y)
+				y = v.y;
+			if(dx < v.x - x)
+				dx = v.x - x;
 			if(dy < v.y - y)
 				dy = v.y - y;
 		}
 		else{
-			x = v.x; 
+			x = v.x;
 			y = v.y;
 			dx = 1;
 			dy = 1;
 		}
 	}
-	int16_t x1() const { return x + dx; }
-	int16_t y1() const { return y + dy; }
+	int32_t x1() const { return x + dx; }
+	int32_t y1() const { return y + dy; }
 };
 
 //для работы с цветом

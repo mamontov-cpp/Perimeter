@@ -85,8 +85,8 @@ inline QVector<McpToolSpec> mcpToolCatalog()
                              "geoLayerHeight (must be below hZeroPlast), "
                              "flat=false generates procedural relief. "
                              "mapPower is the log2 map size in both "
-                             "dimensions, 9..14 (512x512 .. 16384x16384; "
-                             "the New World wizard caps at 13).") +
+                             "dimensions, 9..15 (512x512 .. 32768x32768; "
+                             "the New World wizard caps at 15).") +
                   undoNote,
               obj({{QStringLiteral("type"), QStringLiteral("object")},
                    {QStringLiteral("properties"),

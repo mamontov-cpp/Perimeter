@@ -95,11 +95,12 @@ ValidationReport validateWorldFiles(const WorldFiles& files)
         return report;
     }
     const auto power = files.readMapPower();
-    if (!power || (*power).first < 0 || (*power).first > 14 || (*power).second < 0 ||
-        (*power).second > 14) {
+    if (!power || (*power).first < 0 || (*power).first > MAX_H_SIZE_POWER ||
+        (*power).second < 0 || (*power).second > MAX_V_SIZE_POWER) {
         report.issues.push_back(issue(
             Severity::Error,
-            "Map Power X/Y missing or out of range (0..14) in world.ini."));
+            std::string("Map Power X/Y missing or out of range (0..") +
+                std::to_string(MAX_H_SIZE_POWER) + ") in world.ini."));
     }
 
     const std::optional<int> hzp = files.readHZeroPlast();

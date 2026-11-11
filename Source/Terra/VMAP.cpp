@@ -2299,8 +2299,8 @@ void vrtMap::viewV(int XSrcSize,int cx,int cy,int xc,int yc,int xside,int yside)
 		for ( i=0; i<XGR_MAXX; i++ ){
 			int c,y,h;
 
-			u0=(xx0>>16)&clip_mask_x;		a=(xx0>>8)&255;
-			v0=((yy0>>16)&clip_mask_y);		b=(yy0>>8)&255;
+			u0=(int)((xx0>>16)&(int64_t)clip_mask_x);	a=(int)((xx0>>8)&255);
+			v0=(int)((yy0>>16)&(int64_t)clip_mask_y);	b=(int)((yy0>>8)&255);
 			u1=(u0+1)&clip_mask_x;
 			v1=((v0+1)&clip_mask_y);
 
@@ -2408,8 +2408,10 @@ void vrtMap::viewV2D(int cx,int cy,int xc,int yc,int xside,int yside, unsigned s
 		lasty[d]=GB_MAXY;
 		lastc[d]=-1;
 	}
-	int x0=XCYCL(cx)<<16;
-	int y0=YCYCL(cy)<<16;
+	// 64-битные 16.16-координаты: на картах 2^15 XCYCL(cx)<<16 упирается в
+	// границу int32, а с высокими горами переполняется и раньше.
+	int64_t x0=(int64_t)XCYCL(cx)<<16;
+	int64_t y0=(int64_t)YCYCL(cy)<<16;
 
 	//hCamera=600;//Высота камеры над поверхностью
 
@@ -2438,16 +2440,17 @@ void vrtMap::viewV2D(int cx,int cy,int xc,int yc,int xside,int yside, unsigned s
 		int xx1=(x0+DX)*cos(aa)-(y0-DY)*sin(aa);
 		int yy1=(y0-DY)*xm::cos(aa)+(x0+DX)*xm::sin(aa);*/
 
-		int xx0=x0+( (-DX)*xm::cos(turnAngleAroundZ)-(-DY)*xm::sin(turnAngleAroundZ) );
-		int yy0=y0+( (-DY)*xm::cos(turnAngleAroundZ)+(-DX)*xm::sin(turnAngleAroundZ) );
-		int xx1=x0+( (+DX)*xm::cos(turnAngleAroundZ)-(-DY)*xm::sin(turnAngleAroundZ) );
-		int yy1=y0+( (-DY)*xm::cos(turnAngleAroundZ)+(+DX)*xm::sin(turnAngleAroundZ) );
+		int64_t xx0=x0+(int64_t)( (-DX)*xm::cos(turnAngleAroundZ)-(-DY)*xm::sin(turnAngleAroundZ) );
+		int64_t yy0=y0+(int64_t)( (-DY)*xm::cos(turnAngleAroundZ)+(-DX)*xm::sin(turnAngleAroundZ) );
+		int64_t xx1=x0+(int64_t)( (+DX)*xm::cos(turnAngleAroundZ)-(-DY)*xm::sin(turnAngleAroundZ) );
+		int64_t yy1=y0+(int64_t)( (-DY)*xm::cos(turnAngleAroundZ)+(+DX)*xm::sin(turnAngleAroundZ) );
 
 		//int scaling=100;///(d+1); //scaling=100*256/(d+1);
 
 
 		//void Line(int x0,int y0,int x1,int y1,int hy,int s)
-		int i,sx,sy;
+		int i;
+		int64_t sx,sy;
 
 		// Compute xy speed
 		sx=(xx1-xx0)/GB_MAXX; sy=(yy1-yy0)/GB_MAXX;
@@ -2522,7 +2525,7 @@ void vrtMap::viewV2D(int cx,int cy,int xc,int yc,int xside,int yside, unsigned s
 
 
 			// Compute screen height using the scaling factor
-			y=GB_MAXY/2 -d -(dh*h>>16);//100(((hCamera-h)*scaling)>>10)
+			y=GB_MAXY/2 -d -(int)(( (int64_t)dh*h )>>16);// dh*h в 64 бита — высокие горы (>~500 вокселей) переполняют int32
 
 			// Draw the column
 			if ( y<(a=lasty[i]) ){

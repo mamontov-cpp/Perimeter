@@ -654,6 +654,19 @@ ChangeHeight и инкрементального `Align4ZP`, вынесен дл
 кнопок режимов поддерживает слот `onEditorModeChanged` по сигналу
 вьюпорта.
 
+## 5.13-пост. Панель цвета — встроенный color picker (true-color)
+
+Панель палитр (две сетки по 256 свотчей Geo/Dam, §5.13) ЗАМЕНЕНА на
+встроенный `QColorDialog` (DontUseNativeDialog | NoButtons — колесо цвета,
+HSL/HSV/RGB-спинбоксы, hex-поле; как в GIMP/Krita). Сигнал
+`colorChanged(rgb)` → `BrushParams.colorRgb` → кисть SetColor пишет точный
+RGB в true-color слой (§ true-color в docs/map_logic.md) + ближайший индекс
+палитры слоя в SurBuf (side band, кэш на штамп). Эyedropper (PickColor)
+сэмплит ЭФФЕКТИВНЫЙ цвет клетки (override, иначе палитра слоя) в тот же
+`colorRgb` — пикер и кисть всегда показывают/красят одинаковое. Сетки
+палитр убраны из UI; палитры как формат остаются (fallback/материалы,
+редактирование — через session API/скрипты).
+
 ## 5.13. Панель палитр + редактирование RGB (T4.1)
 
 **Модель слоёв и индексов (перепроверено по коду игры и настоящим мирам,

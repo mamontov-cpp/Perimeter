@@ -13,66 +13,9 @@
 #include "ClippingMesh.h"
 
 
-static void fillVisPoly(uint8_t *buf, std::vector<Vect2f>& vert, int VISMAP_W, int VISMAP_H)
-{
-    if(vert.empty())return;
-    const int VISMAP_W_MAX=128,VISMAP_H_MAX=128;
-    VISASSERT(VISMAP_W<=VISMAP_W_MAX && VISMAP_H<=VISMAP_H_MAX);
-    float lx[VISMAP_W_MAX], rx[VISMAP_H_MAX];
-    int i, y, ytop, ybot;
-
-    // find top/bottom y
-    ytop = xm::floor(vert[0].y);
-    ybot = xm::ceil(vert[0].y);
-    for(i=1;i<vert.size();i++)
-    {
-        float y=vert[i].y;
-        if (y < ytop) ytop = xm::floor(y);
-        if (y > ybot) ybot = xm::ceil(y);
-    }
-
-    for (i = 0; i < VISMAP_H; i++)
-    {
-        lx[i] = VISMAP_W-1;
-        rx[i] = 0;
-    }
-
-    // render edges
-    for (i = 0; i < vert.size(); i++)
-    {
-        int i2=(i+1>=vert.size())?0:i+1;
-        float x1, x2, y1, y2, t;
-        x1=vert[i].x;  y1=vert[i].y;
-        x2=vert[i2].x; y2=vert[i2].y;
-
-        if (y1 > y2) { t = x1; x1 = x2; x2 = t; t = y1; y1 = y2; y2 = t; }
-
-        int iy1 = (int)y1, iy2 = (int)y2;
-        if(iy1>iy2)continue;
-
-        float dy = (y2 == y1) ? 1 : (y2 - y1);
-        float dy1 =1/dy;
-        for (y = max(iy1, 0); y <= min(iy2, VISMAP_H-1); y++)
-        {
-            float ix1 = x1 + (y-y1) * (x2-x1) * dy1;
-            float ix2 = x1 + (y-y1+1) * (x2-x1) * dy1;
-            if (y == iy1) ix1 = x1;
-            if (y == iy2) ix2 = x2;
-            lx[y] = min(min(lx[y], ix1), ix2);
-            rx[y] = max(max(rx[y], ix1), ix2);
-        }
-    }
-
-    // fill the buffer
-    for (y = max(0, ytop); y <= min(ybot, VISMAP_H-1); y++)
-    {
-        if (lx[y] > rx[y]) continue;
-        int x1 = (int)max((float)xm::floor(lx[y]), 0.0f);
-        int x2 = (int)min((float)xm::ceil(rx[y]), (float)VISMAP_W);
-        if(x1>=x2)continue;
-        memset(buf + y*VISMAP_W + x1, 1, x2-x1);
-    }
-}
+// Реализация вынесена в заголовок — headless-тесты (TilemapVisPolyTests)
+// гоняют её на сетках 2^14/2^15 тайлов.
+#include "TileMapVisPoly.h"
 
 void calcCMesh(cCamera *DrawNode, Vect2i TileNumber,Vect2i TileSize,CMesh& cmesh)
 {

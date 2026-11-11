@@ -10,10 +10,10 @@
 
 //Global Define
 
-const int MAX_H_SIZE_POWER=14;
+const int MAX_H_SIZE_POWER=15;
 const int MAX_H_SIZE=1<<MAX_H_SIZE_POWER;
 
-const int MAX_V_SIZE_POWER=14;
+const int MAX_V_SIZE_POWER=15;
 const int MAX_V_SIZE=1<<MAX_V_SIZE_POWER;
 
 const int MAX_SURFACE_TYPE = 256;

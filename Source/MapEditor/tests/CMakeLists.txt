@@ -67,7 +67,10 @@ ADD_EXECUTABLE(map_editor_tests
         NewBattleMapFlowTests.cpp
         Heights16Tests.cpp
         Colors24Tests.cpp
-        ExtdemoColorTests.cpp)
+        ExtdemoColorTests.cpp
+        WorldSize15Tests.cpp
+        TilemapVisPolyTests.cpp
+        SceneTraceTests.cpp)
 
 SET_TARGET_PROPERTIES(map_editor_tests PROPERTIES
         WIN32_EXECUTABLE OFF
@@ -81,6 +84,9 @@ TARGET_INCLUDE_DIRECTORIES(map_editor_tests PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/../../Terra"
         "${CMAKE_CURRENT_SOURCE_DIR}/../../tx3d"
         "${CMAKE_CURRENT_SOURCE_DIR}/../../Util"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../Render"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../Render/src"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../XTool"
 )
 
 # MapEditorSupport provides shims for symbols Terra/tx3d reference, while
@@ -139,6 +145,7 @@ IF(MSVC)
             ExtdemoColorTests.cpp
             GmpDiffTests.cpp
             Heights16Tests.cpp
+            WorldSize15Tests.cpp
             ImageDecalTests.cpp
             ImageImportExportTests.cpp
             MinimapRasterTests.cpp
