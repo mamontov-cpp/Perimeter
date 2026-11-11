@@ -26,11 +26,11 @@
 //
 // The brush stamps the raster as a rectangle (nearest-resampled to the
 // scale-spin size): "place" sets the dam to the scaled height and paints the
-// quantized Dam palette colours, "add"/"subtract" offset the covered area's
+// model's exact 24-bit colours, "add"/"subtract" offset the covered area's
 // average height by the local model height (see BrushTool::applyModelBrush).
-// The colour quantization itself reuses ImageDecal::prepare (same k-means
-// with the unused-colour accounting) — the caller turns the per-cell RGB
-// into an RGBA image and passes it there.
+// The color image reuses ImageDecal::prepare (true-color pass-through; the
+// palette is consulted only for the nearest-entry SurBuf side band) — the
+// caller turns the per-cell RGB into an RGBA image and passes it there.
 //
 // Qt-free so the headless tests drive the import directly.
 // ============================================================================

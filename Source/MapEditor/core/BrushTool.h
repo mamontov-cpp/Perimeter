@@ -595,7 +595,7 @@ private:
 
     /// Model-heightmap brush (see BrushParams::modelBrush): stamps the
     /// imported model raster as a rectangle — "place" sets the dam to the
-    /// scaled model height and paints the quantized palette colours, "add"
+    /// scaled model height and paints the model's exact 24-bit colors, "add"
     /// raises the covered average by the local model height, "subtract"
     /// lowers it. The resampled stamp data arrives through pendingModel_
     /// (set by the applyStamp rectangle path). Dam mode only; one stamp =
@@ -610,22 +610,24 @@ private:
     /// T3.5: brush-image mask loaded from file (pixel values → influence 0..255).
     BrushMask imageMask_;
 
-    /// ImageDecal: the palette-index image the effect stamps, plus the
-    /// absolute map origin of the stamp currently being applied (the effect
-    /// handler reads the pixel from (x - decalOriginX_, y - decalOriginY_)).
+    /// ImageDecal: the RGBA image the effect stamps (0xAARRGGBB per pixel),
+    /// plus the absolute map origin of the stamp currently being applied (the
+    /// effect handler reads the pixel from (x - decalOriginX_, y - decalOriginY_)).
     ImageDecal::DecalImage decal_;
     int decalOriginX_ = 0;
     int decalOriginY_ = 0;
 
-    /// Model-heightmap brush: the imported raster + its palette quantization
-    /// (per-cell Dam palette index). The rectangle stamp path in applyStamp
-    /// resamples both to the scale-spin size into pendingModel_.
+    /// Model-heightmap brush: the imported raster + its true-color image
+    /// (exact RGB per cell, nearest Dam palette entry as the SurBuf side
+    /// band). The rectangle stamp path in applyStamp resamples both to the
+    /// scale-spin size into pendingModel_.
     ModelBrush::ModelRaster modelRaster_;
     ImageDecal::DecalImage modelIndices_;
     /// Transient: the resampled stamp data for the applyMask call the
     /// rectangle path is about to make (consumed by applyModelBrush).
     ModelBrush::ModelRaster pendingModel_;
     std::vector<int> pendingModelIndices_;
+    std::vector<std::uint32_t> pendingModelColors_;
 
     /// T4.2: the last index pickColorAt() sampled (SurBuf at the click cell).
     unsigned char lastPickedColorIndex_ = 0;

@@ -283,6 +283,13 @@ struct vrtMap {
 	unsigned char* SurBuf;
 	unsigned char* RnrBuf;
 
+	// True-color слой: 0xAARRGGBB на клетку, AA=0 — «нет цвета», рендер
+	// берёт палитру (SurBuf-индекс) как раньше. nullptr = мир без true-color
+	// (старые миры). Создаётся лениво (ensureSurColBuf) при загрузке
+	// sidecar с цветами или при первой RGB-краске; хранится в heights16.bin
+	// (секция colors, см. worldHeights16File в VMAP.cpp).
+	uint32_t* SurColBuf;
+
 	uint32_t* SupBuf;
 
 
@@ -626,6 +633,11 @@ struct vrtMap {
 		return getColor(offsetBuf(x,y));
 	}
 	unsigned short getColor(int off){
+		//True-color: прямой RGB с освещением вместо палитры SurBuf.
+		if(SurColBuf){
+			const unsigned int c=SurColBuf[off];
+			if(c&0xFF000000) return trueColor16(c, RnrBuf[off]&0x7F);
+		}
 		unsigned short col;
 		//unsigned short col=Sur2Col[SurBuf[off]][RnrBuf[off]];
 		if(AtrBuf[off] &At_LEVELED) {
@@ -656,6 +668,11 @@ struct vrtMap {
 		return getColor32(off);
 	}
 	unsigned int getColor32(int off){
+		//True-color: прямой RGB с освещением вместо палитры SurBuf.
+		if(SurColBuf){
+			const unsigned int c=SurColBuf[off];
+			if(c&0xFF000000) return trueColor32(c, RnrBuf[off]&0x7F);
+		}
 		unsigned int col32;
 		//unsigned short col=Sur2Col[SurBuf[off]][RnrBuf[off]];
 		if(AtrBuf[off] &At_LEVELED){
@@ -759,6 +776,30 @@ struct vrtMap {
 	}
 	void SetTer(int x,int y, unsigned char newtype) {
 		SetTer(offsetBuf(x,y),newtype);
+	}
+	//......................................
+
+	// ---------------- True-color (24-bit) surface layer ----------------
+	// Раскраска повторяет математику convertPal2TableSurCol: компонента
+	// умножается на (Lum0 + dLum*light), клампится 0..255 и округляется.
+	// Возвращают 0x00RRGGBB (trueColor16 — RGB565, как Sur2Col).
+	static unsigned int trueColor32(unsigned int rgba, unsigned int light);
+	static unsigned short trueColor16(unsigned int rgba, unsigned int light);
+	bool hasTrueColor(void) const { return SurColBuf != 0; }
+	// Создаёт буфер (нули = все клетки на палитре), если его ещё нет.
+	void ensureSurColBuf(void);
+	// Клетка снова рендерится через палитру по SurBuf.
+	void clearTrueColor(int offset) {
+		if (SurColBuf) SurColBuf[offset] = 0;
+	}
+	void putTrueColor(int offset, unsigned char r, unsigned char g, unsigned char b) {
+		ensureSurColBuf();
+		SurColBuf[offset] = 0xFF000000u | (static_cast<unsigned int>(r) << 16) |
+		                    (static_cast<unsigned int>(g) << 8) | b;
+	}
+	// Записан ли на клетке собственный цвет (AA != 0).
+	bool cellHasTrueColor(int offset) const {
+		return SurColBuf != 0 && (SurColBuf[offset] & 0xFF000000) != 0;
 	}
 	//.......................................
 

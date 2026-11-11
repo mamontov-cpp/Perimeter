@@ -202,7 +202,7 @@ continuous stroke.
 | **Level to Zeroplast** | level to the zeroplast height and mark the cells as zeroplast in one stamp; the brush strength has no effect (Dam mode only) |
 | **Level to Height** | set the relief exactly to the chosen height in one stamp (the spinbox next to the brushes); overlapping stamps never rise above the target |
 | **Color** | paint the surface with the selected palette index, without changing the height |
-| **Image Decal** | stamp a picture in the dam surface colors: the button immediately asks for a PNG/TGA/BMP (at most 512 px per side), the picture is reduced to a limited set of Dam palette colors (k-means), new colors are added to the palette. Dam mode only; transparent pixels do not paint |
+| **Image Decal** | stamp a picture in exact 24-bit colors on the dam surface: the button immediately asks for a PNG/TGA/BMP (at most 2048 px per side), colors pass through unquantized (the nearest Dam palette entry is kept as the cell's surface type). Dam mode only; transparent pixels do not paint |
 | **Pick Color** | eyedropper: take the color of the cell under the cursor |
 | **Soot** | "soot" — a cosmetic dark mark |
 | **Very Light Dam** | very light dam (a special dam palette entry) |
@@ -244,17 +244,13 @@ value is limited by the stamp extent (2·radius+1).
 The **Image Decal** button is both the brush type and the file picker. The
 flow:
 
-1. Pick a picture (PNG/TGA/BMP, at most 512 px per side — otherwise the
+1. Pick a picture (PNG/TGA/BMP, at most 2048 px per side — otherwise the
    editor shows an error).
-2. The editor counts how many of the picture's colors are missing from the
-   Dam palette and how many of its entries are free. If there are fewer
-   than two free entries and more than two "foreign" colors — an error
-   about the color shortage appears (the palette must be freed).
-3. The picture is reduced to a limited set of Dam palette colors (k-means:
-   existing colors are reused, missing ones are added to the free palette
-   entries). The **Palette** panel shows the new colors immediately.
-4. A click/drag places the picture onto the dam: every pixel paints its
-   cell with its palette index. The height does not change; transparent (and
+2. The picture is NOT quantized: every opaque pixel keeps its exact 24-bit
+   RGB (the palette no longer limits the color count). The nearest Dam
+   palette entry is remembered as the cell's surface type.
+3. A click/drag places the picture onto the dam: every pixel paints its
+   cell with its exact color. The height does not change; transparent (and
    "almost transparent") pixels do not paint at all; cells without a dam are
    skipped.
 5. The scale spinbox next to it grows/shrinks the stamp (100 % is the
@@ -474,18 +470,17 @@ surface above the column at all. The maximum vertex height (the model's
 z-range) is proportionally stretched onto 0..Height. The color comes from
 the model's red/green/blue, or from the texture named in the `comment`
 string of the header (`comment ... texture model_tex.tga`, a 24-bit TGA
-next to the .ply), sampled by UV. The color quantization into the Dam
-palette is the same k-means with the free-color accounting as Image Decal.
-A model WITHOUT a texture and without vertex colors is painted WHITE.
+next to the .ply), sampled by UV. The colors are exact 24-bit RGB — no
+palette quantization, same as Image Decal. A model WITHOUT a texture and
+without vertex colors is painted WHITE.
 Import errors are shown as
 `Unable to import from PLY the model <name>` (with a description).
 
 Modes (the decision about painting/movement uses the pre-stamp state):
 
 - **Place** — set to the model heights (like Set-to-Height, both
-  directions) + paint the quantized Dam palette colors on the cells with a
-  dam; a cell whose model height is below the relief stays on geo without a
-  dam;
+  directions) + paint the exact 24-bit colors on the cells with a dam; a
+  cell whose model height is below the relief stays on geo without a dam;
 - **Add** — the covered average height PLUS the local model height (cells
   move up only);
 - **Subtract** — the covered average MINUS the local model height (down

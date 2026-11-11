@@ -86,9 +86,10 @@ public:
     /// — the toolbar Mask spin body, callable headless (MCP apply_brush).
     void setMaskScalePercent(int percent);
     int maskScalePercent() const { return maskScalePercent_; }
-    /// Re-quantize the imported model colours against the current Dam
-    /// palette (the MCP import_model path sets the raster directly, then
-    /// quantizes through here).
+    /// Convert the imported model colours into the stamp image (true 24-bit
+    /// colors; the palette is consulted only for the nearest-entry SurBuf
+    /// side band — the MCP import_model path sets the raster directly, then
+    /// prepares colors through here).
     bool quantizeModelBrush();
 
 signals:

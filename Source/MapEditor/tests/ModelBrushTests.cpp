@@ -15,8 +15,8 @@
 //
 //  96 "ModelBrush application" (on a loaded world):
 //     * place mode sets the dam to the scaled model height and paints the
-//       quantized palette index where a dam exists (cells at/below the
-//       terrain drop to the geo height, dam removed);
+//       exact 24-bit color + nearest palette index where a dam exists
+//       (cells at/below the terrain drop to the geo height, dam removed);
 //     * add raises the covered average by the local model height, subtract
 //       lowers it — below the terrain the dam is removed;
 //     * the x/y scales shrink the placement rectangle;
@@ -469,7 +469,10 @@ MapEditor::ImageDecal::DecalImage makeFlatIndices(int width, int height,
     MapEditor::ImageDecal::DecalImage image;
     image.width = width;
     image.height = height;
-    image.indices.assign(static_cast<std::size_t>(width) * height, index);
+    image.pixels.assign(static_cast<std::size_t>(width) * height,
+                        0xFF000000u | static_cast<std::uint32_t>(index));
+    image.indices.assign(static_cast<std::size_t>(width) * height,
+                         static_cast<std::uint8_t>(index));
     return image;
 }
 
@@ -581,9 +584,10 @@ bool runModelBrushApplyTests()
         const int off = cy * mapW + columnX;
         if (target32 > geo) {
             TEST_REQUIRE(vMap.VxDBuf[off] != 0 &&
-                             vMap.SurBuf[off] == 42,
+                             vMap.SurBuf[off] == 42 &&
+                             vMap.SurColBuf[off] == 0xFF00002Au,
                          "a column above the terrain keeps the dam and "
-                         "paints index 42.");
+                         "paints the exact color + index 42.");
         } else {
             TEST_REQUIRE(vMap.VxDBuf[off] == 0,
                          "a column at or below the terrain has no dam.");

@@ -657,11 +657,11 @@ inline QVector<McpToolSpec> mcpToolCatalog()
                     QJsonArray{QStringLiteral("file")}}})});
 
     t.append({QStringLiteral("load_decal_image"),
-              QStringLiteral("Loads an image (PNG/TGA/BMP, max 512 px per "
-                             "side) as the ImageDecal brush stamp: the "
-                             "pixels are matched against the Dam palette "
-                             "(new colours are written into it), and every "
-                             "fully opaque pixel paints its palette entry. "
+              QStringLiteral("Loads an image (PNG/TGA/BMP, max 2048 px per "
+                             "side) as the ImageDecal brush stamp: every "
+                             "fully opaque pixel keeps its exact 24-bit RGB "
+                             "(no palette quantization; the nearest Dam "
+                             "palette entry is stored as the surface type). "
                              "Apply with apply_brush effect 'imageDecal'. "
                              "Dam-layer only.") +
                   undoNote,
@@ -676,9 +676,9 @@ inline QVector<McpToolSpec> mcpToolCatalog()
               QStringLiteral("Imports a PLY model (ASCII or binary) as the "
                              "Model brush stamp: the model is treated as a "
                              "solid heightmap - per placement cell the "
-                             "height and the top-part colour are extracted, "
-                             "and the colours are quantized into the Dam "
-                             "palette. Apply with apply_brush effect "
+                             "height and the top-part colour are extracted "
+                             "as exact 24-bit RGB (no palette "
+                             "quantization). Apply with apply_brush effect "
                              "'model' (modelHeight/scaleX/scaleY/mode). "
                              "Dam-layer only.") +
                   undoNote,

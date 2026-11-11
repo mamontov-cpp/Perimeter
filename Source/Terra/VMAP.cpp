@@ -94,12 +94,70 @@ bool isWorldIDValid(int worldID) {
 // output.vmp (S2T0/S2T1) хранит целые высоты 8 битами на слой — формат не
 // меняется, старые миры читаются как раньше. Когда в мире есть высоты
 // больше 255 вокселей, рядом с output.vmp пишется sidecar с полными
-// 16-битными слоями. Формат sidecar:
-//   char[4] id = "H16\0", uint32 версия = 1, uint32 XS, uint32 YS,
-//   uint16 VxGBuf[XS*YS], uint16 VxDBuf[XS*YS] (LE, без сжатия).
-// Sidecar отсутствует <=> все высоты мира <= 255 (тогда bytes VMP точны).
+// 16-битными слоями (и, при true-color данных, 24-битными цветами клеток).
+// Формат sidecar:
+//   char[4] id = "H16\0", uint32 версия (1 — высоты, 2 — высоты + флаги),
+//   uint32 XS, YS, [v2: uint32 flags — бит 0 = есть секция цветов]
+//   uint16 VxGBuf[XS*YS], uint16 VxDBuf[XS*YS] [, uint32 col[XS*YS] 0xAARRGGBB]
+//   (LE, без сжатия; AA=0 — клетка рендерится палитрой как раньше).
+// Sidecar отсутствует <=> мир полностью 8-битный (высоты и цвета), тогда
+// bytes VMP — вся правда.
 
 static const char HEIGHTS16_ID[4] = {'H', '1', '6', '\0'};
+
+// Версии sidecar: 1 — только 16-битные высоты; 2 — добавлен uint32 flags
+// (бит 0: за секцией высот идёт true-color секция 0xAARRGGBB на клетку,
+// AA=0 = клетка рендерится палитрой). Версия 1 читается как «без цветов».
+static const uint32_t HEIGHTS16_VERSION = 2;
+static const uint32_t HEIGHTS16_FLAG_COLORS = 0x1;
+
+void vrtMap::ensureSurColBuf(void) {
+	if (SurColBuf != 0) {
+		return;
+	}
+	const size_t cells = static_cast<size_t>(XS_Buf) * YS_Buf;
+	SurColBuf = new uint32_t[cells];
+	memset(SurColBuf, 0, cells * sizeof(uint32_t));
+}
+
+// Раскраска true-color повторяет convertPal2TableSurCol точь-в-точь:
+// comp' = round(comp * (Lum0 + dLum*light)), кламп 0..255, light 0..127.
+unsigned int vrtMap::trueColor32(unsigned int rgba, unsigned int light) {
+	const double Lum = 1.5;
+	const double Lum0 = 0.05;
+	const double dLum = (Lum - Lum0) / static_cast<double>(MAX_SURFACE_LIGHTING);
+	if (light > MAX_SURFACE_LIGHTING - 1) light = MAX_SURFACE_LIGHTING - 1;
+	const double k = Lum0 + dLum * static_cast<double>(light);
+	double cb = (rgba & 0xFF) * k; if (cb < 0) cb = 0; if (cb > 255) cb = 255;
+	double cg = ((rgba >> 8) & 0xFF) * k; if (cg < 0) cg = 0; if (cg > 255) cg = 255;
+	double cr = ((rgba >> 16) & 0xFF) * k; if (cr < 0) cr = 0; if (cr > 255) cr = 255;
+	return static_cast<unsigned int>(xm::round(cr)) |
+	       (static_cast<unsigned int>(xm::round(cg)) << 8) |
+	       (static_cast<unsigned int>(xm::round(cb)) << 16);
+}
+
+unsigned short vrtMap::trueColor16(unsigned int rgba, unsigned int light) {
+	const unsigned int col32 = trueColor32(rgba, light);
+	const unsigned int b = col32 & 0xFF;
+	const unsigned int g = (col32 >> 8) & 0xFF;
+	const unsigned int r = (col32 >> 16) & 0xFF;
+	// Те же маски, что в convertPal2TableSurCol при заполнении Sur2Col.
+	return static_cast<unsigned short>(((r << 8) & 0xF800) |
+	                                     ((g << 3) & 0x07E0) |
+	                                     ((b >> 3) & 0x1F));
+}
+
+// true, если на хотя бы одной клетке записан собственный цвет (AA != 0)
+static bool worldHasTrueColorData(const vrtMap& m) {
+	if (m.SurColBuf == 0) {
+		return false;
+	}
+	const size_t cells = static_cast<size_t>(m.XS_Buf) * m.YS_Buf;
+	for (size_t i = 0; i < cells; i++) {
+		if (m.SurColBuf[i] & 0xFF000000) return true;
+	}
+	return false;
+}
 
 struct sHeights16Header {
 	char id[4];
@@ -117,46 +175,72 @@ static bool worldHasExtendedHeights(const vrtMap& m) {
 	return false;
 }
 
-// Чтение sidecar: при успехе полностью перезаписывает 16-битные слои.
-// Любая неконсистентность (нет файла, чужой id/версия/размер) — false,
-// остаются 8-битные высоты из VMP.
+// Чтение sidecar: при успехе полностью перезаписывает 16-битные слои и
+// (в версии 2 с флагом) создаёт/наполняет true-color буфер. Sidecar
+// обязан лежать целиком: высоты без цветов читать отказом нельзя — иначе
+// сохранённые высоты >255 молча потеряются. Любая неконсистентность
+// (нет файла, чужой id/размер) — false, остаются 8-битные высоты из VMP.
 static bool loadHeights16Sidecar(vrtMap& m) {
 	XStream fstream;
 	fstream.ErrHUsed = false;
 	if (!fstream.open(GetTargetName(vrtMap::worldHeights16File), XS_IN)) {
 		return false;
 	}
-	if (fstream.size() < static_cast<int64_t>(sizeof(sHeights16Header))) {
+	const int64_t cells = static_cast<int64_t>(m.XS_Buf) * m.YS_Buf;
+	const int64_t need = static_cast<int64_t>(sizeof(sHeights16Header)) +
+		2 * sizeof(uint16_t) * cells;
+	if (fstream.size() < need) {
 		return false;
 	}
 	sHeights16Header header;
 	fstream.read(&header, sizeof(header));
-	if (memcmp(header.id, HEIGHTS16_ID, 4) != 0 || header.version != 1 ||
+	if (memcmp(header.id, HEIGHTS16_ID, 4) != 0 ||
+		(header.version != 1 && header.version != 2) ||
 		header.XS != static_cast<uint32_t>(m.XS_Buf) ||
 		header.YS != static_cast<uint32_t>(m.YS_Buf)) {
 		return false;
 	}
-	const int64_t need = static_cast<int64_t>(sizeof(sHeights16Header)) +
-		2 * sizeof(uint16_t) * static_cast<int64_t>(m.XS_Buf) * m.YS_Buf;
-	if (fstream.size() < need) {
+	uint32_t flags = 0;
+	if (header.version >= 2) {
+		if (fstream.size() < need + static_cast<int64_t>(sizeof(uint32_t))) {
+			return false;
+		}
+		fstream.read(&flags, sizeof(flags));
+	}
+	const bool hasColors = (flags & HEIGHTS16_FLAG_COLORS) != 0;
+	if (hasColors && fstream.size() < need + static_cast<int64_t>(sizeof(uint32_t)) +
+		static_cast<int64_t>(sizeof(uint32_t)) * cells) {
 		return false;
 	}
-	fstream.read(m.VxGBuf, sizeof(uint16_t) * static_cast<int64_t>(m.XS_Buf) * m.YS_Buf);
-	fstream.read(m.VxDBuf, sizeof(uint16_t) * static_cast<int64_t>(m.XS_Buf) * m.YS_Buf);
+	fstream.read(m.VxGBuf, sizeof(uint16_t) * cells);
+	fstream.read(m.VxDBuf, sizeof(uint16_t) * cells);
+	if (hasColors) {
+		m.ensureSurColBuf();
+		fstream.read(m.SurColBuf, sizeof(uint32_t) * cells);
+	}
 	fstream.close();
 	return true;
 }
 
 static void saveHeights16Sidecar(vrtMap& m) {
 	XStream fmap(GetTargetName(vrtMap::worldHeights16File), XS_OUT);
+	const int64_t cells = static_cast<int64_t>(m.XS_Buf) * m.YS_Buf;
 	sHeights16Header header;
 	memcpy(header.id, HEIGHTS16_ID, 4);
-	header.version = 1;
+	header.version = HEIGHTS16_VERSION;
 	header.XS = m.XS_Buf;
 	header.YS = m.YS_Buf;
 	fmap.write(&header, sizeof(header));
-	fmap.write(m.VxGBuf, sizeof(uint16_t) * static_cast<int64_t>(m.XS_Buf) * m.YS_Buf);
-	fmap.write(m.VxDBuf, sizeof(uint16_t) * static_cast<int64_t>(m.XS_Buf) * m.YS_Buf);
+	uint32_t flags = 0;
+	if (worldHasTrueColorData(m)) {
+		flags |= HEIGHTS16_FLAG_COLORS;
+	}
+	fmap.write(&flags, sizeof(flags));
+	fmap.write(m.VxGBuf, sizeof(uint16_t) * cells);
+	fmap.write(m.VxDBuf, sizeof(uint16_t) * cells);
+	if (flags & HEIGHTS16_FLAG_COLORS) {
+		fmap.write(m.SurColBuf, sizeof(uint32_t) * cells);
+	}
 	fmap.close();
 }
 
@@ -275,6 +359,7 @@ vrtMap::vrtMap() {
 	//ClTrBuf=0; AtBuf=0; VxBuf=0;
 
 	VxGBuf=0; VxDBuf=0; SurBuf=0; AtrBuf=0; RnrBuf=0;
+	SurColBuf=0;
 	GVBuf=0; GABuf=0;
 	SupBuf=0;
 	hZeroPlast=30; //Начальная высота зеропласта
@@ -381,6 +466,8 @@ void vrtMap::releaseMem4Buf(void)
 	delete [] RnrBuf;
 	delete [] AtrBuf;
 	delete [] SurBuf;
+	delete [] SurColBuf;
+	SurColBuf=0;
 	delete [] VxDBuf;
 	delete [] VxGBuf;
 	VxGBuf=0;
@@ -1143,6 +1230,40 @@ bool vrtMap::loadGameMap(XBuffer& ff, bool flag_FastLoad)
 		}
 	}
 
+	// Расширенный чанк true-color клеток ("XCL0"): uint32 0xAARRGGBB на
+	// клетку изменённых тайлов (AA=0 = палитра). Идёт после XH16, если тот
+	// есть. Новые сборки читают его поверх палитры; его отсутствие — норма
+	// для старых сохранений и миров без true-color.
+	if (ff.tell() + 4 <= ff.length()) {
+		const size_t pos = ff.tell();
+		char extId[4];
+		ff.read(extId, 4);
+		if (memcmp(extId, "XCL0", 4) == 0) {
+			uint32_t buffer32[sizeCellGridCA*sizeCellGridCA];
+			ensureSurColBuf();
+			cnt=0;
+			for(i=0; i<vSizeGCA; i++){
+				for(j=0; j<hSizeGCA; j++){
+					if(gridChAreas[cnt]==1){
+						int k, m, cnt2=0;
+						ff.read(buffer32, sizeof(buffer32));
+						for(k=0; k<sizeCellGridCA; k++){
+							int offB=offsetBuf( (j<<kmGridChA), k+(i<<kmGridChA) );
+							for(m=0; m<sizeCellGridCA; m++){
+								SurColBuf[offB+m]=buffer32[cnt2];
+								cnt2++;
+							}
+						}
+					}
+					cnt++;
+				}
+			}
+		} else {
+			// Не наш чанк — возвращаем позицию, trailing-данные чужие.
+			ff.set(pos, XB_BEG);
+		}
+	}
+
 	checkAndRecover();
 #ifdef _PERIMETER_
 	//if(!IniManager("Perimeter.ini").getInt("TD","FastLoad"))	delAllZL();
@@ -1253,6 +1374,32 @@ bool vrtMap::saveGameMap(XBuffer& ff)
 		}
 	}
 
+	// Чанк true-color клеток изменённых тайлов ("XCL0"). Пишется после XH16
+	// (или сразу после сетки, если XH16 нет), только когда в мире есть
+	// true-color данные. Читается loadGameMap (см. выше).
+	if (worldHasTrueColorData(*this)) {
+		const char extId[4]={'X','C','L','0'};
+		ff.write(extId,4);
+		uint32_t buffer32[sizeCellGridCA*sizeCellGridCA];
+		cnt=0;
+		for(i=0; i<vSizeGCA; i++){
+			for(j=0; j<hSizeGCA; j++){
+				if(gridChAreas2[cnt]==1){
+					int k, m, cnt2=0;
+					for(k=0; k<sizeCellGridCA; k++){
+						int offB=offsetBuf( (j<<kmGridChA), k+(i<<kmGridChA) );
+						for(m=0; m<sizeCellGridCA; m++){
+							buffer32[cnt2]=SurColBuf[offB+m];
+							cnt2++;
+						}
+					}
+					ff.write(buffer32, sizeof(buffer32));
+				}
+				cnt++;
+			}
+		}
+	}
+
 	worldChanged=0;
 	return true;
 }
@@ -1292,6 +1439,10 @@ void vrtMap::generateChAreasInformation(XBuffer& out)
 					}
 					crc=crc32(&bufatr[0], sizeCellGridCA, crc);
 					crc=crc32(&SurBuf[offB], sizeCellGridCA, crc);
+					if (SurColBuf) {
+						crc=crc32(reinterpret_cast<const unsigned char*>(&SurColBuf[offB]),
+						          sizeCellGridCA*sizeof(SurColBuf[0]), crc);
+					}
 				}
 
 				//for(k=0; k<(sizeCellGridCA/sizeCellGrid); k++){
@@ -1457,6 +1608,10 @@ unsigned int vrtMap::getWorldCRC(void)
 		}
 		crc=crc32(pBufTMP, H_SIZE, crc);
 		crc=crc32(&SurBuf[offB], H_SIZE, crc);
+		if (SurColBuf) {
+			crc=crc32(reinterpret_cast<const unsigned char*>(&SurColBuf[offB]),
+			          H_SIZE*sizeof(SurColBuf[0]), crc);
+		}
 		offB+=H_SIZE;
 	}
 	delete [] pBufTMP;
@@ -1682,9 +1837,10 @@ void vrtMap::save3BufOnly(void)
 	fmap.write(&SurBuf[0],XS_Buf*YS_Buf);
 	fmap.close();
 
-	// Sidecar пишется только когда он нужен (высоты >255); иначе старый
-	// sidecar удаляется, чтобы мир вернулся в чистый 8-битный формат.
-	if (worldHasExtendedHeights(*this)) {
+	// Sidecar пишется только когда он нужен (высоты >255 или true-color
+	// данные); иначе старый sidecar удаляется, чтобы мир вернулся в чистый
+	// 8-битный формат.
+	if (worldHasExtendedHeights(*this) || worldHasTrueColorData(*this)) {
 		saveHeights16Sidecar(*this);
 	} else {
 		deleteHeights16Sidecar();
@@ -2355,7 +2511,14 @@ void vrtMap::viewV2D(int cx,int cy,int xc,int yc,int xside,int yside, unsigned s
 			h0=(h0<<8)+a*(h1-h0);
 			h2=(h2<<8)+a*(h3-h2);
 			c=((h0<<8)+b*(h2-h0));
-			c=Sur2Col[lc2[u0+v0]][pr | (c>>16)]<<16;
+			if (SurColBuf && (SurColBuf[u0+v0]&0xFF000000)) {
+				// True-color: прямой RGB угловой клетки с интерполированным
+				// светом (дамбовый бит pr на раскраску не влияет).
+				c=static_cast<int>(trueColor32(SurColBuf[u0+v0], (c>>16)&0x7F))<<16;
+			}
+			else {
+				c=Sur2Col[lc2[u0+v0]][pr | (c>>16)]<<16;
+			}
 
 
 			// Compute screen height using the scaling factor

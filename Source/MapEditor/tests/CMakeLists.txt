@@ -65,7 +65,9 @@ ADD_EXECUTABLE(map_editor_tests
         ValidationTests.cpp
         View3DHazeTests.cpp
         NewBattleMapFlowTests.cpp
-        Heights16Tests.cpp)
+        Heights16Tests.cpp
+        Colors24Tests.cpp
+        ExtdemoColorTests.cpp)
 
 SET_TARGET_PROPERTIES(map_editor_tests PROPERTIES
         WIN32_EXECUTABLE OFF
@@ -133,6 +135,8 @@ IF(MSVC)
             BrushToolTests.cpp
             BrushZeroplastGeoTests.cpp
             BrushZeroplastHardnessTests.cpp
+            Colors24Tests.cpp
+            ExtdemoColorTests.cpp
             GmpDiffTests.cpp
             Heights16Tests.cpp
             ImageDecalTests.cpp

@@ -578,6 +578,7 @@ void BrushTool::setModelBrushData(const ModelBrush::ModelRaster& raster,
     modelIndices_ = indices;
     pendingModel_ = ModelBrush::ModelRaster();
     pendingModelIndices_.clear();
+    pendingModelColors_.clear();
 }
 
 int BrushTool::heightDeltaMagnitude(const BrushParams& params, unsigned char influence)
@@ -619,9 +620,9 @@ bool BrushTool::applyStamp(int cx, int cy, const BrushParams& params)
         return pickColorAt(cx, cy);
     }
     // ImageDecal: the decal image IS the stamp geometry — its pixels are
-    // palette indices, not an influence mask, and the brush only owns the Dam
+    // RGBA colors, not an influence mask, and the brush only owns the Dam
     // layer. The stamp is centred on the click cell and covers exactly the
-    // image; every fully opaque pixel paints its palette entry.
+    // image; every fully opaque pixel paints its exact 24-bit color.
     if (clamped.effect == BrushEffect::ImageDecal) {
         if (decal_.empty() || clamped.mode != BrushMode::Dam) {
             return false; // nothing loaded / wrong layer for a dam decal
@@ -636,7 +637,7 @@ bool BrushTool::applyStamp(int cx, int cy, const BrushParams& params)
         mask.influence.assign(static_cast<std::size_t>(mask.sx) * mask.sy, 0);
         for (int dy = 0; dy < mask.sy; ++dy) {
             for (int dx = 0; dx < mask.sx; ++dx) {
-                if (decal_.at(dx, dy) >= 0) {
+                if ((decal_.at(dx, dy) >> 24) == 0xFF) {
                     mask.influence[static_cast<std::size_t>(dy) * mask.sx + dx] = 255;
                 }
             }
@@ -689,6 +690,8 @@ bool BrushTool::applyStamp(int cx, int cy, const BrushParams& params)
         pendingModel_ = ModelBrush::resample(modelRaster_, stampW, stampH);
         pendingModelIndices_.assign(
             static_cast<std::size_t>(stampW) * stampH, -1);
+        pendingModelColors_.assign(
+            static_cast<std::size_t>(stampW) * stampH, 0);
         for (int y = 0; y < stampH; ++y) {
             const int sy = std::min(
                 modelIndices_.height - 1,
@@ -700,6 +703,8 @@ bool BrushTool::applyStamp(int cx, int cy, const BrushParams& params)
                     static_cast<int>(static_cast<long long>(x) *
                                      modelIndices_.width / stampW));
                 pendingModelIndices_[static_cast<std::size_t>(y) * stampW + x] =
+                    modelIndices_.indexAt(sx, sy);
+                pendingModelColors_[static_cast<std::size_t>(y) * stampW + x] =
                     modelIndices_.at(sx, sy);
             }
         }
@@ -1520,6 +1525,7 @@ bool BrushTool::applyModelBrush(const BrushMask& absoluteMask,
     std::vector<int> alts;
     std::vector<int> targets;
     std::vector<int> indices;
+    std::vector<std::uint32_t> colors;
     std::vector<double> norms;
     double altSum = 0.0;
     std::size_t altCount = 0;
@@ -1540,16 +1546,12 @@ bool BrushTool::applyModelBrush(const BrushMask& absoluteMask,
             // stamp — clamp the sample into the raster.
             const int sy = std::clamp(y - my, 0, stampH - 1);
             const int sx = std::clamp(x - mx, 0, stampW - 1);
+            const std::size_t sample = static_cast<std::size_t>(sy) * stampW + sx;
             offs.push_back(off);
             alts.push_back(alt);
-            indices.push_back(pendingModelIndices_[static_cast<std::size_t>(
-                                                       sy) *
-                                                       stampW +
-                                                   sx]);
-            norms.push_back(pendingModel_.normHeight[static_cast<std::size_t>(
-                                                         sy) *
-                                                         stampW +
-                                                     sx]);
+            indices.push_back(pendingModelIndices_[sample]);
+            colors.push_back(pendingModelColors_[sample]);
+            norms.push_back(pendingModel_.normHeight[sample]);
             targets.push_back(0); // filled below (modes 1/2 need the average)
             altSum += static_cast<double>(alt);
             ++altCount;
@@ -1611,8 +1613,8 @@ bool BrushTool::applyModelBrush(const BrushMask& absoluteMask,
     // Pass 2: move the cells through Terra's variable-H toolzer (the same
     // mechanism as Set Height / the 3D shapes: dam seeding, whole-voxel cap,
     // dam removal at the geo height, zeroplast gate cleared, hardness
-    // ignored). "place" also paints the quantized Dam palette colour of the
-    // cell where a dam exists after the move.
+    // ignored). "place" also paints the model's exact 24-bit color where a
+    // dam exists after the move.
     static individualToolzer<T2TE_ALIGNMENT_TERRAIN_VARIABLE_H> modelToolzer;
     for (std::size_t k = 0; k < offs.size(); ++k) {
         if (!heightGateAllows(params, alts[k])) {
@@ -1639,6 +1641,15 @@ bool BrushTool::applyModelBrush(const BrushMask& absoluteMask,
         setExactToolzerTarget(modelToolzer, targets[k]);
         modelToolzer.tVoxSetAll(off, dV);
         if (mode == 0 && indices[k] >= 0 && vMap.VxDBuf[off] != 0) {
+            // True-color: the model's exact 24-bit color goes into the
+            // color layer; SurBuf keeps the nearest palette entry (surface
+            // type/materials).
+            if ((colors[k] >> 24) == 0xFF) {
+                vMap.putTrueColor(
+                    off, static_cast<unsigned char>((colors[k] >> 16) & 0xFF),
+                    static_cast<unsigned char>((colors[k] >> 8) & 0xFF),
+                    static_cast<unsigned char>(colors[k] & 0xFF));
+            }
             vMap.SurBuf[off] = static_cast<unsigned char>(indices[k]);
         }
     }
@@ -2093,29 +2104,35 @@ void BrushTool::applyEffectToCell(const BrushParams& params, int x, int y, unsig
             break; // wrong layer for this cell — skip, keep SurBuf as-is
         }
         vMap.SetTer(x, y, static_cast<unsigned char>(params.colorIndex));
+        // A palette-index paint makes the cell follow the palette again:
+        // any direct RGB override recorded earlier is dropped.
+        vMap.clearTrueColor(off);
         break;
     }
     case BrushEffect::ImageDecal: {
-        // The decal works exactly like SetColor, one pixel at a time: the
-        // palette index of the matching decal pixel goes into SurBuf and no
-        // height buffer is touched. Two extra rules:
-        //   * the decal owns the Dam layer only — geo cells are skipped (the
-        //     index would be resolved through the wrong palette);
+        // Works exactly like SetColor, one pixel at a time, but paints the
+        // pixel's exact 24-bit color into the true-color layer instead of a
+        // palette entry; the nearest Dam palette index still goes into SurBuf
+        // (surface type/materials, palette fallback). Two extra rules:
+        //   * the decal owns the Dam layer only — geo cells are skipped;
         //   * transparent decal pixels are never applied (the mask already
-        //     dropped them; the -1 check keeps a stale origin harmless).
+        //     dropped them; the alpha check keeps a stale origin harmless).
         const int dx = x - decalOriginX_;
         const int dy = y - decalOriginY_;
         if (dx < 0 || dy < 0 || dx >= decal_.width || dy >= decal_.height) {
             break;
         }
-        const int index = decal_.at(dx, dy);
-        if (index < 0) {
+        const std::uint32_t pixel = decal_.at(dx, dy);
+        if ((pixel >> 24) != 0xFF) {
             break;
         }
         if (vMap.VxDBuf[off] == 0) {
             break; // Dam layer only
         }
-        vMap.SetTer(x, y, static_cast<unsigned char>(index));
+        vMap.putTrueColor(off, static_cast<unsigned char>((pixel >> 16) & 0xFF),
+                          static_cast<unsigned char>((pixel >> 8) & 0xFF),
+                          static_cast<unsigned char>(pixel & 0xFF));
+        vMap.SetTer(x, y, decal_.indexAt(dx, dy));
         break;
     }
     case BrushEffect::PlotSoot: {

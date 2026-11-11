@@ -5,27 +5,15 @@
 #include <vector>
 
 // ============================================================================
-// MapEditorCore — ImageDecal (palette-limited image stamp).
+// MapEditorCore — ImageDecal (true-color image stamp).
 //
-// Converts a user image into a small palette-index image that the ImageDecal
-// brush paints into SurBuf of dam cells (the surface colour index of the Dam
-// layer). The decal never carries RGB at paint time: every pixel is a Dam
-// palette entry, so the stamp is exactly as cheap as the SetColor brush.
-//
-// The conversion is a palette-aware k-means (see docs/architecture.md §5.15):
-//
-//   1. The image is rejected when it is larger than kMaxImageSize on either
-//      axis, and pixels that are not fully opaque (alpha != 255) are skipped
-//      entirely — an "almost opaque" pixel never paints.
-//   2. The image colours are matched against the world's Dam palette; the
-//      palette entries the world's dam layer already uses are collected too.
-//      A world with fewer than two free palette entries cannot absorb a
-//      colourful image and gets a user-facing error instead.
-//   3. The candidate palette entries (image matches + entries in use, padded
-//      to at least kMinPaletteColors) become the k-means initial centres.
-//   4. k-means over the opaque pixels produces the final colours; colours
-//      that are not in the palette yet are reported in `paletteWrites` so the
-//      caller can add them to the Dam palette.
+// Converts a user image into an RGBA stamp for the ImageDecal brush. There is
+// NO palette quantization: every fully opaque pixel keeps its exact 24-bit
+// color (0xAARRGGBB), which the brush paints into vrtMap's true-color layer
+// (vrtMap::SurColBuf, saved in the heights16.bin sidecar — see
+// docs/map_logic.md). The nearest Dam palette entry is still computed per
+// pixel, so SurBuf keeps a sensible surface type (materials, palette
+// fallback) without the palette limiting the visible color.
 //
 // Everything here is Qt-free and operates on plain RGBA bytes, so the headless
 // tests drive it directly.
@@ -33,40 +21,33 @@
 
 namespace MapEditor::ImageDecal {
 
-/// Largest accepted image side, in pixels (the brush stamp is a map patch —
-/// 512x512 already covers a quarter of a 1024-cell map).
-inline constexpr int kMaxImageSize = 512;
+/// Largest accepted image side, in pixels. 2048x2048 covers a full quarter
+/// of a 4096-cell map; larger pictures are better applied in slices.
+inline constexpr int kMaxImageSize = 2048;
 
-/// Minimum number of palette colours the k-means starts with. The candidate
-/// list is padded with free palette entries up to this count, so the result
-/// can always express at least this many shades even when the world's dam
-/// layer uses only a handful of colours.
-inline constexpr int kMinPaletteColors = 64;
-
-/// A palette-index image: one entry per pixel, -1 = no paint (transparent).
+/// An RGBA image stamp: one 0xAARRGGBB entry per pixel, AA=0 = no paint
+/// (transparent). `indices` carries the nearest Dam palette entry per pixel
+/// (meaningful for opaque pixels only).
 struct DecalImage
 {
     int width = 0;
     int height = 0;
-    std::vector<int> indices; ///< width * height, row-major, -1 = transparent.
+    std::vector<std::uint32_t> pixels;  ///< width * height, row-major.
+    std::vector<std::uint8_t> indices;  ///< same size, nearest palette entry.
 
     bool empty() const
     {
         return width <= 0 || height <= 0 ||
-               indices.size() != static_cast<std::size_t>(width) * height;
+               pixels.size() != static_cast<std::size_t>(width) * height;
     }
-    int at(int x, int y) const
+    std::uint32_t at(int x, int y) const
+    {
+        return pixels[static_cast<std::size_t>(y) * width + x];
+    }
+    std::uint8_t indexAt(int x, int y) const
     {
         return indices[static_cast<std::size_t>(y) * width + x];
     }
-};
-
-/// One Dam palette entry the caller has to write (a colour the k-means
-/// produced that the palette did not contain yet).
-struct PaletteWrite
-{
-    int index = 0;
-    std::uint32_t rgb = 0; ///< 0x00RRGGBB.
 };
 
 /// Result of prepare(). `error` is user-facing text when ok == false.
@@ -75,27 +56,22 @@ struct PrepareResult
     bool ok = false;
     std::string error;
     DecalImage image;
-    std::vector<PaletteWrite> paletteWrites;
-
-    /// Diagnostics for the status bar / tests.
-    int unusedDamColors = 0;    ///< Dam entries the world's dam does not use.
-    int imageForeignColors = 0; ///< distinct image colours absent from the palette.
-    int candidateColors = 0;    ///< size of the k-means start list (step 3).
-    int resultColors = 0;       ///< non-empty k-means clusters (colours used).
 };
 
-/// Convert an RGBA image (width*height*4 bytes, R,G,B,A) into a palette-index
-/// decal for the given Dam palette.
-///
-/// `damPaletteRgb` points at the 256*3 RGB bytes of vrtMap::DamPal,
-/// `damEntryInUse` at 256 flags (non-zero = the world's dam layer already
-/// paints with that entry).
-[[nodiscard]] PrepareResult prepare(const unsigned char* rgba, int width, int height,
-                      const unsigned char* damPaletteRgb,
-                      const unsigned char* damEntryInUse);
+/// Convert an RGBA image (width*height*4 bytes, R,G,B,A) into a true-color
+/// decal. Only fully opaque pixels (alpha == 255) paint — an "almost opaque"
+/// pixel is transparent for the decal and must never paint. `damPaletteRgb`
+/// points at the 256*3 RGB bytes of vrtMap::DamPal and is used solely for the
+/// nearest-palette-entry side band written into `image.indices`.
+[[nodiscard]] PrepareResult prepare(const unsigned char* rgba, int width,
+                                    int height,
+                                    const unsigned char* damPaletteRgb);
+
+/// Nearest palette entry (squared RGB distance) — the SurBuf side band.
+int nearestPaletteEntry(const unsigned char* palette, std::uint32_t rgb);
 
 /// Nearest-neighbour rescale of a decal (the brush scale spinbox). Transparent
-/// pixels stay transparent, palette indices are never interpolated.
+/// pixels stay transparent; colors and palette indices are never interpolated.
 DecalImage scaleNearest(const DecalImage& source, double factor);
 
 } // namespace MapEditor::ImageDecal

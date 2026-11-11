@@ -1043,26 +1043,17 @@ QVariantMap MapEditor::McpBridge::mcpHandleBrushes(const QString& name,
         }
         const std::vector<unsigned char> palette =
             session_->paletteBytes(EditorSession::PaletteLayer::Dam);
-        const std::vector<unsigned char> usage = session_->damPaletteUsage();
+        // True color: exact 24-bit pixel colors, no palette writes.
         const MapEditor::ImageDecal::PrepareResult prepared =
             MapEditor::ImageDecal::prepare(rgba.data(), width, height,
-                                           palette.data(), usage.data());
+                                           palette.data());
         if (!prepared.ok) {
             return mcpError(QStringLiteral("image decal: %1")
                                 .arg(QString::fromStdString(prepared.error)));
         }
-        for (const MapEditor::ImageDecal::PaletteWrite& write :
-             prepared.paletteWrites) {
-            session_->setPaletteRgb(EditorSession::PaletteLayer::Dam,
-                                    write.index, write.rgb);
-        }
-        session_->applyPalettes();
-        paletteRefreshHook_();
         brushTool_->setDecalImage(prepared.image);
         return mcpOk({{QStringLiteral("width"), width},
-                      {QStringLiteral("height"), height},
-                      {QStringLiteral("paletteWrites"),
-                       static_cast<int>(prepared.paletteWrites.size())}});
+                      {QStringLiteral("height"), height}});
     }
 
     if (name == QLatin1String("import_model")) {
@@ -1078,10 +1069,10 @@ QVariantMap MapEditor::McpBridge::mcpHandleBrushes(const QString& name,
         }
         brushTool_->setModelBrushData(imported.model,
                                       MapEditor::ImageDecal::DecalImage());
-        const bool quantized = brushUI_->quantizeModelBrush();
+        const bool colorsReady = brushUI_->quantizeModelBrush();
         return mcpOk({{QStringLiteral("width"), imported.model.width},
                       {QStringLiteral("height"), imported.model.height},
-                      {QStringLiteral("quantized"), quantized}});
+                      {QStringLiteral("colorsReady"), colorsReady}});
     }
 
     if (name == QLatin1String("run_script")) {

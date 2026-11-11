@@ -623,9 +623,9 @@ void BrushUiController::buildModelToolbar()
         tr("Import a PLY model (ASCII or binary) as the heightmap brush: the "
            "model's XY rectangle becomes the stamp, each cell takes the max "
            "vertex height (scaled by the Height spinbox) and the top vertex "
-           "colour (quantized into the Dam palette like the Image Decal). A "
-           "texture named by a PLY header comment is sampled through the "
-           "UVs."));
+           "colour as an exact 24-bit RGB (no palette quantization, like the "
+           "Image Decal). A texture named by a PLY header comment is sampled "
+           "through the UVs."));
     connect(actImportModel_, &QAction::triggered, this,
             &BrushUiController::onImportModel);
     bar->addAction(actImportModel_);
@@ -700,7 +700,7 @@ void BrushUiController::buildModelToolbar()
     };
     addModelMode(actModelPlace_, 0, tr("Place"),
                  tr("Place mode: the stamp SETS the dam to the scaled model "
-                    "height and paints the quantized Dam palette colours "
+                    "height and paints the model's exact 24-bit colours "
                     "(a Set-to-Height style stamp)."));
     addModelMode(actModelAdd_, 1, tr("Add"),
                  tr("Add mode: the covered area's average height is RAISED "
@@ -834,26 +834,18 @@ bool BrushUiController::quantizeModelBrush()
     }
     const std::vector<unsigned char> palette =
         session_->paletteBytes(MapEditor::EditorSession::PaletteLayer::Dam);
-    const std::vector<unsigned char> usage = session_->damPaletteUsage();
+    // True color: the exact 24-bit raster colours are kept; the palette is
+    // consulted only for the nearest-entry side band (SurBuf surface type).
     const MapEditor::ImageDecal::PrepareResult prepared =
         MapEditor::ImageDecal::prepare(rgba.data(), raster.width,
-                                       raster.height, palette.data(),
-                                       usage.data());
+                                       raster.height, palette.data());
     if (!prepared.ok) {
         showStatus(
-            tr("Model brush colours cannot be quantized: %1")
+            tr("Model brush colours cannot be prepared: %1")
                 .arg(QString::fromStdString(prepared.error)),
             8000);
         return false;
     }
-    // The new colours go into the Dam palette like the decal flow does.
-    for (const MapEditor::ImageDecal::PaletteWrite &write :
-         prepared.paletteWrites) {
-        session_->setPaletteRgb(MapEditor::EditorSession::PaletteLayer::Dam,
-                                write.index, write.rgb);
-    }
-    session_->applyPalettes();
-    emit palettesNeedRefresh();
     brushTool_->setModelBrushData(raster, prepared.image);
     return true;
 }
@@ -1001,11 +993,11 @@ void BrushUiController::createBrushTypeActions()
     // opens the file dialog. Cancelling keeps the previously loaded decal.
     actBrushImageDecal_ = addBrushTypeAction(brushTypeGroup_,
         makeDecalIcon(), tr("Image Decal"),
-        tr("Stamps a picture into the dam surface colours: the image is "
-           "converted to a limited set of Dam palette colours (k-means), the "
-           "new colours are added to the Dam palette and every pixel paints "
-           "its palette index. Dam layer only; transparent pixels are never "
-           "painted. Click to choose a PNG/TGA/BMP image (max 512x512)."),
+        tr("Stamps a picture onto the dam surface in its exact 24-bit "
+           "colors (no palette quantization; the nearest Dam palette entry "
+           "is kept as the surface type). Dam layer only; transparent "
+           "pixels are never painted. Click to choose a PNG/TGA/BMP image "
+           "(max 2048x2048)."),
         MapEditor::BrushEffect::ImageDecal, 0);
     connect(actBrushImageDecal_, &QAction::triggered, this, [this] {
         MapEditor::BrushParams params = brushTool_->params();
@@ -2165,27 +2157,17 @@ void BrushUiController::onLoadDecalImage()
 
     const std::vector<unsigned char> palette =
         session_->paletteBytes(MapEditor::EditorSession::PaletteLayer::Dam);
-    const std::vector<unsigned char> usage = session_->damPaletteUsage();
     const MapEditor::ImageDecal::PrepareResult prepared =
         MapEditor::ImageDecal::prepare(rgba.data(), width, height,
-                                       palette.data(), usage.data());
+                                       palette.data());
     if (!prepared.ok) {
         QMessageBox::warning(window_, tr("Image Decal"),
                              QString::fromStdString(prepared.error));
         return;
     }
 
-    // Step 5 — the new colours go into the Dam palette and every palette view
-    // (panel, renderer) is refreshed with them.
-    for (const MapEditor::ImageDecal::PaletteWrite &write :
-         prepared.paletteWrites) {
-        session_->setPaletteRgb(MapEditor::EditorSession::PaletteLayer::Dam,
-                                write.index, write.rgb);
-    }
-    session_->applyPalettes();
-    emit palettesNeedRefresh();
-
-    // Step 8 — the decal becomes the stamp of the ImageDecal brush.
+    // Step 8 — the decal becomes the stamp of the ImageDecal brush. The
+    // colors are exact 24-bit RGB: no palette writes, no quantization.
     decalOriginal_ = prepared.image;
     brushTool_->setDecalImage(prepared.image);
     if (brushMaskScaleSpin_) {
@@ -2204,16 +2186,7 @@ void BrushUiController::onLoadDecalImage()
     }
     syncControls();
 
-    showStatus(
-        tr("Image decal ready: %1x%2 px, %3 palette colour(s), %4 new, "
-           "%5 free Dam entr(y/ies).")
-            .arg(width)
-            .arg(height)
-            .arg(prepared.resultColors)
-            .arg(prepared.paletteWrites.size())
-            .arg(prepared.unusedDamColors -
-                 static_cast<int>(prepared.paletteWrites.size())),
-        8000);
+    showStatus(tr("Image decal ready: %1x%2 px, true 24-bit colors."), 8000);
 }
 
 } // namespace MapEditor

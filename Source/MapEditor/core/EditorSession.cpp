@@ -798,6 +798,17 @@ void swapSnapshotWithBuffers(UndoAreaSnapshot& snap)
         snap.atr.size() != cells || snap.sur.size() != cells) {
         return;
     }
+    // The color layer: recorded when the world had the true-color buffer.
+    // A snapshot WITHOUT it, swapped while the buffer exists, covers an edit
+    // that created the buffer — its pre-state is "no color" (all zeros), so
+    // promote the snapshot lazily and adopt the current values for redo.
+    if (snap.col.empty() && vMap.SurColBuf) {
+        snap.col.assign(cells, 0);
+    }
+    const bool hasCol = !snap.col.empty();
+    if (hasCol && snap.col.size() != cells) {
+        return;
+    }
     const int H = vMap.H_SIZE;
     std::size_t cnt = 0;
     for (int j = 0; j < snap.sy; ++j) {
@@ -810,6 +821,11 @@ void swapSnapshotWithBuffers(UndoAreaSnapshot& snap)
             unsigned char t;
             t = vMap.AtrBuf[off]; vMap.AtrBuf[off] = snap.atr[cnt]; snap.atr[cnt] = t;
             t = vMap.SurBuf[off]; vMap.SurBuf[off] = snap.sur[cnt]; snap.sur[cnt] = t;
+            if (hasCol) {
+                const std::uint32_t t32 = vMap.SurColBuf[off];
+                vMap.SurColBuf[off] = snap.col[cnt];
+                snap.col[cnt] = t32;
+            }
         }
     }
 }
@@ -880,6 +896,10 @@ void EditorSession::resyncDiffRect(int x0, int y0, int x1, int y1)
     const uint16_t* liveD = vMap.VxDBuf;
     const unsigned char* liveA = vMap.AtrBuf;
     const unsigned char* liveS = vMap.SurBuf;
+    const uint32_t* liveC = vMap.SurColBuf;
+    // The base snapshot holds a color layer exactly when it was taken from a
+    // true-color world; the live buffer matches that while the mode is on.
+    const uint32_t* baseC = baseCol_.empty() ? nullptr : baseCol_.data();
     for (int ay = ay0; ay <= ay1; ++ay) {
         for (int ax = ax0; ax <= ax1; ++ax) {
             const int area = ay * gw + ax;
@@ -891,7 +911,9 @@ void EditorSession::resyncDiffRect(int x0, int y0, int x1, int y1)
                     if (liveG[row + m] != baseGeo_[row + m] ||
                         liveD[row + m] != baseDam_[row + m] ||
                         liveA[row + m] != baseAtr_[row + m] ||
-                        liveS[row + m] != baseSur_[row + m]) {
+                        liveS[row + m] != baseSur_[row + m] ||
+                        (liveC != nullptr &&
+                         liveC[row + m] != (baseC ? baseC[row + m] : 0))) {
                         differs = true;
                         break;
                     }
@@ -908,6 +930,10 @@ void EditorSession::resyncDiffRect(int x0, int y0, int x1, int y1)
             entry.dam.resize(sizeCellGridCA * sizeCellGridCA);
             entry.atr.resize(sizeCellGridCA * sizeCellGridCA);
             entry.sur.resize(sizeCellGridCA * sizeCellGridCA);
+            const bool hasCol = liveC != nullptr;
+            if (hasCol) {
+                entry.col.resize(sizeCellGridCA * sizeCellGridCA);
+            }
             for (int k = 0; k < sizeCellGridCA; ++k) {
                 const int row = baseOff + k * stride;
                 std::copy_n(liveG + row, sizeCellGridCA,
@@ -918,6 +944,10 @@ void EditorSession::resyncDiffRect(int x0, int y0, int x1, int y1)
                             entry.atr.begin() + k * sizeCellGridCA);
                 std::copy_n(liveS + row, sizeCellGridCA,
                             entry.sur.begin() + k * sizeCellGridCA);
+                if (hasCol) {
+                    std::copy_n(liveC + row, sizeCellGridCA,
+                                entry.col.begin() + k * sizeCellGridCA);
+                }
             }
             diffAreas_[area] = std::move(entry);
             diffModified_ = true;
@@ -933,12 +963,23 @@ void EditorSession::applyDiffToBuffers()
     std::memcpy(vMap.VxDBuf, baseDam_.data(), cells * sizeof(uint16_t));
     std::memcpy(vMap.AtrBuf, baseAtr_.data(), cells);
     std::memcpy(vMap.SurBuf, baseSur_.data(), cells);
+    if (!baseCol_.empty()) {
+        vMap.ensureSurColBuf();
+        std::memcpy(vMap.SurColBuf, baseCol_.data(), cells * sizeof(uint32_t));
+    } else if (vMap.SurColBuf) {
+        // База без цветов: все клетки возвращаются к палитре.
+        std::memset(vMap.SurColBuf, 0, cells * sizeof(uint32_t));
+    }
     const int gw = static_cast<int>(vMap.H_SIZE) >> kmGridChA;
     const int stride = static_cast<int>(vMap.H_SIZE);
     for (const auto& [area, entry] : diffAreas_) {
         const int ax = area % gw;
         const int ay = area / gw;
         const int baseOff = (ay << kmGridChA) * stride + (ax << kmGridChA);
+        const bool hasCol = !entry.col.empty();
+        if (hasCol) {
+            vMap.ensureSurColBuf();
+        }
         for (int k = 0; k < sizeCellGridCA; ++k) {
             const int row = baseOff + k * stride;
             std::copy_n(entry.geo.data() + k * sizeCellGridCA, sizeCellGridCA,
@@ -949,6 +990,10 @@ void EditorSession::applyDiffToBuffers()
                         vMap.AtrBuf + row);
             std::copy_n(entry.sur.data() + k * sizeCellGridCA, sizeCellGridCA,
                         vMap.SurBuf + row);
+            if (hasCol) {
+                std::copy_n(entry.col.data() + k * sizeCellGridCA,
+                            sizeCellGridCA, vMap.SurColBuf + row);
+            }
         }
     }
     // Full re-render: every cell may have changed.
@@ -964,6 +1009,7 @@ void EditorSession::clearDiffState()
     baseDam_.clear();
     baseAtr_.clear();
     baseSur_.clear();
+    baseCol_.clear();
     diffMode_ = false;
 }
 
@@ -979,6 +1025,19 @@ void EditorSession::runWithBaseTerrain(const std::function<void()>& fn)
     std::vector<uint16_t> effD(vMap.VxDBuf, vMap.VxDBuf + cells);
     std::vector<unsigned char> effA(vMap.AtrBuf, vMap.AtrBuf + cells);
     std::vector<unsigned char> effS(vMap.SurBuf, vMap.SurBuf + cells);
+    // The color layer: present in the base exactly when the live world has
+    // the buffer; effCol mirrors the live buffer (zeros when there is none).
+    const bool hasCol = vMap.SurColBuf != nullptr;
+    std::vector<std::uint32_t> effC;
+    if (hasCol) {
+        effC.assign(vMap.SurColBuf, vMap.SurColBuf + cells);
+        if (baseCol_.empty()) {
+            std::memset(vMap.SurColBuf, 0, cells * sizeof(std::uint32_t));
+        } else {
+            std::memcpy(vMap.SurColBuf, baseCol_.data(),
+                        cells * sizeof(std::uint32_t));
+        }
+    }
     std::memcpy(vMap.VxGBuf, baseGeo_.data(), cells * sizeof(uint16_t));
     std::memcpy(vMap.VxDBuf, baseDam_.data(), cells * sizeof(uint16_t));
     std::memcpy(vMap.AtrBuf, baseAtr_.data(), cells);
@@ -988,6 +1047,9 @@ void EditorSession::runWithBaseTerrain(const std::function<void()>& fn)
     std::memcpy(vMap.VxDBuf, effD.data(), cells * sizeof(uint16_t));
     std::memcpy(vMap.AtrBuf, effA.data(), cells);
     std::memcpy(vMap.SurBuf, effS.data(), cells);
+    if (hasCol) {
+        std::memcpy(vMap.SurColBuf, effC.data(), cells * sizeof(std::uint32_t));
+    }
     // The effective content is back: repaint everything.
     vMap.regRender(0, 0, static_cast<int>(vMap.H_SIZE),
                    static_cast<int>(vMap.V_SIZE));
@@ -1035,6 +1097,11 @@ bool EditorSession::setDiffMode(bool on)
         baseDam_.assign(vMap.VxDBuf, vMap.VxDBuf + cells);
         baseAtr_.assign(vMap.AtrBuf, vMap.AtrBuf + cells);
         baseSur_.assign(vMap.SurBuf, vMap.SurBuf + cells);
+        if (vMap.SurColBuf) {
+            baseCol_.assign(vMap.SurColBuf, vMap.SurColBuf + cells);
+        } else {
+            baseCol_.clear();
+        }
         diffMode_ = true;
         applyDiffToBuffers();
     } else {
@@ -1046,10 +1113,19 @@ bool EditorSession::setDiffMode(bool on)
         std::memcpy(vMap.VxDBuf, baseDam_.data(), cells * sizeof(uint16_t));
         std::memcpy(vMap.AtrBuf, baseAtr_.data(), cells);
         std::memcpy(vMap.SurBuf, baseSur_.data(), cells);
+        if (vMap.SurColBuf) {
+            if (baseCol_.empty()) {
+                std::memset(vMap.SurColBuf, 0, cells * sizeof(std::uint32_t));
+            } else {
+                std::memcpy(vMap.SurColBuf, baseCol_.data(),
+                            cells * sizeof(std::uint32_t));
+            }
+        }
         baseGeo_.clear();
         baseDam_.clear();
         baseAtr_.clear();
         baseSur_.clear();
+        baseCol_.clear();
         diffMode_ = false;
         vMap.regRender(0, 0, static_cast<int>(vMap.H_SIZE),
                        static_cast<int>(vMap.V_SIZE));
@@ -1133,6 +1209,34 @@ bool EditorSession::saveDiffToGmp(const std::string& path)
                       block * sizeof(uint16_t));
             out.write(reinterpret_cast<const char*>(it->second.dam.data()),
                       block * sizeof(uint16_t));
+        }
+    }
+    // True-color trailer ("XCL0"): uint32 0xAARRGGBB на клетку флагированных
+    // областей (в том же порядке). Пишется после XH16; читает
+    // loadDiffFromGmp и vrtMap::loadGameMap.
+    bool hasColor = false;
+    for (const auto& [area, entry] : diffAreas_) {
+        if (!entry.col.empty()) {
+            hasColor = true;
+            break;
+        }
+    }
+    if (hasColor) {
+        const char extId[4] = {'X', 'C', 'L', '0'};
+        out.write(extId, 4);
+        const std::vector<std::uint32_t> zeros(block, 0);
+        for (int area = 0; area < gw * gh; ++area) {
+            const auto it = diffAreas_.find(area);
+            if (it == diffAreas_.end()) {
+                continue;
+            }
+            if (it->second.col.empty()) {
+                out.write(reinterpret_cast<const char*>(zeros.data()),
+                          block * sizeof(std::uint32_t));
+            } else {
+                out.write(reinterpret_cast<const char*>(it->second.col.data()),
+                          block * sizeof(std::uint32_t));
+            }
         }
     }
     if (!out.good()) {
@@ -1219,6 +1323,23 @@ bool EditorSession::loadDiffFromGmp(const std::string& path)
                     "trailer in '%s'.\n", path.c_str());
             return false;
         }
+        // За XH16 может идти true-color трейлер "XCL0".
+        if (in.read(extId, 4) && memcmp(extId, "XCL0", 4) == 0) {
+            for (int area = 0; area < gw * gh; ++area) {
+                if (flags[static_cast<std::size_t>(area)] != 1) {
+                    continue;
+                }
+                auto it = loaded.find(area);
+                it->second.col.resize(block);
+                in.read(reinterpret_cast<char*>(it->second.col.data()),
+                        block * sizeof(std::uint32_t));
+            }
+            if (!in) {
+                fprintf(stderr, "EditorSession::loadDiffFromGmp: truncated "
+                        "XCL0 trailer in '%s'.\n", path.c_str());
+                return false;
+            }
+        }
     }
     diffAreas_ = std::move(loaded);
     diffModified_ = false; // freshly loaded == the saved state
@@ -1259,6 +1380,10 @@ void EditorSession::recordUndoArea(int x, int y, int width, int height)
     snapshot.dam.resize(cells);
     snapshot.atr.resize(cells);
     snapshot.sur.resize(cells);
+    const bool hasCol = vMap.SurColBuf != nullptr;
+    if (hasCol) {
+        snapshot.col.resize(cells);
+    }
 
     std::size_t cnt = 0;
     for (int j = 0; j < sy; ++j) {
@@ -1269,6 +1394,9 @@ void EditorSession::recordUndoArea(int x, int y, int width, int height)
             snapshot.dam[cnt] = vMap.VxDBuf[off];
             snapshot.atr[cnt] = vMap.AtrBuf[off];
             snapshot.sur[cnt] = vMap.SurBuf[off];
+            if (hasCol) {
+                snapshot.col[cnt] = vMap.SurColBuf[off];
+            }
         }
     }
 
@@ -1419,6 +1547,14 @@ void EditorSession::finalizePendingUndoGroup()
     merged.dam.resize(cells);
     merged.atr.resize(cells);
     merged.sur.resize(cells);
+    // The color layer exists for the merged entry exactly when the world has
+    // the true-color buffer now. Snapshots taken before the buffer appeared
+    // (the stroke's first RGB paint allocates it) contribute zeros — that IS
+    // their pre-state.
+    const bool hasCol = vMap.SurColBuf != nullptr;
+    if (hasCol) {
+        merged.col.resize(cells);
+    }
     std::size_t seed = 0;
     for (int j = 0; j < sy; ++j) {
         const int row = (y0 + j) * static_cast<int>(vMap.H_SIZE) + x0;
@@ -1428,6 +1564,9 @@ void EditorSession::finalizePendingUndoGroup()
             merged.dam[seed] = vMap.VxDBuf[off];
             merged.atr[seed] = vMap.AtrBuf[off];
             merged.sur[seed] = vMap.SurBuf[off];
+            if (hasCol) {
+                merged.col[seed] = vMap.SurColBuf[off];
+            }
         }
     }
 
@@ -1447,6 +1586,10 @@ void EditorSession::finalizePendingUndoGroup()
                 merged.dam[mIdx] = snap.dam[sIdx];
                 merged.atr[mIdx] = snap.atr[sIdx];
                 merged.sur[mIdx] = snap.sur[sIdx];
+                if (hasCol) {
+                    merged.col[mIdx] =
+                        snap.col.empty() ? 0 : snap.col[sIdx];
+                }
                 covered[mIdx] = true;
             }
         }

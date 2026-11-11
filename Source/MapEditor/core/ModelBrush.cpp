@@ -352,8 +352,8 @@ ImportResult importPly(const std::filesystem::path& path)
             "properties (texture_u/texture_v, u/v or s/t).";
         return result;
     }
-    // No texture and no vertex colours: the model paints WHITE (the brush
-    // still quantizes it into the Dam palette).
+    // No texture and no vertex colours: the model paints WHITE (an exact
+    // 24-bit white — the brush no longer quantizes into the Dam palette).
     const bool defaultWhite = !useTexture && !hasVertexColor;
 
     // Read every element in order; keep the vertices AND the faces (the

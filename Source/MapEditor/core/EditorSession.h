@@ -64,6 +64,9 @@ struct UndoAreaSnapshot
     std::vector<uint16_t> dam; // целые высоты дам-слоя (VxWholeHeight)
     std::vector<unsigned char> atr;
     std::vector<unsigned char> sur;
+    // True-color слой (0xAARRGGBB, 0 = палитра). Пуст, пока мир без
+    // true-color данных — тогда запись/восстановление не трогают vMap.
+    std::vector<std::uint32_t> col;
 };
 
 /// Session manager for the map editor.  All public methods are safe to call
@@ -484,16 +487,21 @@ private:
         std::vector<uint16_t> dam;
         std::vector<unsigned char> atr;
         std::vector<unsigned char> sur;
+        // True-color слой (0xAARRGGBB на клетку, 0 = палитра); пуст, пока
+        // мир без true-color данных.
+        std::vector<std::uint32_t> col;
     };
     std::map<int, DiffArea> diffAreas_;
     /// The difference data changed since the last saveDiffToGmp (or load).
     bool diffModified_ = false;
     /// Base terrain snapshot, kept while the difference mode is ON (vMap
-    /// buffers then carry BASE+DIFF). Geo/dam are 16-bit (VxWholeHeight).
+    /// buffers then carry BASE+DIFF). Geo/dam are 16-bit (VxWholeHeight);
+    /// col is the true-color layer (0xAARRGGBB, empty = no true-color).
     std::vector<uint16_t> baseGeo_;
     std::vector<uint16_t> baseDam_;
     std::vector<unsigned char> baseAtr_;
     std::vector<unsigned char> baseSur_;
+    std::vector<std::uint32_t> baseCol_;
     bool diffMode_ = false;
 
     /// Re-sync the difference model with the current buffers over the rect

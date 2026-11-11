@@ -1,18 +1,20 @@
 // ============================================================================
-// ImageDecal — palette-limited image stamp.
+// ImageDecal — true-color image stamp.
 //
 // Test 81:
-//   A. prepare() validation: the 512 px size cap, an all-transparent image and
-//      the "not enough free Dam palette colours" error (fewer than two free
-//      entries vs. more than two image colours that are not in the palette);
-//   B. prepare() conversion: exact palette colours are reused, a colour that
-//      is not in the palette becomes a new palette write on a free entry, and
-//      transparent / almost-transparent (alpha 254) pixels stay -1;
-//   C. scaleNearest(): the brush scale control keeps the palette indices and
-//      the transparency, only the pixel grid changes;
-//   D. the brush itself: ImageDecal paints SurBuf exactly like SetColor per
-//      pixel, only on dam cells, never for -1 pixels, one undo entry per
-//      stamp, refused in the Geo mode and without a decal image.
+//   A. prepare() validation: the 2048 px size cap and the all-transparent
+//      image refusal;
+//   B. prepare() conversion: colors pass through EXACTLY (no k-means, no
+//      palette capacity checks), transparent / almost-transparent pixels
+//      stay unpainted, and the nearest Dam palette entry is kept as the
+//      SurBuf side band;
+//   C. scaleNearest(): the brush scale control keeps colors and transparency,
+//      only the pixel grid changes;
+//   D. the brush itself: ImageDecal paints the exact 24-bit RGB into the
+//      true-color layer plus the nearest palette index into SurBuf, only on
+//      dam cells, never for transparent pixels, one undo entry per stamp,
+//      refused in the Geo mode and without a decal image; undo restores the
+//      color layer too.
 //
 // Runs after the world round-trip (its temporary world copy is reused).
 // ============================================================================
@@ -163,25 +165,28 @@ bool runImageDecalTests()
     const int greenIndex = 20;
     const std::vector<unsigned char> palette =
         makeTestPalette(redIndex, greenIndex);
-    std::vector<unsigned char> usage(256, 0);
-    usage[redIndex] = 1;
 
     // =====================================================================
     // A. Validation.
     // =====================================================================
     {
-        // Size cap: 600 px wide is refused with the 512 px message.
-        const int width = 600;
+        // Size cap: 3000 px wide is refused with the 2048 px message.
+        const int width = 3000;
         const int height = 10;
         std::vector<unsigned char> rgba(
             static_cast<std::size_t>(width) * height * 4, 255);
         const PrepareResult result = MapEditor::ImageDecal::prepare(
-            rgba.data(), width, height, palette.data(), usage.data());
-        TEST_REQUIRE(!result.ok, "a 600 px wide image must be refused.");
-        TEST_REQUIRE(result.error.find("512") != std::string::npos,
-                     "the size error must mention the 512 px limit: %s",
+            rgba.data(), width, height, palette.data());
+        TEST_REQUIRE(!result.ok, "a 3000 px wide image must be refused.");
+        TEST_REQUIRE(result.error.find("2048") != std::string::npos,
+                     "the size error must mention the 2048 px limit: %s",
                      result.error.c_str());
-        std::printf("[PASS] Images larger than 512 px are refused.\n");
+        // 600x10 is fine now (the limit was raised from 512 to 2048).
+        const PrepareResult accepted = MapEditor::ImageDecal::prepare(
+            rgba.data(), 600, 10, palette.data());
+        TEST_REQUIRE(accepted.ok, "a 600 px image must be accepted: %s",
+                     accepted.error.c_str());
+        std::printf("[PASS] The 2048 px size cap is enforced.\n");
     }
     {
         // No fully opaque pixel.
@@ -193,116 +198,79 @@ bool runImageDecalTests()
             rgba[static_cast<std::size_t>(i) * 4 + 3] = 254;
         }
         const PrepareResult result = MapEditor::ImageDecal::prepare(
-            rgba.data(), width, height, palette.data(), usage.data());
+            rgba.data(), width, height, palette.data());
         TEST_REQUIRE(!result.ok,
                      "an image with only transparent pixels must be refused.");
         std::printf("[PASS] An image without fully opaque pixels is refused.\n");
     }
     {
-        // Not enough free palette entries: 0 free, 3 image colours absent
-        // from the palette.
-        std::vector<unsigned char> fullUsage(256, 1);
+        // A FULL palette no longer matters: true-color pass-through does not
+        // need free entries.
         std::vector<unsigned char> rgba(8 * 4 * 4, 0);
         setPixel(rgba, 8, 0, 0, 1, 2, 3, 255);
-        setPixel(rgba, 8, 1, 0, 4, 5, 6, 255);
-        setPixel(rgba, 8, 2, 0, 7, 8, 9, 255);
-        PrepareResult result = MapEditor::ImageDecal::prepare(
-            rgba.data(), 8, 4, palette.data(), fullUsage.data());
-        TEST_REQUIRE(!result.ok,
-                     "a full palette must refuse a multi-colour image.");
-        TEST_REQUIRE(result.error.find("palette") != std::string::npos,
-                     "the palette error must mention the palette: %s",
+        setPixel(rgba, 8, 1, 0, 250, 130, 40, 255);
+        const PrepareResult result = MapEditor::ImageDecal::prepare(
+            rgba.data(), 8, 4, palette.data());
+        TEST_REQUIRE(result.ok,
+                     "a full palette must not limit a true-color decal: %s",
                      result.error.c_str());
-
-        // Exactly one free entry is still "fewer than two".
-        fullUsage[7] = 0;
-        result = MapEditor::ImageDecal::prepare(rgba.data(), 8, 4,
-                                                palette.data(),
-                                                fullUsage.data());
-        TEST_REQUIRE(!result.ok, "one free entry is not enough either.");
-
-        // Two free entries are accepted.
-        fullUsage[8] = 0;
-        result = MapEditor::ImageDecal::prepare(rgba.data(), 8, 4,
-                                                palette.data(),
-                                                fullUsage.data());
-        TEST_REQUIRE(result.ok, "two free entries must be accepted: %s",
-                     result.error.c_str());
-        TEST_REQUIRE(result.unusedDamColors == 2,
-                     "unusedDamColors %d, expected 2.",
-                     result.unusedDamColors);
-        TEST_REQUIRE(result.imageForeignColors == 3,
-                     "imageForeignColors %d, expected 3.",
-                     result.imageForeignColors);
-        std::printf("[PASS] The palette capacity check follows the 2-free / "
-                    "2-foreign rule.\n");
+        std::printf("[PASS] The palette capacity no longer limits the decal.\n");
     }
 
     // =====================================================================
-    // B. Conversion (k-means over the palette candidates).
+    // B. Conversion (true-color pass-through).
     // =====================================================================
     const std::vector<unsigned char> image = makeTestImage();
-    PrepareResult prepared = MapEditor::ImageDecal::prepare(
-        image.data(), 8, 4, palette.data(), usage.data());
+    const PrepareResult prepared = MapEditor::ImageDecal::prepare(
+        image.data(), 8, 4, palette.data());
     TEST_REQUIRE(prepared.ok, "the test image was refused: %s",
                  prepared.error.c_str());
-    TEST_REQUIRE(prepared.candidateColors >=
-                     MapEditor::ImageDecal::kMinPaletteColors,
-                 "the candidate list is %d, expected at least %d.",
-                 prepared.candidateColors,
-                 MapEditor::ImageDecal::kMinPaletteColors);
-    TEST_REQUIRE(prepared.resultColors == 3,
-                 "the image must reduce to 3 colours, got %d.",
-                 prepared.resultColors);
-    TEST_REQUIRE(prepared.paletteWrites.size() == 1,
-                 "exactly the blue colour is new, got %d writes.",
-                 static_cast<int>(prepared.paletteWrites.size()));
-    TEST_REQUIRE(prepared.paletteWrites[0].rgb == 0x0000FFu,
-                 "the new colour is 0x%06X, expected 0x0000FF.",
-                 prepared.paletteWrites[0].rgb);
-    TEST_REQUIRE(prepared.paletteWrites[0].index != redIndex &&
-                     prepared.paletteWrites[0].index != greenIndex,
-                 "a new colour must not overwrite a palette entry in use.");
 
     const DecalImage& decal = prepared.image;
     TEST_REQUIRE(decal.width == 8 && decal.height == 4,
                  "decal is %dx%d, expected 8x4.", decal.width, decal.height);
     for (int x = 0; x < 4; ++x) {
-        TEST_REQUIRE(decal.at(x, 0) == redIndex,
-                     "red pixel (%d,0) is index %d, expected %d.",
-                     x, decal.at(x, 0), redIndex);
-        TEST_REQUIRE(decal.at(x, 1) == greenIndex,
-                     "green pixel (%d,1) is index %d, expected %d.",
-                     x, decal.at(x, 1), greenIndex);
+        TEST_REQUIRE(decal.at(x, 0) == 0xFFFF0000u,
+                     "red pixel (%d,0) is 0x%08X, expected 0xFFFF0000.", x,
+                     decal.at(x, 0));
+        TEST_REQUIRE(decal.indexAt(x, 0) == redIndex,
+                     "red pixel (%d,0) SurBuf index %d, expected %d.", x,
+                     decal.indexAt(x, 0), redIndex);
+        TEST_REQUIRE(decal.at(x, 1) == 0xFF00FF00u,
+                     "green pixel (%d,1) is 0x%08X, expected 0xFF00FF00.", x,
+                     decal.at(x, 1));
+        TEST_REQUIRE(decal.indexAt(x, 1) == greenIndex,
+                     "green pixel (%d,1) SurBuf index %d, expected %d.", x,
+                     decal.indexAt(x, 1), greenIndex);
     }
     for (int x = 4; x < 8; ++x) {
-        TEST_REQUIRE(decal.at(x, 0) == prepared.paletteWrites[0].index,
-                     "blue pixel (%d,0) is index %d, expected %d.",
-                     x, decal.at(x, 0), prepared.paletteWrites[0].index);
-        TEST_REQUIRE(decal.at(x, 1) == prepared.paletteWrites[0].index,
-                     "blue pixel (%d,1) is index %d, expected %d.",
-                     x, decal.at(x, 1), prepared.paletteWrites[0].index);
+        TEST_REQUIRE(decal.at(x, 0) == 0xFF0000FFu,
+                     "blue pixel (%d,0) is 0x%08X, expected 0xFF0000FF.", x,
+                     decal.at(x, 0));
+        TEST_REQUIRE(decal.at(x, 1) == 0xFF0000FFu,
+                     "blue pixel (%d,1) is 0x%08X, expected 0xFF0000FF.", x,
+                     decal.at(x, 1));
     }
-    TEST_REQUIRE(decal.at(0, 2) == -1,
+    TEST_REQUIRE(decal.at(0, 2) == 0,
                  "an almost opaque (alpha 254) pixel must stay transparent.");
-    TEST_REQUIRE(decal.at(1, 2) == -1, "an empty pixel must stay transparent.");
-    TEST_REQUIRE(decal.at(7, 3) == -1, "an empty pixel must stay transparent.");
-    std::printf("[PASS] k-means reuses palette colours and adds the new one.\n");
+    TEST_REQUIRE(decal.at(1, 2) == 0, "an empty pixel must stay transparent.");
+    TEST_REQUIRE(decal.at(7, 3) == 0, "an empty pixel must stay transparent.");
+    std::printf("[PASS] Colors pass through exactly, transparency is kept.\n");
 
     // =====================================================================
-    // C. Scaling keeps indices and transparency.
+    // C. Scaling keeps colors and transparency.
     // =====================================================================
     {
         const DecalImage scaled = MapEditor::ImageDecal::scaleNearest(decal, 2.0);
         TEST_REQUIRE(scaled.width == 16 && scaled.height == 8,
                      "scaled decal is %dx%d, expected 16x8.", scaled.width,
                      scaled.height);
-        TEST_REQUIRE(scaled.at(0, 0) == redIndex, "scaled red pixel changed.");
-        TEST_REQUIRE(scaled.at(14, 0) == prepared.paletteWrites[0].index,
+        TEST_REQUIRE(scaled.at(0, 0) == 0xFFFF0000u, "scaled red pixel changed.");
+        TEST_REQUIRE(scaled.at(14, 0) == 0xFF0000FFu,
                      "scaled blue pixel changed.");
-        TEST_REQUIRE(scaled.at(0, 5) == -1,
+        TEST_REQUIRE(scaled.at(0, 5) == 0,
                      "scaled transparent pixel must stay transparent.");
-        std::printf("[PASS] The decal scale keeps indices and transparency.\n");
+        std::printf("[PASS] The decal scale keeps colors and transparency.\n");
     }
 
     // =====================================================================
@@ -323,19 +291,6 @@ bool runImageDecalTests()
     const int cy = mapH / 2;
     const unsigned char baseSurface = 5;
 
-    // The decal indices must exist in the Dam palette of the loaded world:
-    // write the two colours and the new one through the session, exactly like
-    // the UI does after prepare().
-    TEST_REQUIRE(session.setPaletteRgb(
-                     MapEditor::EditorSession::PaletteLayer::Dam, redIndex,
-                     0x00FF0000u),
-                 "the red palette write failed.");
-    TEST_REQUIRE(session.setPaletteRgb(
-                     MapEditor::EditorSession::PaletteLayer::Dam, greenIndex,
-                     0x0000FF00u),
-                 "the green palette write failed.");
-    TEST_REQUIRE(session.applyPalettes(), "applyPalettes() failed.");
-
     MapEditor::BrushTool brush(session);
     BrushParams params;
     params.effect = BrushEffect::ImageDecal;
@@ -355,15 +310,22 @@ bool runImageDecalTests()
                  "the decal brush must be Dam-only.");
     params.mode = BrushMode::Dam;
 
-    // Snapshot the patch for the undo check.
-    struct Cell { uint16_t geo, dam; unsigned char atr, sur; };
+    // Snapshot the patch for the undo check (the color layer too — the stamp
+    // below allocates the true-color buffer, undo must clear it back).
+    struct Cell {
+        uint16_t geo, dam;
+        unsigned char atr, sur;
+        std::uint32_t col;
+    };
     std::vector<Cell> before;
     const int half = 12;
+    TEST_REQUIRE(vMap.SurColBuf == nullptr,
+                 "the fresh world must not have the true-color buffer yet.");
     for (int y = cy - half; y <= cy + half; ++y) {
         for (int x = cx - half; x <= cx + half; ++x) {
             const int off = mapOffset(x, y);
             before.push_back({vMap.VxGBuf[off], vMap.VxDBuf[off],
-                              vMap.AtrBuf[off], vMap.SurBuf[off]});
+                              vMap.AtrBuf[off], vMap.SurBuf[off], 0});
         }
     }
 
@@ -373,17 +335,26 @@ bool runImageDecalTests()
     // The decal is centred on (cx,cy): origin = (cx - 4, cy - 2).
     const int originX = cx - decal.width / 2;
     const int originY = cy - decal.height / 2;
+    TEST_REQUIRE(vMap.SurColBuf != nullptr,
+                 "the decal stamp must allocate the true-color buffer.");
     for (int dy = 0; dy < decal.height; ++dy) {
         for (int dx = 0; dx < decal.width; ++dx) {
             const int x = originX + dx;
             const int y = originY + dy;
             const int off = mapOffset(x, y);
-            const int index = decal.at(dx, dy);
-            const unsigned char expected =
-                index < 0 ? baseSurface : static_cast<unsigned char>(index);
-            TEST_REQUIRE(vMap.SurBuf[off] == expected,
+            const std::uint32_t pixel = decal.at(dx, dy);
+            const std::uint32_t expectedCol =
+                (pixel >> 24) == 0xFF ? pixel : 0;
+            TEST_REQUIRE(vMap.SurColBuf[off] == expectedCol,
+                         "decal pixel (%d,%d): color 0x%08X, expected 0x%08X.",
+                         dx, dy, vMap.SurColBuf[off], expectedCol);
+            const unsigned char expectedSur =
+                (pixel >> 24) == 0xFF
+                    ? decal.indexAt(dx, dy)
+                    : baseSurface;
+            TEST_REQUIRE(vMap.SurBuf[off] == expectedSur,
                          "decal pixel (%d,%d): SurBuf %d, expected %d.", dx, dy,
-                         vMap.SurBuf[off], expected);
+                         vMap.SurBuf[off], expectedSur);
             // Height buffers are never touched by a colour brush.
             TEST_REQUIRE(vMap.VxDBuf[off] == 40 && vMap.VxGBuf[off] == 10 &&
                              vMap.AtrBuf[off] == 0,
@@ -394,7 +365,7 @@ bool runImageDecalTests()
     // Outside the decal bbox nothing changes.
     TEST_REQUIRE(vMap.SurBuf[mapOffset(cx + half, cy)] == baseSurface,
                  "a cell outside the decal must stay untouched.");
-    std::printf("[PASS] The decal paints its palette indices on dam cells.\n");
+    std::printf("[PASS] The decal paints exact RGB + palette index on dam cells.\n");
 
     TEST_REQUIRE(session.undo(), "the dam decal stamp undo failed.");
     std::size_t i = 0;
@@ -404,11 +375,12 @@ bool runImageDecalTests()
             TEST_REQUIRE(vMap.VxGBuf[off] == before[i].geo &&
                              vMap.VxDBuf[off] == before[i].dam &&
                              vMap.AtrBuf[off] == before[i].atr &&
-                             vMap.SurBuf[off] == before[i].sur,
+                             vMap.SurBuf[off] == before[i].sur &&
+                             vMap.SurColBuf[off] == before[i].col,
                          "undo must restore cell (%d,%d) byte-exact.", x, y);
         }
     }
-    std::printf("[PASS] Undo restores the decal stamp byte-exact.\n");
+    std::printf("[PASS] Undo restores the decal stamp byte-exact (colors too).\n");
 
     // Geo cells under the same stamp are skipped (the decal owns Dam only).
     fillPatch(cx, cy, 12, 10, 0, 0, baseSurface);
@@ -419,6 +391,9 @@ bool runImageDecalTests()
             const int off = mapOffset(originX + dx, originY + dy);
             TEST_REQUIRE(vMap.SurBuf[off] == baseSurface,
                          "a geo cell (%d,%d) must keep its surface.", dx, dy);
+            TEST_REQUIRE(vMap.SurColBuf[off] == 0,
+                         "a geo cell (%d,%d) must keep no color override.", dx,
+                         dy);
         }
     }
     std::printf("[PASS] Geo cells are never painted by the decal.\n");
@@ -428,5 +403,5 @@ bool runImageDecalTests()
     return true;
 }
 
-MAP_EDITOR_REGISTER_TEST("Image decal brush (palette-limited stamp)", 81,
+MAP_EDITOR_REGISTER_TEST("Image decal brush (true-color stamp)", 81,
                          runImageDecalTests);
