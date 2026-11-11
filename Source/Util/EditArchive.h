@@ -296,7 +296,12 @@ private:
 
 	EditOArchive& operator&(const PrmString& t)
     {
-		currentNode_->setValue(t ? t : "\\0");
+		// The conditional used to read `t ? t : "\\0"`, which MSVC's
+		// conformance mode (/permissive-) rightly rejects as ambiguous
+		// (PrmString -> const char* vs const char[3] -> PrmString). The
+		// conversion through a named pointer keeps the exact semantics.
+		const char* str = t;
+		currentNode_->setValue(str ? str : "\\0");
 		currentNode_->setType("PrmString");
 		currentNode_->setEditType(TreeNode::EDIT);
 		return *this;

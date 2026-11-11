@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 #include <unordered_map>
 #include <cstring>
@@ -448,10 +449,27 @@ bool scan_resource_paths(std::string destination_path, std::string source_path, 
     }
 
     //Do recursive search on source path
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(source_dir, std::filesystem::directory_options::skip_permission_denied)) {
-        if (entry.is_regular_file() || entry.is_directory()) {
-            add_filesystem_entry_internal(paths, entry.path().u8string(), destination_path, source_path, scanOptions);
+    constexpr unsigned int max_scan_attempts = 5;
+    unsigned int remaining_scan_attempts = max_scan_attempts;
+    bool scan_success = false;
+
+    while (!scan_success && (remaining_scan_attempts > 0)) {
+        try {
+            for (const auto& entry : std::filesystem::recursive_directory_iterator(source_dir, std::filesystem::directory_options::skip_permission_denied)) {
+                if (entry.is_regular_file() || entry.is_directory()) {
+                    add_filesystem_entry_internal(paths, entry.path().u8string(), destination_path, source_path, scanOptions);
+                }
+            }
+            scan_success = true;
+        } catch (const std::filesystem::filesystem_error&  e) {
+            (void)fprintf(stderr, "scan_resource_paths encountered exception on attempt %u of %u: %s on %ls\n", (max_scan_attempts - remaining_scan_attempts) + 1u, max_scan_attempts, e.what(), e.path1().c_str());
+            std::this_thread::sleep_for(std::chrono::microseconds(200));
+            --remaining_scan_attempts;
         }
+    }
+
+    if (!scan_success) {
+        return false;
     }
 
     //Store collected paths
