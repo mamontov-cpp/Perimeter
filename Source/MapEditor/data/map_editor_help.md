@@ -289,6 +289,7 @@ boolean: true — заполненный квадрат, false — заполн�
 | `paintSoot(pos, radius, square)` | гарь |
 | `paintVeryLightDam(pos, radius, square)` | «очень лёгкая дамба» |
 | `paintColor(pos, red, green, blue, radius, square)` | краска: точный RGB (0..255), без квантования в палитру |
+| `paintColorAt(pos, red, green, blue, height, depth, radius, square)` | краска **внутренних слоёв вокселей**: диапазон `[height-depth+1 .. height]` на каждой покрытой клетке; `height = -1` — верх колонки (default-краска); высота не ниже поверхности клампится к верху |
 | `applyBlur(pos, radius, blurRadius, effect, square)` | Gaussian Blur: сглаживание высот гауссовым ядром; `blurRadius` клампится в `1..radius-1`, `effect` — доля эффекта 0..1 (1.0 = доход за один штамп) |
 | `applySmooth(pos, radius, effect, square)` | Tricubic: сглаживание к трикубической (bicubic Catmull-Rom) интерполяции решётки под штампом — как кисть Tricubic в тулбаре Sculpting; `effect` — доля 0..1 |
 | `applyHeightFn(pos, radius, fn, square)` | задать высоту **функцией**: `fn(x, y, h)` вызывается для каждой клетки штампа с её координатами и исходной (до начала операции) высотой дамбы `h` (дробной, шаг 1/32; 0, где дамбы нет) и возвращает новую **абсолютную** высоту (дробные — как у raiseHeight); все чтения идут по исходной поверхности до любой записи — клетки не влияют друг на друга |
@@ -311,6 +312,17 @@ boolean: true — заполненный квадрат, false — заполн�
 `getDamColor` читают один индекс через разные палитры. Окна сообщений —
 единственный доступ скрипта к UI; текст любого JS-значения приводится к
 строке.
+
+Покраска на высоте: у кисти и у API (аргументы `height`/`depth` у
+`paintColorAt`, у кисти Paint Color — спинбоксы **H** и **Depth** на
+тулбаре, режим панели Slice «красить на высоте среза») высота задаётся в
+**целых вокселях от нуля**, а текущая высота поверхности клетки — высота её
+верхнего вокселя. `height = -1` (или высота не ниже поверхности) красит
+верх колонки — это «цвет по умолчанию» колонки. Явная высота **ниже**
+поверхности красит внутренние слои `[height-depth+1 .. height]`
+(`depth` ≥ 1, по умолчанию 1 = один воксельный слой); слой побеждает,
+пока терраформинг не поднимет/опустит поверхность к нему. Краска чисто
+визуальная, заменяет цвет, участвует в Undo одним шагом вместе со штампом.
 
 Важно про `raiseHeight`/`lowerHeight`: это **инкрементальные** операции —
 штамп радиуса 1 покрывает область 3×3 вокруг центра, поэтому штампы в
@@ -749,13 +761,17 @@ port=12345
 **Кисти:** `apply_brush` — все эффекты (raise/lower/set height, зеропласт,
 сажа, очень лёгкая дамба, paintColor, скульптинг smooth/flatten/tricubic/
 inflate/gaussianBlur), 3D-тела (`shape`: cone, pyramid, truncatedCone,
-truncatedPyramid, torus, halfEllipsoid), ImageDecal (`load_decal_image` +
+truncatedPyramid, torus, halfEllipsoid; `paintInterior: 1` красит каждый
+воксель внутри тела от базы до поверхности колонки), ImageDecal (`load_decal_image` +
 `effect: "imageDecal"`), маска-картинка (`load_brush_image` — альфа-канал
 задаёт форму штампа: полностью прозрачные пиксели не штампуют вовсе;
 масштаб — аргумент `maskScale` у apply_brush, 10–800 %, как спин Mask на
 тулбаре), кисть-модель (`import_model` + `effect: "model"`),
 параметры штампа (radius, square, sides/angleOffset, fraction, blurRadius,
-layer dam/geo). В режиме различий штамп пишет в diff-буфер.
+layer dam/geo), покраска на высоте у paintColor: `paintHeight` (воксели,
+-1 = верх колонки) и `paintDepth` (глубина слоя, ≥ 1) — семантика та же,
+что у спинбоксов H/Depth и `paintColorAt` в JS-API. В режиме различий штамп
+пишет в diff-буфер.
 
 **Скрипты:** `run_script` (JavaScript одним undo-шагом, тот же API, что у
 Scripted Brush / Run Script), `set_scripted_brush_script`.
@@ -764,7 +780,10 @@ Scripted Brush / Run Script), `set_scripted_brush_script`.
 `load_difference`.
 
 **Террейн и палитры:** `get_terrain_at` (высоты Geo/Dam, индекс и цвета
-поверхности, атрибуты клетки), `get_palette`, `set_palette_color`.
+поверхности, атрибуты клетки; с аргументом `z` — цвет внутреннего слоя на
+высоте z вокселей: `voxelColor` `{r, g, b}` и `hasLayer` — true, если слой
+покрывает z, иначе возвращается default-цвет колонки), `get_palette`,
+`set_palette_color`.
 
 **История:** `undo`, `redo`.
 

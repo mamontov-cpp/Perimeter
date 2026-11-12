@@ -353,6 +353,7 @@ SET(MAP_EDITOR_APP_SRCS
         ui/MinimapWidget.cpp
         ui/MinimapWidget.h
         ui/PalettePanel.cpp
+        ui/SlicePanel.cpp
         ui/PalettePanel.h
         ui/WorldSettingsDialog.cpp
         ui/WorldSettingsDialog.h

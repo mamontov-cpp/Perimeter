@@ -255,6 +255,46 @@ duk_ret_t apiPaintColor(duk_context* ctx)
     return applyOp(ctx, BrushEffect::SetColor, (r << 16) | (g << 8) | b, true);
 }
 
+/// paintColorAt(pos, red, green, blue, height, depth, radius, square) —
+/// paint the internal voxel layers: [height-depth+1 .. height] at every
+/// covered cell (height -1 = the column top = the default paint). A height
+/// at/above the surface clamps to the top.
+duk_ret_t apiPaintColorAt(duk_context* ctx)
+{
+    ScriptEnv* env = getEnv(ctx);
+    int x = 0;
+    int y = 0;
+    if (!readPosition(ctx, 0, x, y)) {
+        return duk_error(ctx, DUK_ERR_TYPE_ERROR,
+                         "first argument must be a position {x, y}");
+    }
+    const std::uint32_t rgb =
+        (static_cast<std::uint32_t>(duk_to_int(ctx, 1) & 0xFF) << 16) |
+        (static_cast<std::uint32_t>(duk_to_int(ctx, 2) & 0xFF) << 8) |
+        static_cast<std::uint32_t>(duk_to_int(ctx, 3) & 0xFF);
+    const int height = BrushTool::clampPaintHeight(duk_to_int(ctx, 4));
+    const int depth = BrushTool::clampPaintDepth(duk_to_int(ctx, 5));
+    const int radius = BrushTool::clampRadius(duk_to_int(ctx, 6));
+    if (radius < 1) {
+        return duk_error(ctx, DUK_ERR_RANGE_ERROR,
+                         "radius must be a number >= 1");
+    }
+    const bool square = duk_to_boolean(ctx, 7);
+
+    BrushMask mask = square ? BrushMasks::filledSquare(radius)
+                            : BrushMasks::filledCircle(radius);
+    mask.translate(x, y);
+    BrushParams op = *env->params;
+    op.mode = BrushMode::Dam;
+    op.effect = BrushEffect::SetColor;
+    op.useImageMask = false;
+    op.colorRgb = rgb;
+    op.paintHeight = height;
+    op.paintDepth = depth;
+    env->brush->applyMask(mask, op);
+    return 0;
+}
+
 /// Shared tail of applyBlur/applySmooth: the sculpting brushes own their
 /// stamp geometry, so the radius sits at index 1 (unlike the height ops,
 /// where index 1 carries the height). The stamp is Dam-mode only, exactly
@@ -571,6 +611,7 @@ void registerApiBindings(duk_context* ctx)
     registerBinding(ctx, "paintSoot", apiPaintSoot, 3);
     registerBinding(ctx, "paintVeryLightDam", apiPaintVeryLightDam, 3);
     registerBinding(ctx, "paintColor", apiPaintColor, 6);
+    registerBinding(ctx, "paintColorAt", apiPaintColorAt, 8);
     registerBinding(ctx, "applyBlur", apiApplyBlur, 5);
     registerBinding(ctx, "applySmooth", apiApplySmooth, 4);
     registerBinding(ctx, "applyHeightFn", apiApplyHeightFn, 4);

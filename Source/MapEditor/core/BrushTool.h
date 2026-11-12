@@ -5,6 +5,7 @@
 #include "ModelBrush.h"
 #include "Shape3D.h"
 
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <functional>
@@ -190,6 +191,17 @@ struct BrushParams
     /// color picker, the eyedropper (effective cell color) and the
     /// script/MCP paint calls — never quantized.
     std::uint32_t colorRgb = 0x00FFFFFF;
+    /// Layer-paint height in whole voxels (absolute, from 0); -1 = the
+    /// column top (the default paint). A height at/above the current
+    /// surface clamps to the top (default paint); below — paints internal
+    /// voxel layers [height-depth+1 .. height].
+    int paintHeight = -1;
+    /// How many voxel layers downward a below-surface paint covers (>=1).
+    int paintDepth = 1;
+    /// 3D solid brushes: paint the interior of the shape — every voxel
+    /// level from the shape base up to its surface at the column gets the
+    /// brush color (clipped at the highest part).
+    bool paintInterior3d = false;
     BrushEffect effect = BrushEffect::ChangeHeight;
 
     /// Height effect direction: +1 raise, -1 lower, 0 — no height change.
@@ -300,6 +312,9 @@ struct BrushParams
                strength == other.strength && mode == other.mode &&
                colorIndex == other.colorIndex && effect == other.effect &&
                colorRgb == other.colorRgb &&
+               paintHeight == other.paintHeight &&
+               paintDepth == other.paintDepth &&
+               paintInterior3d == other.paintInterior3d &&
                direction == other.direction &&
                heightLevel == other.heightLevel &&
                thickness == other.thickness &&
@@ -490,6 +505,10 @@ public:
     /// entry. Returns true when a pixel was sampled.
     bool pickColorAt(int cx, int cy);
 
+    /// Layer-paint height clamp: -1 (top) or 0..MAX_VX_HEIGHT_WHOLE.
+    static int clampPaintHeight(int h);
+    /// Layer-paint depth clamp: 1..MAX_VX_HEIGHT_WHOLE.
+    static int clampPaintDepth(int d);
     /// Nearest palette entry of the given layer for `rgb` (the SurBuf
     /// surface-type side band of an RGB paint). Computed once per
     /// (layer, rgb) and cached — see nearestCache* members.
@@ -640,6 +659,10 @@ private:
     ModelBrush::ModelRaster pendingModel_;
     std::vector<int> pendingModelIndices_;
     std::vector<std::uint32_t> pendingModelColors_;
+    /// Transient: layer paints collected during the applyMask cell loop and
+    /// applied after it (off, z0, z1, 0x00RRGGBB) — keeps the voxel-layer
+    /// structure mutation out of the per-cell routing.
+    std::vector<std::array<int, 4>> pendingLayerPaints_;
 
     /// T4.2: the last index pickColorAt() sampled (SurBuf at the click cell).
     unsigned char lastPickedColorIndex_ = 0;

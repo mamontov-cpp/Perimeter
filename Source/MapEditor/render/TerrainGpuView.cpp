@@ -72,12 +72,19 @@ inline void clampToMap(int& x, int& y) {
 
 /// Terrain height in world units at (possibly out of range) cell coords —
 /// same semantics as StandartTerraInterface::GetZf with clamped input.
+/// Height-slice mode: clipped at the slice plane like the rendered mesh, so
+/// picking and the brush contour land on the visible (clipped) surface.
 inline float sampleTerrainZ(double x, double y) {
     int xi = static_cast<int>(xm::floor(x));
     int yi = static_cast<int>(xm::floor(y));
     clampToMap(xi, yi);
     int ofs = xi + vMap.H_SIZE * yi;
-    return vMap.SGetAlt(ofs) / static_cast<float>(1 << VX_FRACTION);
+    float z = vMap.SGetAlt(ofs) / static_cast<float>(1 << VX_FRACTION);
+    const int slice = vMap.viewSliceHeight;
+    if (slice >= 0 && z > static_cast<float>(slice)) {
+        z = static_cast<float>(slice);
+    }
+    return z;
 }
 
 } // namespace

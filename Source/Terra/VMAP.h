@@ -2,6 +2,7 @@
 #define __VMAP_H__
 
 #include "undoDispatcher.h"
+#include "VoxLayers.h"
 
 #include "crc.h"
 
@@ -291,6 +292,13 @@ struct vrtMap {
 	// sidecar с цветами или при первой RGB-краске; хранится в heights16.bin
 	// (секция colors, см. worldHeights16File в VMAP.cpp).
 	uint32_t* SurColBuf;
+
+	// Внутренние цветовые слои вокселей (диапазоны высот с RGB24 на колонку).
+	// См. VoxLayers.h; сериализуются в sidecar heights16.bin.
+	VoxColLayers voxLayers;
+	// Редакторский срез высоты: >= 0 — getColor32 рисует цвет слоя на этой
+	// высоте (все выше среза «не рендерятся»). Игра не трогает.
+	int viewSliceHeight = -1;
 
 	uint32_t* SupBuf;
 
@@ -635,6 +643,16 @@ struct vrtMap {
 		return getColor(offsetBuf(x,y));
 	}
 	unsigned short getColor(int off){
+		//Внутренние слои побеждают: цвет диапазона, внутри которого лежит
+		//(урезанная срезом) поверхность. Срез — редакторский режим показа
+		//слоя на высоте.
+		if(!voxLayers.empty()){
+			const int surface=SGetAlt(off)>>VX_FRACTION;
+			const int h=(viewSliceHeight>=0&&viewSliceHeight<surface)?viewSliceHeight:surface;
+			uint32_t rgb;
+			if(voxLayers.lookup(static_cast<uint32_t>(off),h,&rgb))
+				return trueColor16(0xFF000000u|rgb, RnrBuf[off]&0x7F);
+		}
 		//True-color: прямой RGB с освещением вместо палитры SurBuf.
 		if(SurColBuf){
 			const unsigned int c=SurColBuf[off];
@@ -670,6 +688,16 @@ struct vrtMap {
 		return getColor32(off);
 	}
 	unsigned int getColor32(int off){
+		//Внутренние слои побеждают: цвет диапазона, внутри которого лежит
+		//(урезанная срезом) поверхность. Срез — редакторский режим показа
+		//слоя на высоте.
+		if(!voxLayers.empty()){
+			const int surface=SGetAlt(off)>>VX_FRACTION;
+			const int h=(viewSliceHeight>=0&&viewSliceHeight<surface)?viewSliceHeight:surface;
+			uint32_t rgb;
+			if(voxLayers.lookup(static_cast<uint32_t>(off),h,&rgb))
+				return trueColor32(0xFF000000u|rgb, RnrBuf[off]&0x7F);
+		}
 		//True-color: прямой RGB с освещением вместо палитры SurBuf.
 		if(SurColBuf){
 			const unsigned int c=SurColBuf[off];

@@ -535,7 +535,14 @@ void View3DRenderer::renderSmooth(int cx, int cy, bool pointSample)
                                              : mips;
             const int hCur = heightAt(mipCur, xx0, yy0);
             const int hPrev = usePrev ? heightAt(mipPrev, xa, ya) : hCur;
-            const int h = (hCur + hPrev + 1) >> 1;
+            int h = (hCur + hPrev + 1) >> 1;
+            // Height-slice mode: clip the geometry at the slice plane
+            // (voxels above the slice are not rendered); the colors come
+            // slice-aware from the mip base (ViewportRenderer::mipBaseColor).
+            const int sliceH = vMap.viewSliceHeight;
+            if (sliceH >= 0 && h > sliceH) {
+                h = sliceH;
+            }
 
             // Strip colors: cFar anchors this row's ground position (the
             // strip's bottom), cNear the previous row's (its top). Instead of

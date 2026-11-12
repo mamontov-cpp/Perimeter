@@ -29,6 +29,30 @@ public:
     {
     }
 
+    /// Height-slice mode (Show colors at height): the terrain mesh is
+    /// clipped at vMap.viewSliceHeight — voxels above the slice are not
+    /// rendered. -1 (the game's value) means no clipping. The colors are
+    /// slice-aware through ViewportRenderer (surfaceColor32). GetZ is the
+    /// whole-voxel height the tilemap builds its cells from; GetZf the
+    /// smooth vertex height.
+    int GetZ(int x, int y) override {
+        int z = StandartTerraInterface::GetZ(x, y);
+        const int slice = vMap.viewSliceHeight;
+        if (slice >= 0 && z > slice) {
+            z = slice;
+        }
+        return z;
+    }
+
+    float GetZf(int x, int y) override {
+        float z = StandartTerraInterface::GetZf(x, y);
+        const int slice = vMap.viewSliceHeight;
+        if (slice >= 0 && z > static_cast<float>(slice)) {
+            z = static_cast<float>(slice);
+        }
+        return z;
+    }
+
     /// Editor variant of PerimeterTerraInterface::GetTileColor
     /// (Source/Game/CopyToGraph.cpp): clamped cell colors from the editor's
     /// 2D raster cache (layer filters + geo dimming included, exactly what

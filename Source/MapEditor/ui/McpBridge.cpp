@@ -29,6 +29,15 @@
 #include "McpTools.h"
 #include "ScumSpotCatalog.h"
 #include "Shape3D.h"
+
+// Terra (vMap, MAX_VX_HEIGHT_WHOLE, VoxColLayers) for the layer-color query.
+#ifndef _PERIMETER_
+#define _PERIMETER_ 1
+#endif
+#ifndef _TX3D_LIBRARY_
+#define _TX3D_LIBRARY_ 1
+#endif
+#include "terra.h"
 #include "ImageDecal.h"
 #include "ModelBrush.h"
 #include "ScriptedBrush.h"
@@ -1233,6 +1242,11 @@ QVariantMap MapEditor::McpBridge::mcpApplyBrush(const QVariantMap& args)
             return mcpError(QStringLiteral(
                 "paintColor needs colorIndex (0..255) or colorR/colorG/colorB"));
         }
+        // Layer painting: height (-1 = top) + depth.
+        op.paintHeight = MapEditor::BrushTool::clampPaintHeight(
+            mcpArgInt(args, "paintHeight", -1));
+        op.paintDepth = MapEditor::BrushTool::clampPaintDepth(
+            mcpArgInt(args, "paintDepth", 1));
     } else if (effectName == QLatin1String("smooth")) {
         op.effect = MapEditor::BrushEffect::Smooth;
         setSculpt();
@@ -1298,6 +1312,9 @@ QVariantMap MapEditor::McpBridge::mcpApplyBrush(const QVariantMap& args)
         }
         op.mode = MapEditor::BrushMode::Dam; // 3D shapes own the dam layer
         op.shape3d = shapeIt.value();
+        // Interior paint: every voxel inside the solid gets the color.
+        op.paintInterior3d =
+            mcpArgInt(args, "paintInterior", 0) != 0;
         op.shapeHeight = mcpArgInt(args, "shapeHeight", 32);
         op.shapeTopOffsetX = mcpArgDbl(args, "topOffsetX", 0.0);
         op.shapeTopOffsetY = mcpArgDbl(args, "topOffsetY", 0.0);
@@ -1342,7 +1359,7 @@ QVariantMap MapEditor::McpBridge::mcpHandleTerrain(const QString& name,
                                {QStringLiteral("g"), static_cast<int>((rgb >> 8) & 0xFF)},
                                {QStringLiteral("b"), static_cast<int>(rgb & 0xFF)}};
         };
-        return mcpOk({
+        QVariantMap result{
             {QStringLiteral("geoHeight"), sample.geoHeight},
             {QStringLiteral("damHeight"), sample.damHeight},
             {QStringLiteral("surfaceIndex"), sample.surfaceIndex},
@@ -1354,7 +1371,26 @@ QVariantMap MapEditor::McpBridge::mcpHandleTerrain(const QString& name,
             // palette color of the cell's layer).
             {QStringLiteral("color"), rgbMap(sample.trueColorRgb)},
             {QStringLiteral("hasTrueColor"), sample.hasTrueColor},
-        });
+        };
+        // Optional "z": the voxel-layer color at (x, y, z) in whole voxels —
+        // the internal layer if one covers z, else the column default.
+        if (args.contains(QStringLiteral("z"))) {
+            const int z = mcpArgInt(args, "z");
+            uint32_t rgb = sample.trueColorRgb;
+            bool hasLayer = false;
+            if (z >= 0 && z <= MAX_VX_HEIGHT_WHOLE && !vMap.voxLayers.empty()) {
+                uint32_t layerRgb = 0;
+                if (vMap.voxLayers.lookup(
+                        static_cast<uint32_t>(vMap.offsetBuf(x, y)), z,
+                        &layerRgb)) {
+                    rgb = layerRgb;
+                    hasLayer = true;
+                }
+            }
+            result[QStringLiteral("voxelColor")] = rgbMap(rgb);
+            result[QStringLiteral("hasLayer")] = hasLayer;
+        }
+        return mcpOk(result);
     }
 
     if (name == QLatin1String("get_palette")) {

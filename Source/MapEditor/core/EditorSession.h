@@ -1,6 +1,7 @@
 #pragma once
 
 #include "WorldFiles.h"
+#include "VoxLayers.h"
 #include "WorldParams.h"
 
 #include <array>
@@ -67,6 +68,10 @@ struct UndoAreaSnapshot
     // True-color слой (0xAARRGGBB, 0 = палитра). Пуст, пока мир без
     // true-color данных — тогда запись/восстановление не трогают vMap.
     std::vector<std::uint32_t> col;
+    // Внутренние цветовые слои вокселей (диапазоны высот). Разреженная
+    // копия колонок с абсолютными cell offsets; пусто = «слоёв не было»
+    // (ленивое дорощивание при swap, как у col).
+    VoxColLayers lay;
 };
 
 /// Session manager for the map editor.  All public methods are safe to call
@@ -194,6 +199,12 @@ public:
         bool hasTrueColor = false;
     };
     bool terrainSample(int x, int y, TerrainSample& out) const;
+
+    /// The slice view ("show colors at a height"): -1 = off, otherwise the
+    /// map renders clipped at this height (vMap.viewSliceHeight). Changing
+    /// it re-renders the whole map.
+    void setViewSliceHeight(int height);
+    int viewSliceHeight() const noexcept;
 
     /// T8.4 — the loaded world's zero-layer height (vMap.hZeroPlast), used
     /// as the initial manualData.zeroLayerHeight of a new battle map.
@@ -494,6 +505,9 @@ private:
         // True-color слой (0xAARRGGBB на клетку, 0 = палитра); пуст, пока
         // мир без true-color данных.
         std::vector<std::uint32_t> col;
+        // Внутренние цветовые слои вокселей (абсолютные cell offsets);
+        // колонки без записи = «как в базе».
+        VoxColLayers lay;
     };
     std::map<int, DiffArea> diffAreas_;
     /// The difference data changed since the last saveDiffToGmp (or load).
@@ -506,11 +520,20 @@ private:
     std::vector<unsigned char> baseAtr_;
     std::vector<unsigned char> baseSur_;
     std::vector<std::uint32_t> baseCol_;
+    VoxColLayers baseLay_;
     bool diffMode_ = false;
 
     /// Re-sync the difference model with the current buffers over the rect
     /// (only meaningful while the mode is ON).
     void resyncDiffRect(int x0, int y0, int x1, int y1);
+    /// True when the live voxel-layer columns inside the coarse area differ
+    /// from the base snapshot (same addressing as resyncDiffRect).
+    bool diffLayersDiffer(int baseOff, int stride) const;
+    /// Copy the live layer columns of the coarse area into the diff entry.
+    void captureDiffLayers(int baseOff, int stride, DiffArea& entry);
+    /// Restore base layer columns of the area, overlay the entry's columns,
+    /// drop live columns that belong to neither.
+    void applyDiffAreaLayers(int baseOff, int stride, const DiffArea& entry);
     /// Buffers := base snapshot + difference model (full re-render needed).
     void applyDiffToBuffers();
     /// Drop the difference state (world unload/switch).

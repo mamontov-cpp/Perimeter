@@ -488,6 +488,23 @@ double EditorSession::terrainHeightExact(int x, int y) const
     return static_cast<double>(vMap.SGetAlt(x, y)) / (1 << VX_FRACTION);
 }
 
+void EditorSession::setViewSliceHeight(int height)
+{
+    const int clamped =
+        height < 0 ? -1 : std::min(height, MAX_VX_HEIGHT_WHOLE);
+    if (!isWorldLoaded() || vMap.viewSliceHeight == clamped) {
+        return;
+    }
+    vMap.viewSliceHeight = clamped;
+    vMap.regRender(0, 0, static_cast<int>(vMap.H_SIZE),
+                   static_cast<int>(vMap.V_SIZE));
+}
+
+int EditorSession::viewSliceHeight() const noexcept
+{
+    return vMap.viewSliceHeight;
+}
+
 bool EditorSession::terrainSample(int x, int y, TerrainSample& out) const
 {
     const unsigned w = mapWidth();
@@ -803,6 +820,8 @@ constexpr std::size_t kMaxPendingUndoCells = kMaxUndoCells / 2;
 /// Swap the snapshot bytes with the live buffers over the snapshot rectangle.
 /// After a call the snapshot holds whatever was in the buffers before — the
 /// caller decides whether that means "restore" (undo) or "re-apply" (redo).
+void swapSnapshotLayers(UndoAreaSnapshot& snap);
+
 void swapSnapshotWithBuffers(UndoAreaSnapshot& snap)
 {
     const std::size_t cells = static_cast<std::size_t>(snap.sx) * snap.sy;
@@ -839,6 +858,66 @@ void swapSnapshotWithBuffers(UndoAreaSnapshot& snap)
                 snap.col[cnt] = t32;
             }
         }
+    }
+    swapSnapshotLayers(snap);
+}
+
+/// Swap the voxel-layer ranges of the snapshot rect with the live buffers.
+/// Pre-state semantics mirror the color layer: a snapshot taken before any
+/// layers existed is promoted lazily ("no layers in this rect"), adopting
+/// the current columns so redo can re-apply them.
+void swapSnapshotLayers(UndoAreaSnapshot& snap)
+{
+    if (snap.lay.empty() && vMap.voxLayers.empty()) {
+        return;
+    }
+    const int H = vMap.H_SIZE;
+    const auto insideRect = [&](uint32_t off) {
+        const int x = static_cast<int>(off % H);
+        const int y = static_cast<int>(off / H);
+        return x >= snap.x && x < snap.x + snap.sx && y >= snap.y &&
+               y < snap.y + snap.sy;
+    };
+    if (snap.lay.empty() && !vMap.voxLayers.empty()) {
+        // До-состояние — «слоёв в прямоугольнике не было»: переносим текущие
+        // колонки в снимок и очищаем их. Сначала СНИМОК offset'ов — setColumn
+        // ниже стирает из col_, итерировать её напрямую нельзя.
+        std::vector<uint32_t> columns;
+        for (uint32_t off : vMap.voxLayers.col_) {
+            if (insideRect(off)) {
+                columns.push_back(off);
+            }
+        }
+    for (uint32_t off : columns) {
+        int count = 0;
+        const VoxLayerRange* r =
+            vMap.voxLayers.columnRanges(vMap.voxLayers.findColumn(off),
+                                        &count);
+        snap.lay.setColumn(off, r, count);
+        vMap.voxLayers.setColumn(off, nullptr, 0);
+    }
+    return;
+    }
+    // Список колонок снимка — setColumn ниже меняет lay (стирание/вставка),
+    // итерировать по индексу нельзя.
+    std::vector<uint32_t> columns;
+    for (int i = 0; i < snap.lay.columnCount(); ++i) {
+        columns.push_back(snap.lay.columnOffset(i));
+    }
+    for (uint32_t off : columns) {
+        if (!insideRect(off)) {
+            continue;
+        }
+        int liveCount = 0;
+        const VoxLayerRange* live = vMap.voxLayers.columnRanges(
+            vMap.voxLayers.findColumn(off), &liveCount);
+        std::vector<VoxLayerRange> liveCopy(live, live + liveCount);
+        int snapCount = 0;
+        const VoxLayerRange* snapRanges = snap.lay.columnRanges(
+            snap.lay.findColumn(off), &snapCount);
+        vMap.voxLayers.setColumn(off, snapRanges, snapCount);
+        snap.lay.setColumn(off, liveCopy.data(),
+                           static_cast<int>(liveCopy.size()));
     }
 }
 
@@ -892,6 +971,94 @@ void EditorSession::regRenderWithShadowTrail(int lowX, int lowY, int hiX, int hi
 // Difference mode (.gmp)
 // ---------------------------------------------------------------------------
 
+/// True when the live layer columns inside the coarse area (baseOff,stride
+/// — same addressing as resyncDiffRect) differ from the base snapshot.
+static bool diffLayersDifferImpl(const VoxColLayers& base,
+                                 int baseOff, int stride)
+{
+    const int H = static_cast<int>(vMap.H_SIZE);
+    const int64_t offBeg = baseOff;
+    const int64_t offEnd = static_cast<int64_t>(baseOff) +
+                           (sizeCellGridCA - 1) * stride +
+                           (sizeCellGridCA - 1);
+    const auto scan = [&](const VoxColLayers& layers, bool isLive) {
+        const auto& cols = layers.col_;
+        const auto lo = std::lower_bound(cols.begin(), cols.end(),
+                                         static_cast<uint32_t>(offBeg));
+        for (auto it = lo; it != cols.end() && *it <= offEnd; ++it) {
+            const uint32_t off = *it;
+            const int cx = static_cast<int>(off % H);
+            // курсор строки: (off - cx) — y = off / H
+            const int cy = static_cast<int>(off / H);
+            const int row0 = cy - ((baseOff / H));
+            const int col0 = cx - (baseOff % H);
+            if (row0 < 0 || row0 >= sizeCellGridCA || col0 < 0 ||
+                col0 >= sizeCellGridCA) {
+                continue; // колонка вне прямоугольника окна
+            }
+            int count = 0;
+            const VoxLayerRange* r = layers.columnRanges(
+                static_cast<int>(it - cols.begin()), &count);
+            const int bIdx = base.findColumn(off);
+            int bCount = 0;
+            const VoxLayerRange* b = base.columnRanges(bIdx, &bCount);
+            if (count != bCount ||
+                (count > 0 && std::memcmp(r, b, count * sizeof(VoxLayerRange)) != 0)) {
+                return true;
+            }
+        }
+        (void)isLive;
+        return false;
+    };
+    // Колонки живого состояния против базы.
+    if (scan(vMap.voxLayers, true)) {
+        return true;
+    }
+    // И наоборот: колонки базы, отсутствующие в живом.
+    const auto& cols = base.col_;
+    const auto lo = std::lower_bound(cols.begin(), cols.end(),
+                                     static_cast<uint32_t>(offBeg));
+    for (auto it = lo; it != cols.end() && *it <= offEnd; ++it) {
+        if (vMap.voxLayers.findColumn(*it) < 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool EditorSession::diffLayersDiffer(int baseOff, int stride) const
+{
+    return diffLayersDifferImpl(baseLay_, baseOff, stride);
+}
+
+/// Copy the live layer columns of the coarse area into the diff entry.
+void EditorSession::captureDiffLayers(int baseOff, int stride, DiffArea& entry)
+{
+    const int H = static_cast<int>(vMap.H_SIZE);
+    const int64_t offBeg = baseOff;
+    const int64_t offEnd = static_cast<int64_t>(baseOff) +
+                           (sizeCellGridCA - 1) * stride +
+                           (sizeCellGridCA - 1);
+    const auto& cols = vMap.voxLayers.col_;
+    const auto lo = std::lower_bound(cols.begin(), cols.end(),
+                                     static_cast<uint32_t>(offBeg));
+    for (auto it = lo; it != cols.end() && *it <= offEnd; ++it) {
+        const uint32_t off = *it;
+        const int cx = static_cast<int>(off % H);
+        const int cy = static_cast<int>(off / H);
+        const int row0 = cy - (baseOff / H);
+        const int col0 = cx - (baseOff % H);
+        if (row0 < 0 || row0 >= sizeCellGridCA || col0 < 0 ||
+            col0 >= sizeCellGridCA) {
+            continue;
+        }
+        int count = 0;
+        const VoxLayerRange* r = vMap.voxLayers.columnRanges(
+            static_cast<int>(it - cols.begin()), &count);
+        entry.lay.setColumn(off, r, count);
+    }
+}
+
 void EditorSession::resyncDiffRect(int x0, int y0, int x1, int y1)
 {
     if (!isWorldLoaded() || !diffMode_ || baseGeo_.empty()) {
@@ -931,6 +1098,10 @@ void EditorSession::resyncDiffRect(int x0, int y0, int x1, int y1)
                     }
                 }
             }
+            // Слои: сравнение колонок (live против базы) внутри области.
+            if (!differs) {
+                differs = diffLayersDiffer(baseOff, stride);
+            }
             if (!differs) {
                 if (diffAreas_.erase(area) > 0) {
                     diffModified_ = true;
@@ -961,6 +1132,7 @@ void EditorSession::resyncDiffRect(int x0, int y0, int x1, int y1)
                                 entry.col.begin() + k * sizeCellGridCA);
                 }
             }
+            captureDiffLayers(baseOff, stride, entry);
             diffAreas_[area] = std::move(entry);
             diffModified_ = true;
         }
@@ -1007,10 +1179,69 @@ void EditorSession::applyDiffToBuffers()
                             sizeCellGridCA, vMap.SurColBuf + row);
             }
         }
+        applyDiffAreaLayers(baseOff, stride, entry);
     }
     // Full re-render: every cell may have changed.
     vMap.regRender(0, 0, static_cast<int>(vMap.H_SIZE),
                    static_cast<int>(vMap.V_SIZE));
+}
+
+/// Restore the base layer columns of the coarse area, overlay the entry's
+/// columns and drop live columns that belong to neither (they can only be
+/// stale leftovers of an inconsistent state).
+void EditorSession::applyDiffAreaLayers(int baseOff, int stride,
+                                        const DiffArea& entry)
+{
+    const int H = static_cast<int>(vMap.H_SIZE);
+    const int baseX = baseOff % H;
+    const int baseY = baseOff / H;
+    const auto applySet = [&](const VoxColLayers& layers) {
+        const int64_t offBeg = baseOff;
+        const int64_t offEnd = static_cast<int64_t>(baseOff) +
+                               (sizeCellGridCA - 1) * stride +
+                               (sizeCellGridCA - 1);
+        const auto& cols = layers.col_;
+        const auto lo = std::lower_bound(cols.begin(), cols.end(),
+                                         static_cast<uint32_t>(offBeg));
+        for (auto it = lo; it != cols.end() && *it <= offEnd; ++it) {
+            const uint32_t off = *it;
+            const int cx = static_cast<int>(off % H) - baseX;
+            const int cy = static_cast<int>(off / H) - baseY;
+            if (cx < 0 || cx >= sizeCellGridCA || cy < 0 ||
+                cy >= sizeCellGridCA) {
+                continue;
+            }
+            int count = 0;
+            const VoxLayerRange* r = layers.columnRanges(
+                static_cast<int>(it - cols.begin()), &count);
+            vMap.voxLayers.setColumn(off, r, count);
+        }
+    };
+    applySet(baseLay_);
+    applySet(entry.lay);
+    // Очистка живых колонок окна, которых нет ни в базе, ни в записи.
+    const int64_t offBeg = baseOff;
+    const int64_t offEnd = static_cast<int64_t>(baseOff) +
+                           (sizeCellGridCA - 1) * stride +
+                           (sizeCellGridCA - 1);
+    const auto& cols = vMap.voxLayers.col_;
+    const auto lo = std::lower_bound(cols.begin(), cols.end(),
+                                     static_cast<uint32_t>(offBeg));
+    std::vector<uint32_t> remove;
+    for (auto it = lo; it != cols.end() && *it <= offEnd; ++it) {
+        const uint32_t off = *it;
+        const int cx = static_cast<int>(off % H) - baseX;
+        const int cy = static_cast<int>(off / H) - baseY;
+        if (cx < 0 || cx >= sizeCellGridCA || cy < 0 || cy >= sizeCellGridCA) {
+            continue;
+        }
+        if (baseLay_.findColumn(off) < 0 && entry.lay.findColumn(off) < 0) {
+            remove.push_back(off);
+        }
+    }
+    for (uint32_t off : remove) {
+        vMap.voxLayers.setColumn(off, nullptr, 0);
+    }
 }
 
 void EditorSession::clearDiffState()
@@ -1022,6 +1253,7 @@ void EditorSession::clearDiffState()
     baseAtr_.clear();
     baseSur_.clear();
     baseCol_.clear();
+    baseLay_.clear();
     diffMode_ = false;
 }
 
@@ -1050,6 +1282,9 @@ void EditorSession::runWithBaseTerrain(const std::function<void()>& fn)
                         cells * sizeof(std::uint32_t));
         }
     }
+    // Слои целиком: база на время прогона, эффективное состояние — копия.
+    VoxColLayers effLay = vMap.voxLayers;
+    vMap.voxLayers = baseLay_;
     std::memcpy(vMap.VxGBuf, baseGeo_.data(), cells * sizeof(uint16_t));
     std::memcpy(vMap.VxDBuf, baseDam_.data(), cells * sizeof(uint16_t));
     std::memcpy(vMap.AtrBuf, baseAtr_.data(), cells);
@@ -1062,6 +1297,7 @@ void EditorSession::runWithBaseTerrain(const std::function<void()>& fn)
     if (hasCol) {
         std::memcpy(vMap.SurColBuf, effC.data(), cells * sizeof(std::uint32_t));
     }
+    vMap.voxLayers = std::move(effLay);
     // The effective content is back: repaint everything.
     vMap.regRender(0, 0, static_cast<int>(vMap.H_SIZE),
                    static_cast<int>(vMap.V_SIZE));
@@ -1114,6 +1350,7 @@ bool EditorSession::setDiffMode(bool on)
         } else {
             baseCol_.clear();
         }
+        baseLay_ = vMap.voxLayers;
         diffMode_ = true;
         applyDiffToBuffers();
     } else {
@@ -1133,11 +1370,13 @@ bool EditorSession::setDiffMode(bool on)
                             cells * sizeof(std::uint32_t));
             }
         }
+        vMap.voxLayers = baseLay_;
         baseGeo_.clear();
         baseDam_.clear();
         baseAtr_.clear();
         baseSur_.clear();
         baseCol_.clear();
+        baseLay_.clear();
         diffMode_ = false;
         vMap.regRender(0, 0, static_cast<int>(vMap.H_SIZE),
                        static_cast<int>(vMap.V_SIZE));
@@ -1251,6 +1490,47 @@ bool EditorSession::saveDiffToGmp(const std::string& path)
             }
         }
     }
+    // Трейлер "XLY0": внутренние слои вокселей изменённых областей
+    // (разреженные колонки с абсолютными offset). За XCL0; читает
+    // loadDiffFromGmp.
+    bool hasLayers = false;
+    for (const auto& [area, entry] : diffAreas_) {
+        if (!entry.lay.empty()) {
+            hasLayers = true;
+            break;
+        }
+    }
+    if (hasLayers) {
+        const char extId[4] = {'X', 'L', 'Y', '0'};
+        out.write(extId, 4);
+        for (int area = 0; area < gw * gh; ++area) {
+            const auto it = diffAreas_.find(area);
+            if (it == diffAreas_.end()) {
+                continue;
+            }
+            const VoxColLayers& lay = it->second.lay;
+            const std::uint32_t nCols =
+                static_cast<std::uint32_t>(lay.col_.size());
+            out.write(reinterpret_cast<const char*>(&nCols), sizeof(nCols));
+            for (std::uint32_t i = 0; i < nCols; ++i) {
+                out.write(reinterpret_cast<const char*>(&lay.col_[i]),
+                          sizeof(std::uint32_t));
+                std::uint32_t begin = lay.begin_[i];
+                std::uint32_t end = i + 1 < nCols
+                                        ? lay.begin_[i + 1]
+                                        : static_cast<std::uint32_t>(
+                                              lay.ranges_.size());
+                std::uint32_t count = end - begin;
+                out.write(reinterpret_cast<const char*>(&count),
+                          sizeof(count));
+                if (count) {
+                    out.write(
+                        reinterpret_cast<const char*>(&lay.ranges_[begin]),
+                        count * sizeof(VoxLayerRange));
+                }
+            }
+        }
+    }
     if (!out.good()) {
         fprintf(stderr, "EditorSession::saveDiffToGmp: write failed '%s'.\n",
                 path.c_str());
@@ -1351,6 +1631,51 @@ bool EditorSession::loadDiffFromGmp(const std::string& path)
                         "XCL0 trailer in '%s'.\n", path.c_str());
                 return false;
             }
+            // За XCL0 может идти трейлер слоёв "XLY0".
+            if (in.read(extId, 4) && memcmp(extId, "XLY0", 4) == 0) {
+                for (int area = 0; area < gw * gh; ++area) {
+                    if (flags[static_cast<std::size_t>(area)] != 1) {
+                        continue;
+                    }
+                    auto it = loaded.find(area);
+                    std::uint32_t nCols = 0;
+                    in.read(reinterpret_cast<char*>(&nCols), sizeof(nCols));
+                    if (nCols > static_cast<std::uint32_t>(block)) {
+                        fprintf(stderr, "EditorSession::loadDiffFromGmp: "
+                                "absurd column count %u in XLY0 trailer of "
+                                "'%s'.\n", nCols, path.c_str());
+                        return false;
+                    }
+                    for (std::uint32_t i = 0; i < nCols; ++i) {
+                        std::uint32_t off = 0, count = 0;
+                        in.read(reinterpret_cast<char*>(&off), sizeof(off));
+                        in.read(reinterpret_cast<char*>(&count), sizeof(count));
+                        // Неконтролируемый count из файла: без капа
+                        // повреждённый .gmp уводит аллокацию в
+                        // bad_alloc/length_error ещё до проверки truncated.
+                        if (count > (1u << 20)) {
+                            fprintf(stderr, "EditorSession::loadDiffFromGmp: "
+                                    "absurd column range count %u in XLY0 "
+                                    "trailer of '%s'.\n", count,
+                                    path.c_str());
+                            return false;
+                        }
+                        std::vector<VoxLayerRange> ranges(count);
+                        if (count) {
+                            in.read(reinterpret_cast<char*>(ranges.data()),
+                                    count * sizeof(VoxLayerRange));
+                        }
+                        it->second.lay.setColumn(off, ranges.data(),
+                                                 static_cast<int>(count));
+                    }
+                }
+                if (!in) {
+                    fprintf(stderr, "EditorSession::loadDiffFromGmp: "
+                            "truncated XLY0 trailer in '%s'.\n",
+                            path.c_str());
+                    return false;
+                }
+            }
         }
     }
     diffAreas_ = std::move(loaded);
@@ -1409,6 +1734,29 @@ void EditorSession::recordUndoArea(int x, int y, int width, int height)
             if (hasCol) {
                 snapshot.col[cnt] = vMap.SurColBuf[off];
             }
+        }
+    }
+    // Слои: колонки, пересекающие прямоугольник (col_ отсортирован —
+    // окно по offset, точная проверка x/y).
+    if (!vMap.voxLayers.empty()) {
+        const int H = static_cast<int>(vMap.H_SIZE);
+        const uint32_t offBeg =
+            static_cast<uint32_t>(yBeg) * H + static_cast<uint32_t>(xBeg);
+        const uint32_t offEnd =
+            static_cast<uint32_t>(yEnd - 1) * H + static_cast<uint32_t>(xEnd - 1);
+        const auto& cols = vMap.voxLayers.col_;
+        const auto lo = std::lower_bound(cols.begin(), cols.end(), offBeg);
+        for (auto it = lo; it != cols.end() && *it <= offEnd; ++it) {
+            const uint32_t coff = *it;
+            const int cx = static_cast<int>(coff % H);
+            const int cy = static_cast<int>(coff / H);
+            if (cx < xBeg || cx >= xEnd || cy < yBeg || cy >= yEnd) {
+                continue;
+            }
+            int count = 0;
+            const VoxLayerRange* r = vMap.voxLayers.columnRanges(
+                static_cast<int>(it - cols.begin()), &count);
+            snapshot.lay.setColumn(coff, r, count);
         }
     }
 
@@ -1567,6 +1915,13 @@ void EditorSession::finalizePendingUndoGroup()
     if (hasCol) {
         merged.col.resize(cells);
     }
+    // Слои: семя — текущее состояние (как и прочие буферы); снапшоты
+    // перезаписывают свои колонки, per-cell выигрывает самый ранний снимок.
+    if (!vMap.voxLayers.empty()) {
+        merged.lay.col_ = vMap.voxLayers.col_;
+        merged.lay.begin_ = vMap.voxLayers.begin_;
+        merged.lay.ranges_ = vMap.voxLayers.ranges_;
+    }
     std::size_t seed = 0;
     for (int j = 0; j < sy; ++j) {
         const int row = (y0 + j) * static_cast<int>(vMap.H_SIZE) + x0;
@@ -1604,6 +1959,19 @@ void EditorSession::finalizePendingUndoGroup()
                 }
                 covered[mIdx] = true;
             }
+        }
+    }
+
+    // Слои: самый ранний снимок, покрывший колонку, определяет до-состояние.
+    for (const UndoAreaSnapshot& snap : undoGroup_) {
+        for (int i = 0; i < snap.lay.columnCount(); ++i) {
+            const uint32_t off = snap.lay.columnOffset(i);
+            if (merged.lay.findColumn(off) >= 0) {
+                continue; // уже записан более ранний снимок (или семя)
+            }
+            int count = 0;
+            const VoxLayerRange* r = snap.lay.columnRanges(i, &count);
+            merged.lay.setColumn(off, r, count);
         }
     }
 

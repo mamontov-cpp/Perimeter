@@ -42,6 +42,7 @@
 #include <QMainWindow>
 #include <QMenu>
 #include <QMessageBox>
+#include <QCheckBox>
 #include <QColorDialog>
 #include <QSpinBox>
 #include <QToolButton>
@@ -347,6 +348,13 @@ void BrushUiController::updateEnabledStates(bool worldLoaded)
             worldLoaded &&
             (effect == MapEditor::BrushEffect::SetColor ||
              effect == MapEditor::BrushEffect::PickColor));
+        const bool colorActive =
+            worldLoaded && effect == MapEditor::BrushEffect::SetColor;
+        brushPaintHeightSpin_->setEnabled(colorActive);
+        brushPaintDepthSpin_->setEnabled(colorActive);
+        brushPaintInteriorCheck_->setEnabled(
+            worldLoaded &&
+            brushTool_->params().shape3d != MapEditor::Shape3DKind::None);
     }
     // T3.2 — the single height control serves the raise/lower step and the
     // "Level to Height" target.
@@ -1565,6 +1573,58 @@ void BrushUiController::buildBrushToolbar()
     bar->addWidget(new QLabel(tr("Color:"), bar));
     bar->addWidget(brushColorButton_);
 
+    // Layer painting for the color brush: the height at which the surface
+    // is painted (-1 = the column top = the default paint) and the paint
+    // depth (1 = a single voxel layer). Below the surface the brush paints
+    // internal voxel layers [height-depth+1 .. height]; at/above the
+    // surface it is the default top paint.
+    brushPaintHeightSpin_ = new QSpinBox(bar);
+    brushPaintHeightSpin_->setRange(-1, MAX_VX_HEIGHT_WHOLE);
+    brushPaintHeightSpin_->setValue(-1);
+    brushPaintHeightSpin_->setSpecialValueText(tr("top"));
+    brushPaintHeightSpin_->setSuffix(tr(" vox"));
+    brushPaintHeightSpin_->setToolTip(
+        tr("Paint height (whole voxels): -1 = the column top (default "
+           "paint). A height below the surface paints internal voxel "
+           "layers; at/above the surface it clamps to the top."));
+    connect(brushPaintHeightSpin_, &QSpinBox::valueChanged, this,
+            [this](int value) {
+                MapEditor::BrushParams params = brushTool_->params();
+                params.paintHeight = value;
+                brushTool_->setParams(params);
+            });
+    bar->addWidget(new QLabel(tr("H:"), bar));
+    bar->addWidget(brushPaintHeightSpin_);
+
+    brushPaintDepthSpin_ = new QSpinBox(bar);
+    brushPaintDepthSpin_->setRange(1, MAX_VX_HEIGHT_WHOLE);
+    brushPaintDepthSpin_->setValue(1);
+    brushPaintDepthSpin_->setToolTip(
+        tr("Paint depth: how many voxel layers downward a below-surface "
+           "paint covers (1 = a single layer)."));
+    connect(brushPaintDepthSpin_, &QSpinBox::valueChanged, this,
+            [this](int value) {
+                MapEditor::BrushParams params = brushTool_->params();
+                params.paintDepth = value;
+                brushTool_->setParams(params);
+            });
+    bar->addWidget(new QLabel(tr("Depth:"), bar));
+    bar->addWidget(brushPaintDepthSpin_);
+
+    // 3D shapes: paint the interior of the solid (every voxel level from
+    // the shape base up to its surface at the column).
+    brushPaintInteriorCheck_ = new QCheckBox(tr("Paint interior"), bar);
+    brushPaintInteriorCheck_->setToolTip(
+        tr("3D shape brushes: paint every voxel inside the solid with the "
+           "brush color (clipped at the shape surface per column)."));
+    connect(brushPaintInteriorCheck_, &QCheckBox::toggled, this,
+            [this](bool on) {
+                MapEditor::BrushParams params = brushTool_->params();
+                params.paintInterior3d = on;
+                brushTool_->setParams(params);
+            });
+    bar->addWidget(brushPaintInteriorCheck_);
+
     // T3.3/T4.2 — the paint/pick color types next to their color controls
     // (the same actions the Edit menu carries).
     bar->addAction(actBrushColor_);
@@ -1854,6 +1914,25 @@ void BrushUiController::syncControls()
         }
     }
 
+    // Layer-paint controls follow params.
+    if (brushPaintHeightSpin_ &&
+        brushPaintHeightSpin_->value() != params.paintHeight) {
+        brushPaintHeightSpin_->blockSignals(true);
+        brushPaintHeightSpin_->setValue(params.paintHeight);
+        brushPaintHeightSpin_->blockSignals(false);
+    }
+    if (brushPaintDepthSpin_ &&
+        brushPaintDepthSpin_->value() != params.paintDepth) {
+        brushPaintDepthSpin_->blockSignals(true);
+        brushPaintDepthSpin_->setValue(params.paintDepth);
+        brushPaintDepthSpin_->blockSignals(false);
+    }
+    if (brushPaintInteriorCheck_ &&
+        brushPaintInteriorCheck_->isChecked() != params.paintInterior3d) {
+        brushPaintInteriorCheck_->blockSignals(true);
+        brushPaintInteriorCheck_->setChecked(params.paintInterior3d);
+        brushPaintInteriorCheck_->blockSignals(false);
+    }
     // The color button is restyled from params by syncColorControls() below.
 
     // Mirror the tool into the viewport cursor preview: the square silhouette

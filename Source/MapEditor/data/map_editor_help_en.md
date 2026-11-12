@@ -306,6 +306,7 @@ number ≥ 1, the circle radius or the square half-side, up to 512; `square`
 | `paintSoot(pos, radius, square)` | soot |
 | `paintVeryLightDam(pos, radius, square)` | "very light dam" |
 | `paintColor(pos, red, green, blue, radius, square)` | paint: the exact RGB (0..255), no palette quantization |
+| `paintColorAt(pos, red, green, blue, height, depth, radius, square)` | paint the **internal voxel layers**: the range `[height-depth+1 .. height]` at every covered cell; `height = -1` — the column top (the default paint); a height at/above the surface clamps to the top |
 | `applyBlur(pos, radius, blurRadius, effect, square)` | Gaussian Blur: smooth the heights with a Gaussian kernel; `blurRadius` is clamped to `1..radius-1`, `effect` — the effect fraction 0..1 (1.0 = reach in one stamp) |
 | `applySmooth(pos, radius, effect, square)` | Tricubic: smooth towards the tricubic (bicubic Catmull-Rom) interpolation of the lattice under the stamp — like the Tricubic brush on the Sculpting toolbar; `effect` — the fraction 0..1 |
 | `applyHeightFn(pos, radius, fn, square)` | set the height **by a function**: `fn(x, y, h)` is called for every covered cell with its coordinates and the PRE-EDIT dam surface height `h` (fractional, 1/32 step; 0 where there is no dam) and returns the cell's new **absolute** height (fractional — like raiseHeight); all reads see the original surface before any write, so cells never influence each other |
@@ -329,6 +330,18 @@ stores a single SurBuf index, and the palette (Geo or Dam) is selected by
 the layer — so `getGeoColor` and `getDamColor` read the same index through
 different palettes. The message boxes are the script's only access to the
 UI; any JS value is converted to a string for them.
+
+Painting at a height: the brush and the API take the height in **whole
+voxels from zero** (the `height`/`depth` arguments of `paintColorAt`, the
+**H** and **Depth** spinboxes on the brush toolbar for the Paint Color
+brush, the slice panel's "paint at the slice height" mode); the current
+surface height of a cell is the height of its topmost voxel.
+`height = -1` (or any height at/above the surface) paints the column top —
+the column's **default color**. An explicit height **below** the surface
+paints the internal layers `[height-depth+1 .. height]` (`depth` ≥ 1,
+default 1 = a one-voxel layer); the layer wins until terraforming moves
+the surface into it. The paint is purely visual, replaces the color, and
+joins the stamp's single Undo step.
 
 A note on `raiseHeight`/`lowerHeight`: these are **incremental** ops — a
 radius-1 stamp covers a 3×3 area around the centre, so stamps at adjacent
@@ -784,13 +797,18 @@ and the spawn coordinates), `remove_player`.
 **Brushes:** `apply_brush` — all effects (raise/lower/set height,
 zeroplast, soot, very light dam, paintColor, the smooth/flatten/tricubic/
 inflate/gaussianBlur sculpting), 3D solids (`shape`: cone, pyramid,
-truncatedCone, truncatedPyramid, torus, halfEllipsoid), ImageDecal
+truncatedCone, truncatedPyramid, torus, halfEllipsoid; `paintInterior: 1`
+paints every voxel inside the solid from its base up to the column
+surface), ImageDecal
 (`load_decal_image` + `effect: "imageDecal"`), the image mask
 (`load_brush_image` — the alpha channel defines the stamp shape: fully
 transparent pixels do not stamp at all; the scale is the `maskScale`
 argument of apply_brush, 10–800 %, like the Mask spin on the toolbar), the
 model brush (`import_model` + `effect: "model"`), the stamp parameters
-(radius, square, sides/angleOffset, fraction, blurRadius, layer dam/geo).
+(radius, square, sides/angleOffset, fraction, blurRadius, layer dam/geo),
+painting at a height for paintColor: `paintHeight` (voxels, -1 = the
+column top) and `paintDepth` (the layer depth, ≥ 1) — the same semantics
+as the H/Depth spinboxes and `paintColorAt` in the JS API.
 In the difference mode the stamp writes to the diff buffer.
 
 **Scripts:** `run_script` (JavaScript in one undo step, the same API as the
@@ -800,7 +818,10 @@ Scripted Brush / Run Script), `set_scripted_brush_script`.
 `load_difference`.
 
 **Terrain and palettes:** `get_terrain_at` (the Geo/Dam heights, the
-surface index and colors, the cell attributes), `get_palette`,
+surface index and colors, the cell attributes; with a `z` argument — the
+color of the internal voxel layer at height z: `voxelColor` `{r, g, b}`
+and `hasLayer` — true when a layer covers z, otherwise the column's
+default color is returned), `get_palette`,
 `set_palette_color`.
 
 **History:** `undo`, `redo`.

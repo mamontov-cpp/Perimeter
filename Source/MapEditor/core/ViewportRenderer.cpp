@@ -53,6 +53,31 @@ unsigned int color32WithLighting(int off, unsigned int lighting)
     return vMap.Sur2Col32[vMap.SurBuf[off]][lighting];
 }
 
+/// The composite surface color of a cell with the SAME precedence as
+/// vrtMap::getColor32(): an internal voxel-layer range containing the
+/// (slice-clamped) surface wins, then the true-color override, then the
+/// palette tables. Without this the editor views (2D cache, GPU tilemap
+/// via GetTileColor, smooth-3D pyramid) would quantize/ignore both the
+/// extended palette and the height-slice mode.
+unsigned int surfaceColor32(int off)
+{
+    if (!vMap.voxLayers.empty()) {
+        const int surface = vMap.SGetAlt(off) >> VX_FRACTION;
+        const int h = (vMap.viewSliceHeight >= 0 &&
+                       vMap.viewSliceHeight < surface)
+                          ? vMap.viewSliceHeight
+                          : surface;
+        std::uint32_t rgb = 0;
+        if (vMap.voxLayers.lookup(static_cast<std::uint32_t>(off), h, &rgb)) {
+            return vrtMap::trueColor32(0xFF000000u | rgb, vMap.RnrBuf[off] & 0x7F);
+        }
+    }
+    if (vMap.SurColBuf && (vMap.SurColBuf[off] & 0xFF000000u)) {
+        return vrtMap::trueColor32(vMap.SurColBuf[off], vMap.RnrBuf[off] & 0x7F);
+    }
+    return color32WithLighting(off, vMap.RnrBuf[off]);
+}
+
 /// The in-game dimming of the sunken surface: desaturate to luminance and
 /// halve it — "shades of grey and black" like the game shows the terrain
 /// floor. In the game the grey is NOT about the missing dam layer: the
@@ -233,7 +258,7 @@ bool ViewportRenderer::compositeColorAt(int x, int y, std::uint32_t &rgb)
         return false;
     }
     const int off = vMap.offsetBuf(x, y);
-    rgb = color32WithLighting(off, vMap.RnrBuf[off]);
+    rgb = surfaceColor32(off);
     return true;
 }
 
@@ -351,11 +376,11 @@ std::vector<DirtyRect> ViewportRenderer::update()
 
 std::uint32_t ViewportRenderer::mipBaseColor(int x, int y) const
 {
-    // The 3D view always shows the composite look: identical input to the
-    // LayerFilter::Composite branch of colorAt(), deliberately not filtered —
-    // the pyramid is view data, not editor-layer data.
+    // The 3D view always shows the composite look, with the same
+    // layer/true-color precedence as vrtMap::getColor32() (see
+    // surfaceColor32) — the pyramid is view data, not editor-layer data.
     const int off = vMap.offsetBuf(x, y);
-    const unsigned int col = color32WithLighting(off, vMap.RnrBuf[off]);
+    const unsigned int col = surfaceColor32(off);
     if (geoDimmed_ && sunkenCell(off)) {
         return kOpaque | dimGeoColor(col);
     }

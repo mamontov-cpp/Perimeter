@@ -401,6 +401,8 @@ BrushParams clampedParams(const BrushParams& params)
     clamped.blurRadius = BrushTool::clampBlurRadius(clamped.blurRadius,
                                                     clamped.radius);
     clamped.gateHeight = BrushTool::clampGateHeight(clamped.gateHeight);
+    clamped.paintHeight = BrushTool::clampPaintHeight(clamped.paintHeight);
+    clamped.paintDepth = BrushTool::clampPaintDepth(clamped.paintDepth);
     if (clamped.direction != 0) {
         clamped.direction = clamped.direction > 0 ? 1 : -1;
     }
@@ -519,6 +521,16 @@ double BrushTool::clampPolygonAngleDeg(double deg)
 double BrushTool::clampSculptEffect(double effect)
 {
     return std::clamp(effect, 0.0, 1.0);
+}
+
+int BrushTool::clampPaintHeight(int h)
+{
+    return std::clamp(h, -1, MAX_VX_HEIGHT_WHOLE);
+}
+
+int BrushTool::clampPaintDepth(int d)
+{
+    return std::clamp(d, 1, MAX_VX_HEIGHT_WHOLE);
 }
 
 int BrushTool::clampGateHeight(int level)
@@ -864,6 +876,7 @@ bool BrushTool::applyMask(const BrushMask& absoluteMask, const BrushParams& para
         return applySculpt(absoluteMask, params, bx, by, bxEnd, byEnd);
     }
 
+    pendingLayerPaints_.clear();
     // --- 3. Route the effect over the visible mask cells. ---
     for (int y = by; y < byEnd; ++y) {
         for (int x = bx; x < bxEnd; ++x) {
@@ -878,6 +891,16 @@ bool BrushTool::applyMask(const BrushMask& absoluteMask, const BrushParams& para
             }
         }
     }
+
+    // Layer paints collected by the cell loop — applied in one batch now
+    // that the routing is done.
+    for (const auto& lp : pendingLayerPaints_) {
+        vMap.voxLayers.paint(static_cast<uint32_t>(lp[0]), lp[1], lp[2],
+                             static_cast<unsigned char>((lp[3] >> 16) & 0xFF),
+                             static_cast<unsigned char>((lp[3] >> 8) & 0xFF),
+                             static_cast<unsigned char>(lp[3] & 0xFF));
+    }
+    pendingLayerPaints_.clear();
 
     // --- 4. Grid + viewport dirty rectangles, margin 1 like Terra's tools ---
     // ---    (influenceDZ recalcArea2Grid bugfix comment in tools.h:252).  ---
@@ -1482,6 +1505,24 @@ bool BrushTool::applyShape3D(const BrushMask& absoluteMask,
         seedDamLayer(off);
         setExactToolzerTarget(shapeToolzer, target32);
         shapeToolzer.tVoxSetAll(off, dV);
+        // Interior paint (optional): every voxel level from the shape base
+        // up to the new surface at this column gets the brush color —
+        // clipped at the highest part (the shape surface). The base is the
+        // shape's Height for set-to-height stamps, the pre-stamp surface
+        // for directional raise/lower.
+        if (params.paintInterior3d) {
+            const std::uint32_t rgb = params.colorRgb & 0x00FFFFFFu;
+            const int top = vMap.SGetAlt(off) >> VX_FRACTION;
+            const int base = setMode
+                                 ? static_cast<int>(baseVox)
+                                 : (alts[k] >> VX_FRACTION);
+            if (top >= base && top >= 0) {
+                vMap.voxLayers.paint(static_cast<uint32_t>(off), base, top,
+                                     static_cast<unsigned char>((rgb >> 16) & 0xFF),
+                                     static_cast<unsigned char>((rgb >> 8) & 0xFF),
+                                     static_cast<unsigned char>(rgb & 0xFF));
+            }
+        }
     }
 
     // Grid + viewport dirty rectangles, margin 1 like the generic path.
@@ -2098,10 +2139,23 @@ void BrushTool::applyEffectToCell(const BrushParams& params, int x, int y, unsig
             break; // wrong layer for this cell — skip, keep SurBuf as-is
         }
         const std::uint32_t rgb = params.colorRgb & 0x00FFFFFFu;
-        vMap.putTrueColor(off, static_cast<unsigned char>((rgb >> 16) & 0xFF),
-                          static_cast<unsigned char>((rgb >> 8) & 0xFF),
-                          static_cast<unsigned char>(rgb & 0xFF));
-        vMap.SetTer(x, y, nearestPaletteIndexFor(isDamCell, rgb));
+        const unsigned char pr = static_cast<unsigned char>((rgb >> 16) & 0xFF);
+        const unsigned char pg = static_cast<unsigned char>((rgb >> 8) & 0xFF);
+        const unsigned char pb = static_cast<unsigned char>(rgb & 0xFF);
+        // Layer paint: an explicit height below the surface paints internal
+        // voxel layers [h-depth+1 .. h]; -1 or a height at/above the
+        // surface is the top/default paint (the true-color layer).
+        const int surface = vMap.SGetAlt(off) >> VX_FRACTION;
+        const int h = params.paintHeight;
+        if (h < 0 || h >= surface) {
+            vMap.putTrueColor(off, pr, pg, pb);
+            vMap.SetTer(x, y, nearestPaletteIndexFor(isDamCell, rgb));
+        } else {
+            const int d = std::max(1, params.paintDepth);
+            const int z0 = std::max(0, h - d + 1);
+            pendingLayerPaints_.push_back(
+                {off, z0, h, static_cast<int>(rgb)});
+        }
         break;
     }
     case BrushEffect::ImageDecal: {

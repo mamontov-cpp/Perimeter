@@ -16,6 +16,7 @@
 #include <MinimapWidget.h>
 #include <NewWorldWizard.h>
 #include <PalettePanel.h>
+#include <SlicePanel.h>
 #include <RunScriptDialog.h>
 #include <ScriptedBrush.h>
 #include <ViewportRenderer.h>
@@ -449,9 +450,37 @@ void MainWindow::buildPaletteDock()
     // Stacks under the minimap dock on the same side.
     addDockWidget(Qt::RightDockWidgetArea, paletteDock_);
 
-    // The View menu owns the show/hide toggle (default: visible).
+    // The slice panel ("show colors at a height") — its own dock under the
+    // palette on the right side of the viewport.
+    slicePanel_ = new MapEditor::SlicePanel(this);
+    slicePanel_->setSession(session_);
+    sliceDock_ = new QDockWidget(tr("Slice"), this);
+    sliceDock_->setObjectName(QStringLiteral("SliceDock"));
+    sliceDock_->setWidget(slicePanel_);
+    sliceDock_->setAllowedAreas(Qt::LeftDockWidgetArea |
+                                Qt::RightDockWidgetArea);
+    sliceDock_->setFeatures(QDockWidget::DockWidgetClosable |
+                            QDockWidget::DockWidgetMovable |
+                            QDockWidget::DockWidgetFloatable);
+    addDockWidget(Qt::RightDockWidgetArea, sliceDock_);
+    connect(slicePanel_, &MapEditor::SlicePanel::sliceChanged, this,
+            [this]() { updateActionStates(); });
+    connect(slicePanel_, &MapEditor::SlicePanel::paintAtSliceRequested, this,
+            [this](int height) {
+        // "2D brushes paint at this height": the paint height follows the
+        // slice while the option is on.
+        MapEditor::BrushParams params = brushTool_->params();
+        params.paintHeight = height;
+        brushTool_->setParams(params);
+                brushUI_->syncControls();
+            });
+
+    // The View menu owns the show/hide toggles (default: visible).
     if (viewMenu_) {
         viewMenu_->addSeparator();
+        QAction *sliceToggle = sliceDock_->toggleViewAction();
+        sliceToggle->setText(tr("Slice Panel"));
+        viewMenu_->addAction(sliceToggle);
         QAction *toggleAction = paletteDock_->toggleViewAction();
         toggleAction->setText(tr("&Palette"));
         toggleAction->setToolTip(
@@ -503,6 +532,10 @@ void MainWindow::onWorldLoaded()
         const MapEditor::BrushParams &params = brushTool_->params();
         palettePanel_->setColor(params.colorRgb & 0x00FFFFFFu);
     }
+    // The slice panel is world-bound too — enable it now.
+    if (slicePanel_ && session_) {
+        slicePanel_->setSession(session_);
+    }
     editorTrace("onWorldLoaded: sync brush controls");
     // The brush-dependent controls (color swatch, spinboxes, cursor preview)
     // were only partially initialized before the world existed — re-read the
@@ -531,6 +564,9 @@ void MainWindow::onWorldUnload()
     }
     if (palettePanel_ && session_) {
         palettePanel_->setSession(session_);
+    }
+    if (slicePanel_) {
+        slicePanel_->setSession(nullptr);
     }
     // The brush controls lose their world-bound state (color swatch RGB,
     // palette selection) — re-read the tool so nothing stale stays on screen.

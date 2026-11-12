@@ -5,6 +5,7 @@
 #include <QString>
 
 class QToolButton;
+class QCheckBox;
 
 #include "BrushTool.h"
 #include "ImageDecal.h"
@@ -223,6 +224,11 @@ private:
     // The color button: swatch showing the current paint RGB; clicking opens
     // the color picker dialog.
     QToolButton *brushColorButton_ = nullptr;
+    // Layer painting: height (-1 = the column top), depth (1 = one voxel
+    // layer) and the 3D-shape interior paint toggle.
+    QSpinBox *brushPaintHeightSpin_ = nullptr;
+    QSpinBox *brushPaintDepthSpin_ = nullptr;
+    QCheckBox *brushPaintInteriorCheck_ = nullptr;
     // T3.5 — the image-mask scale control and the un-scaled original mask.
     QSpinBox *brushMaskScaleSpin_ = nullptr;
     MapEditor::BrushMask brushMaskOriginal_;

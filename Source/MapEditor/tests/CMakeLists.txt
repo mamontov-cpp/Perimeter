@@ -70,7 +70,9 @@ ADD_EXECUTABLE(map_editor_tests
         ExtdemoColorTests.cpp
         WorldSize15Tests.cpp
         TilemapVisPolyTests.cpp
-        SceneTraceTests.cpp)
+        SceneTraceTests.cpp
+        VoxLayerTests.cpp
+        ExtdemoSliceTests.cpp)
 
 SET_TARGET_PROPERTIES(map_editor_tests PROPERTIES
         WIN32_EXECUTABLE OFF

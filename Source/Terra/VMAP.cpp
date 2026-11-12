@@ -110,6 +110,9 @@ static const char HEIGHTS16_ID[4] = {'H', '1', '6', '\0'};
 // AA=0 = клетка рендерится палитрой). Версия 1 читается как «без цветов».
 static const uint32_t HEIGHTS16_VERSION = 2;
 static const uint32_t HEIGHTS16_FLAG_COLORS = 0x1;
+// бит 1: за секцией цветов (или высот) идёт секция внутренних слоёв
+// вокселей — разреженная таблица колонок + пул диапазонов (VoxLayers.h).
+static const uint32_t HEIGHTS16_FLAG_LAYERS = 0x2;
 
 void vrtMap::ensureSurColBuf(void) {
 	if (SurColBuf != 0) {
@@ -131,9 +134,9 @@ unsigned int vrtMap::trueColor32(unsigned int rgba, unsigned int light) {
 	double cb = (rgba & 0xFF) * k; if (cb < 0) cb = 0; if (cb > 255) cb = 255;
 	double cg = ((rgba >> 8) & 0xFF) * k; if (cg < 0) cg = 0; if (cg > 255) cg = 255;
 	double cr = ((rgba >> 16) & 0xFF) * k; if (cr < 0) cr = 0; if (cr > 255) cr = 255;
-	return static_cast<unsigned int>(xm::round(cr)) |
+	return (static_cast<unsigned int>(xm::round(cr)) << 16) |
 	       (static_cast<unsigned int>(xm::round(cg)) << 8) |
-	       (static_cast<unsigned int>(xm::round(cb)) << 16);
+	       static_cast<unsigned int>(xm::round(cb));
 }
 
 unsigned short vrtMap::trueColor16(unsigned int rgba, unsigned int light) {
@@ -207,16 +210,68 @@ static bool loadHeights16Sidecar(vrtMap& m) {
 		}
 		fstream.read(&flags, sizeof(flags));
 	}
-	const bool hasColors = (flags & HEIGHTS16_FLAG_COLORS) != 0;
-	if (hasColors && fstream.size() < need + static_cast<int64_t>(sizeof(uint32_t)) +
-		static_cast<int64_t>(sizeof(uint32_t)) * cells) {
-		return false;
+	int64_t layersBytes = 0;
+	if (flags & HEIGHTS16_FLAG_LAYERS) {
+		// uint32 nColumns + nColumns*(cellOffset, rangeBegin) + uint32 totalRanges
+		// + totalRanges*sizeof(VoxLayerRange); nColumns/totalRanges читаем
+		// после проверки минимальной длины.
+		if (fstream.size() < need + static_cast<int64_t>(sizeof(uint32_t))) {
+			return false;
+		}
 	}
 	fstream.read(m.VxGBuf, sizeof(uint16_t) * cells);
 	fstream.read(m.VxDBuf, sizeof(uint16_t) * cells);
-	if (hasColors) {
+	if (flags & HEIGHTS16_FLAG_COLORS) {
 		m.ensureSurColBuf();
 		fstream.read(m.SurColBuf, sizeof(uint32_t) * cells);
+	}
+	if (flags & HEIGHTS16_FLAG_LAYERS) {
+		uint32_t nColumns = 0;
+		fstream.read(&nColumns, sizeof(nColumns));
+		const int64_t tableBytes =
+			static_cast<int64_t>(nColumns) * 2 * sizeof(uint32_t) +
+			sizeof(uint32_t);
+		if (fstream.size() < fstream.tell() + tableBytes) {
+			return false;
+		}
+		m.voxLayers.col_.resize(nColumns);
+		m.voxLayers.begin_.resize(nColumns);
+		for (uint32_t i = 0; i < nColumns; ++i) {
+			fstream.read(&m.voxLayers.col_[i], sizeof(uint32_t));
+			fstream.read(&m.voxLayers.begin_[i], sizeof(uint32_t));
+		}
+		uint32_t totalRanges = 0;
+		fstream.read(&totalRanges, sizeof(totalRanges));
+		const int64_t poolBytes =
+			static_cast<int64_t>(totalRanges) * sizeof(VoxLayerRange);
+		if (fstream.size() < fstream.tell() + poolBytes) {
+			return false;
+		}
+		m.voxLayers.ranges_.resize(totalRanges);
+		if (totalRanges) {
+			fstream.read(m.voxLayers.ranges_.data(), poolBytes);
+		}
+		// Валидация: повреждённые/чужие смещения (не по возрастанию, за
+		// пределами пула) приводят к отрицательным длинам колонок при
+		// пересборке — std::length_error/выход за буфер дальше по коду.
+		// Слои — чисто визуальные данные: при неконсистентности секция
+		// отбрасывается целиком, высоты/цвета выше уже прочитаны.
+		bool layersOk = true;
+		for (uint32_t i = 0; layersOk && i < nColumns; ++i) {
+			const uint32_t b = m.voxLayers.begin_[i];
+			const uint32_t e = i + 1 < nColumns
+				? m.voxLayers.begin_[i + 1]
+				: totalRanges;
+			if (b > totalRanges || e > totalRanges || e < b) {
+				layersOk = false;
+			}
+		}
+		if (!layersOk) {
+			fprintf(stderr, "loadHeights16Sidecar: inconsistent layers "
+				"section in '%s' — dropped.\n",
+				GetTargetName(vrtMap::worldHeights16File).c_str());
+			m.voxLayers.clear();
+		}
 	}
 	fstream.close();
 	return true;
@@ -235,11 +290,29 @@ static void saveHeights16Sidecar(vrtMap& m) {
 	if (worldHasTrueColorData(m)) {
 		flags |= HEIGHTS16_FLAG_COLORS;
 	}
+	if (!m.voxLayers.empty()) {
+		flags |= HEIGHTS16_FLAG_LAYERS;
+	}
 	fmap.write(&flags, sizeof(flags));
 	fmap.write(m.VxGBuf, sizeof(uint16_t) * cells);
 	fmap.write(m.VxDBuf, sizeof(uint16_t) * cells);
 	if (flags & HEIGHTS16_FLAG_COLORS) {
 		fmap.write(m.SurColBuf, sizeof(uint32_t) * cells);
+	}
+	if (flags & HEIGHTS16_FLAG_LAYERS) {
+		const uint32_t nColumns = static_cast<uint32_t>(m.voxLayers.col_.size());
+		const uint32_t totalRanges =
+			static_cast<uint32_t>(m.voxLayers.ranges_.size());
+		fmap.write(&nColumns, sizeof(nColumns));
+		for (uint32_t i = 0; i < nColumns; ++i) {
+			fmap.write(&m.voxLayers.col_[i], sizeof(uint32_t));
+			fmap.write(&m.voxLayers.begin_[i], sizeof(uint32_t));
+		}
+		fmap.write(&totalRanges, sizeof(totalRanges));
+		if (totalRanges) {
+			fmap.write(m.voxLayers.ranges_.data(),
+			           static_cast<int64_t>(totalRanges) * sizeof(VoxLayerRange));
+		}
 	}
 	fmap.close();
 }
@@ -471,6 +544,8 @@ void vrtMap::releaseMem4Buf(void)
 	delete [] VxDBuf;
 	delete [] VxGBuf;
 	VxGBuf=0;
+	voxLayers.clear();
+	viewSliceHeight = -1;
 	//free(Buf);
 	//delete [] ClTrBuf;
 	//delete [] AtBuf;
@@ -1840,7 +1915,8 @@ void vrtMap::save3BufOnly(void)
 	// Sidecar пишется только когда он нужен (высоты >255 или true-color
 	// данные); иначе старый sidecar удаляется, чтобы мир вернулся в чистый
 	// 8-битный формат.
-	if (worldHasExtendedHeights(*this) || worldHasTrueColorData(*this)) {
+	if (worldHasExtendedHeights(*this) || worldHasTrueColorData(*this) ||
+	    !voxLayers.empty()) {
 		saveHeights16Sidecar(*this);
 	} else {
 		deleteHeights16Sidecar();
@@ -2469,6 +2545,15 @@ void vrtMap::viewV2D(int cx,int cy,int xc,int yc,int xside,int yside, unsigned s
 			if(!h1) h1=lvG[u1+v0];
 			if(!h2) h2=lvG[u0+v1];
 			if(!h3) h3=lvG[u1+v1];
+			// Срез высоты (показ слоя на высоте вокселя): геометрия
+			// урезается до высоты среза — воксели выше не рисуются.
+			// Пустые колонки (h==0) урезанию не подлежат.
+			if (viewSliceHeight >= 0) {
+				if (h0 > viewSliceHeight) h0 = viewSliceHeight;
+				if (h1 > viewSliceHeight) h1 = viewSliceHeight;
+				if (h2 > viewSliceHeight) h2 = viewSliceHeight;
+				if (h3 > viewSliceHeight) h3 = viewSliceHeight;
+			}
 
 			// Compute the height using bilinear interpolation
 			h0=(h0<<8)+a*(h1-h0);
@@ -2514,12 +2599,28 @@ void vrtMap::viewV2D(int cx,int cy,int xc,int yc,int xside,int yside, unsigned s
 			h0=(h0<<8)+a*(h1-h0);
 			h2=(h2<<8)+a*(h3-h2);
 			c=((h0<<8)+b*(h2-h0));
-			if (SurColBuf && (SurColBuf[u0+v0]&0xFF000000)) {
+			// Внутренние слои побеждают: цвет диапазона, внутри которого лежит
+			// (урезанная срезом) поверхность угловой клетки — тот же приоритет,
+			// что в getColor32. Далее true-color клетки, затем палитра.
+			bool layerColored=false;
+			if (!voxLayers.empty()) {
+				int hc=lvD[u0+v0]; if(!hc) hc=lvG[u0+v0];
+				if (viewSliceHeight >= 0 && hc > viewSliceHeight)
+					hc = viewSliceHeight;
+				uint32_t rgb;
+				if (voxLayers.lookup(static_cast<uint32_t>(u0+v0), hc, &rgb)) {
+					c=static_cast<int>(trueColor16(0xFF000000u|rgb,
+					                               (c>>16)&0x7F))<<16;
+					layerColored=true;
+				}
+			}
+			if (!layerColored && SurColBuf && (SurColBuf[u0+v0]&0xFF000000)) {
 				// True-color: прямой RGB угловой клетки с интерполированным
 				// светом (дамбовый бит pr на раскраску не влияет).
-				c=static_cast<int>(trueColor32(SurColBuf[u0+v0], (c>>16)&0x7F))<<16;
+				c=static_cast<int>(trueColor16(SurColBuf[u0+v0],
+				                               (c>>16)&0x7F))<<16;
 			}
-			else {
+			else if (!layerColored) {
 				c=Sur2Col[lc2[u0+v0]][pr | (c>>16)]<<16;
 			}
 

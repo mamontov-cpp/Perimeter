@@ -29,6 +29,7 @@ class EditorSession;
 class ViewportWidget;
 class MinimapWidget;
 class PalettePanel;
+class SlicePanel;
 class BrushTool;
 class BrushUiController;
 class ImageIoController;
@@ -360,6 +361,8 @@ private:
     // T4.1 — palette panel: Geo/Dam palettes with RGB editing and selection
     // feeding the brush colorIndex; dockable like the minimap.
     QDockWidget *paletteDock_ = nullptr;
+    MapEditor::SlicePanel *slicePanel_ = nullptr;
+    QDockWidget *sliceDock_ = nullptr;
     MapEditor::PalettePanel *palettePanel_ = nullptr;
 
     // T9 — validation + autofixes (Tools menu).

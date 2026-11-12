@@ -1,0 +1,216 @@
+// ============================================================================
+// VoxLayers.cpp — see VoxLayers.h.
+// ============================================================================
+
+#include "stdafxTr.h"
+
+#include "VoxLayers.h"
+
+#include <algorithm>
+
+bool VoxColLayers::lookup(uint32_t cellOffset, int height, uint32_t* rgb) const
+{
+	if (height < 0 || height > 0xFFFF) {
+		return false;
+	}
+	// Бинарный поиск колонки.
+	int lo = 0;
+	int hi = static_cast<int>(col_.size()) - 1;
+	while (lo <= hi) {
+		const int mid = (lo + hi) / 2;
+		if (col_[static_cast<size_t>(mid)] < cellOffset) {
+			lo = mid + 1;
+		} else if (col_[static_cast<size_t>(mid)] > cellOffset) {
+			hi = mid - 1;
+		} else {
+			const uint32_t b = begin_[static_cast<size_t>(mid)];
+			const uint32_t e =
+				mid + 1 < static_cast<int>(begin_.size())
+					? begin_[static_cast<size_t>(mid) + 1]
+					: static_cast<uint32_t>(ranges_.size());
+			const uint16_t h = static_cast<uint16_t>(height);
+			// Диапазонов в колонке обычно единицы — линейный проход; при
+			// больших списках выигрыш бинарного поиска нивелируется кэшем.
+			for (uint32_t i = b; i < e; ++i) {
+				const VoxLayerRange& r = ranges_[i];
+				if (h < r.z0) {
+					break; // диапазоны отсортированы по z0
+				}
+				if (h <= r.z1) {
+					*rgb = (static_cast<uint32_t>(r.r) << 16) |
+					       (static_cast<uint32_t>(r.g) << 8) | r.b;
+					return true;
+				}
+			}
+			return false;
+		}
+	}
+	return false;
+}
+
+int VoxColLayers::findColumn(uint32_t cellOffset) const
+{
+	int lo = 0;
+	int hi = static_cast<int>(col_.size()) - 1;
+	while (lo <= hi) {
+		const int mid = (lo + hi) / 2;
+		if (col_[static_cast<size_t>(mid)] < cellOffset) {
+			lo = mid + 1;
+		} else if (col_[static_cast<size_t>(mid)] > cellOffset) {
+			hi = mid - 1;
+		} else {
+			return mid;
+		}
+	}
+	return -1;
+}
+
+const VoxLayerRange* VoxColLayers::columnRanges(int colIdx, int* count) const
+{
+	if (colIdx < 0 || colIdx >= static_cast<int>(col_.size())) {
+		*count = 0;
+		return nullptr;
+	}
+	const uint32_t b = begin_[static_cast<size_t>(colIdx)];
+	const uint32_t e =
+		colIdx + 1 < static_cast<int>(begin_.size())
+			? begin_[static_cast<size_t>(colIdx) + 1]
+			: static_cast<uint32_t>(ranges_.size());
+	*count = static_cast<int>(e - b);
+	return ranges_.data() + b;
+}
+
+bool VoxColLayers::sameColor(const VoxLayerRange& a, uint8_t r, uint8_t g,
+                             uint8_t b)
+{
+	return a.r == r && a.g == g && a.b == b;
+}
+
+void VoxColLayers::setColumn(uint32_t cellOffset, const VoxLayerRange* ranges,
+                             int count)
+{
+	if (count < 0) {
+		count = 0;
+	}
+	// Пересборка всех трёх массивов одним проходом: пул диапазонов растёт
+	// строго в порядке колонок, begin_[i] — начало колонки i в нём. (Две
+	// прежние версии ломали инвариант: erase-in-place сдвигал begin_ только
+	// на вычтенное, а rebuild с append новой колонки в конец пула вставлял
+	// begin_ в середину — после ~100 вставок columnRanges давал отрицательные
+	// длины и пересборка падала со std::length_error.)
+	std::vector<uint32_t> newCol;
+	std::vector<uint32_t> newBegin;
+	std::vector<VoxLayerRange> newRanges;
+	newCol.reserve(col_.size() + 1);
+	newBegin.reserve(begin_.size() + 1);
+	newRanges.reserve(ranges_.size() + static_cast<size_t>(count));
+	bool done = false;
+	for (size_t i = 0; i < col_.size(); ++i) {
+		const uint32_t off = col_[i];
+		if (!done && off >= cellOffset) {
+			done = true;
+			if (off != cellOffset && count > 0) {
+				// Новая колонка идёт перед off — пул сращивается здесь.
+				newCol.push_back(cellOffset);
+				newBegin.push_back(static_cast<uint32_t>(newRanges.size()));
+				newRanges.insert(newRanges.end(), ranges, ranges + count);
+			}
+			if (off == cellOffset) {
+				// Замена существующей (count == 0 — удаление).
+				if (count > 0) {
+					newCol.push_back(cellOffset);
+					newBegin.push_back(static_cast<uint32_t>(newRanges.size()));
+					newRanges.insert(newRanges.end(), ranges, ranges + count);
+				}
+				continue; // старые диапазоны колонки выбрасываем
+			}
+		}
+		const uint32_t b = begin_[static_cast<size_t>(i)];
+		const uint32_t e =
+			i + 1 < begin_.size()
+				? begin_[static_cast<size_t>(i) + 1]
+				: static_cast<uint32_t>(ranges_.size());
+		newCol.push_back(off);
+		newBegin.push_back(static_cast<uint32_t>(newRanges.size()));
+		newRanges.insert(newRanges.end(), ranges_.begin() + b,
+		                 ranges_.begin() + e);
+	}
+	if (!done && count > 0) {
+		// Хвост — новая колонка после всех существующих.
+		newCol.push_back(cellOffset);
+		newBegin.push_back(static_cast<uint32_t>(newRanges.size()));
+		newRanges.insert(newRanges.end(), ranges, ranges + count);
+	}
+	col_.swap(newCol);
+	begin_.swap(newBegin);
+	ranges_.swap(newRanges);
+}
+
+void VoxColLayers::paint(uint32_t cellOffset, int z0, int z1,
+                         uint8_t r, uint8_t g, uint8_t b)
+{
+	if (z1 < z0 || z0 < 0) {
+		return;
+	}
+	if (z1 > 0xFFFF) {
+		z1 = 0xFFFF;
+	}
+	const uint16_t nz0 = static_cast<uint16_t>(z0);
+	const uint16_t nz1 = static_cast<uint16_t>(z1);
+
+	// Вычитаем [nz0..nz1] из существующих диапазонов колонки.
+	const int idx = findColumn(cellOffset);
+	std::vector<VoxLayerRange> kept;
+	if (idx >= 0) {
+		int count = 0;
+		const VoxLayerRange* old = columnRanges(idx, &count);
+		for (int i = 0; i < count; ++i) {
+			const VoxLayerRange& o = old[i];
+			if (o.z1 < nz0 || o.z0 > nz1) {
+				kept.push_back(o); // не пересекается
+				continue;
+			}
+			if (o.z0 < nz0) { // левый остаток
+				VoxLayerRange left = o;
+				left.z1 = nz0 - 1;
+				kept.push_back(left);
+			}
+			if (o.z1 > nz1) { // правый остаток
+				VoxLayerRange right = o;
+				right.z0 = nz1 + 1;
+				kept.push_back(right);
+			}
+		}
+	}
+
+	// Вставка с слиянием смежных одноцветных.
+	VoxLayerRange ins{nz0, nz1, r, g, b, 0};
+	std::vector<VoxLayerRange> merged;
+	size_t i = 0;
+	while (i < kept.size() && kept[i].z1 < ins.z0) {
+		merged.push_back(kept[i]);
+		++i;
+	}
+	if (i < kept.size() && kept[i].z0 == ins.z0 &&
+	    sameColor(kept[i], r, g, b)) {
+		ins.z1 = kept[i].z1; // сливаемся с одноцветным справа
+		++i;
+	}
+	merged.push_back(ins);
+	for (; i < kept.size(); ++i) {
+		if (kept[i].z0 == ins.z1 + 1 && sameColor(kept[i], r, g, b)) {
+			merged.back().z1 = kept[i].z1; // одноцветный сосед справа
+		} else {
+			merged.push_back(kept[i]);
+		}
+	}
+
+	setColumn(cellOffset, merged.data(), static_cast<int>(merged.size()));
+}
+
+void VoxColLayers::clear()
+{
+	col_.clear();
+	begin_.clear();
+	ranges_.clear();
+}

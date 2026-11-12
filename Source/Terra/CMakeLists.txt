@@ -14,6 +14,7 @@ add_library(Terra STATIC
         tmask.cpp
         tools.cpp
         undoDispatcher.cpp
+        VoxLayers.cpp
         worldGen.cpp
         VMAP.cpp
         LAND.cpp
