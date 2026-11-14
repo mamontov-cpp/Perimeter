@@ -906,14 +906,26 @@ bool BrushTool::applyMask(const BrushMask& absoluteMask, const BrushParams& para
     }
 
     // Layer paints collected by the cell loop — applied in one batch now
-    // that the routing is done.
+    // that the routing is done. Transparent paints then trigger the
+    // column-top invariant (stripped with a height recalc) over the rect.
     for (const auto& lp : pendingLayerPaints_) {
         vMap.voxLayers.paint(static_cast<uint32_t>(lp[0]), lp[1], lp[2],
                              static_cast<unsigned char>((lp[3] >> 16) & 0xFF),
                              static_cast<unsigned char>((lp[3] >> 8) & 0xFF),
-                             static_cast<unsigned char>(lp[3] & 0xFF));
+                             static_cast<unsigned char>(lp[3] & 0xFF),
+                             lp[4] != 0);
+    }
+    bool anyTransparent = false;
+    for (const auto& lp : pendingLayerPaints_) {
+        if (lp[4]) {
+            anyTransparent = true;
+            break;
+        }
     }
     pendingLayerPaints_.clear();
+    if (anyTransparent) {
+        normalizeTransparentTops(bx, by, bxEnd - 1, byEnd - 1);
+    }
 
     // --- 4. Grid + viewport dirty rectangles, margin 1 like Terra's tools ---
     // ---    (influenceDZ recalcArea2Grid bugfix comment in tools.h:252).  ---
@@ -1524,7 +1536,8 @@ bool BrushTool::applyShape3D(const BrushMask& absoluteMask,
         // shape's Height for set-to-height stamps, the pre-stamp surface
         // for directional raise/lower.
         if (params.paintInterior3d) {
-            const std::uint32_t rgb = params.colorRgb & 0x00FFFFFFu;
+            const std::uint32_t rgb =
+                params.paintTransparent ? 0u : params.colorRgb & 0x00FFFFFFu;
             const int top = vMap.SGetAlt(off) >> VX_FRACTION;
             const int base = setMode
                                  ? static_cast<int>(baseVox)
@@ -1533,9 +1546,13 @@ bool BrushTool::applyShape3D(const BrushMask& absoluteMask,
                 vMap.voxLayers.paint(static_cast<uint32_t>(off), base, top,
                                      static_cast<unsigned char>((rgb >> 16) & 0xFF),
                                      static_cast<unsigned char>((rgb >> 8) & 0xFF),
-                                     static_cast<unsigned char>(rgb & 0xFF));
+                                     static_cast<unsigned char>(rgb & 0xFF),
+                                     params.paintTransparent);
             }
         }
+    }
+    if (params.paintInterior3d && params.paintTransparent) {
+        normalizeTransparentTops(bx, by, bxEnd - 1, byEnd - 1);
     }
 
     // Grid + viewport dirty rectangles, margin 1 like the generic path.
@@ -1585,7 +1602,9 @@ bool BrushTool::applyShape3DPaint(const BrushMask& absoluteMask,
                                 : params.heightLevel);
     const int base = std::max(0, static_cast<int>(xm::floor(baseVox)));
     const int depth = std::max(1, params.paintDepth);
-    const std::uint32_t rgb = params.colorRgb & 0x00FFFFFFu;
+    // Прозрачная краска хранит нулевой цвет (рендер его не использует).
+    const std::uint32_t rgb =
+        params.paintTransparent ? 0u : params.colorRgb & 0x00FFFFFFu;
     const unsigned char pr =
         static_cast<unsigned char>((rgb >> 16) & 0xFF);
     const unsigned char pg =
@@ -1651,10 +1670,14 @@ bool BrushTool::applyShape3DPaint(const BrushMask& absoluteMask,
 
     session_.recordUndoArea(bx, by, bxEnd - bx, byEnd - by);
 
-    // Pass 2: paint the ranges — heights are never touched.
+    // Pass 2: paint the ranges — heights are never touched directly, but a
+    // transparent paint still recalculates the column tops (stripped).
     for (std::size_t k = 0; k < offs.size(); ++k) {
         vMap.voxLayers.paint(static_cast<std::uint32_t>(offs[k]), rangeLo[k],
-                             rangeHi[k], pr, pg, pb);
+                             rangeHi[k], pr, pg, pb, params.paintTransparent);
+    }
+    if (params.paintTransparent) {
+        normalizeTransparentTops(bx, by, bxEnd - 1, byEnd - 1);
     }
 
     // Grid + viewport dirty rectangles, margin 1 like the generic path.
@@ -1862,7 +1885,9 @@ bool BrushTool::applyModelBrushPaint(const BrushMask& absoluteMask,
                                 : params.heightLevel);
     const int base = std::max(0, static_cast<int>(xm::floor(baseVox)));
     const int depth = std::max(1, params.paintDepth);
-    const std::uint32_t rgb = params.colorRgb & 0x00FFFFFFu;
+    // Прозрачная краска хранит нулевой цвет (рендер его не использует).
+    const std::uint32_t rgb =
+        params.paintTransparent ? 0u : params.colorRgb & 0x00FFFFFFu;
     const unsigned char pr =
         static_cast<unsigned char>((rgb >> 16) & 0xFF);
     const unsigned char pg =
@@ -1928,10 +1953,14 @@ bool BrushTool::applyModelBrushPaint(const BrushMask& absoluteMask,
 
     session_.recordUndoArea(bx, by, bxEnd - bx, byEnd - by);
 
-    // Pass 2: paint the ranges — heights are never touched.
+    // Pass 2: paint the ranges — heights are never touched directly, but a
+    // transparent paint still recalculates the column tops (stripped).
     for (std::size_t k = 0; k < offs.size(); ++k) {
         vMap.voxLayers.paint(static_cast<std::uint32_t>(offs[k]), rangeLo[k],
-                             rangeHi[k], pr, pg, pb);
+                             rangeHi[k], pr, pg, pb, params.paintTransparent);
+    }
+    if (params.paintTransparent) {
+        normalizeTransparentTops(bx, by, bxEnd - 1, byEnd - 1);
     }
 
     // Grid + viewport dirty rectangles, margin 1 like the generic path.
@@ -2089,6 +2118,26 @@ void damHeightChange(int off, int dV)
 // (the anonymous namespace of the layer helpers closes here — a member
 // function cannot be defined inside it)
 } // namespace
+
+void BrushTool::normalizeTransparentTops(int x0, int y0, int x1, int y1)
+{
+    if (vMap.voxLayers.empty()) {
+        return;
+    }
+    const int mapW = static_cast<int>(vMap.H_SIZE);
+    const int mapH = static_cast<int>(vMap.V_SIZE);
+    const int xa = std::max(0, x0);
+    const int ya = std::max(0, y0);
+    const int xb = std::min(mapW - 1, x1);
+    const int yb = std::min(mapH - 1, y1);
+    for (int y = ya; y <= yb; ++y) {
+        for (int x = xa; x <= xb; ++x) {
+            const int off = y * mapW + x;
+            // oldHeight == newHeight: только снятие верхних прозрачных.
+            vMap.normalizeTransparentColumn(off, vMap.VxDBuf[off]);
+        }
+    }
+}
 
 bool BrushTool::applyHeightFunction(
     const BrushMask& absoluteMask,
@@ -2383,8 +2432,21 @@ void BrushTool::applyEffectToCell(const BrushParams& params, int x, int y, unsig
         // Layer paint: an explicit height below the surface paints internal
         // voxel layers [h-depth+1 .. h]; -1 or a height at/above the
         // surface is the top/default paint (the true-color layer).
+        // Transparent paint marks the range as empty/transparent voxels —
+        // they are stripped from the column top with a height recalc.
         const int surface = vMap.SGetAlt(off) >> VX_FRACTION;
         const int h = params.paintHeight;
+        if (params.paintTransparent) {
+            // Прозрачные воксели живут только в дамбе (выше гео): красим
+            // [z0..min(h, surface-1)], нормализация снимет верх.
+            const int geoTop = static_cast<int>(vMap.VxGBuf[off]);
+            const int z1 = std::min(h < 0 ? surface - 1 : h, surface - 1);
+            const int z0 = std::max(geoTop, z1 - std::max(1, params.paintDepth) + 1);
+            if (z1 >= z0 && surface > geoTop) {
+                pendingLayerPaints_.push_back({off, z0, z1, 0, 1});
+            }
+            break;
+        }
         if (h < 0 || h >= surface) {
             vMap.putTrueColor(off, pr, pg, pb);
             vMap.SetTer(x, y, nearestPaletteIndexFor(isDamCell, rgb));
@@ -2392,7 +2454,7 @@ void BrushTool::applyEffectToCell(const BrushParams& params, int x, int y, unsig
             const int d = std::max(1, params.paintDepth);
             const int z0 = std::max(0, h - d + 1);
             pendingLayerPaints_.push_back(
-                {off, z0, h, static_cast<int>(rgb)});
+                {off, z0, h, static_cast<int>(rgb), 0});
         }
         break;
     }
@@ -2422,6 +2484,18 @@ void BrushTool::applyEffectToCell(const BrushParams& params, int x, int y, unsig
         }
         const int surface = vMap.SGetAlt(off) >> VX_FRACTION;
         const int h = params.paintHeight;
+        if (params.paintTransparent) {
+            // Прозрачный декаль-штамп: помечает слои пустыми вокселями
+            // (только в дамбе), нормализация снимает верх.
+            const int geoTop = static_cast<int>(vMap.VxGBuf[off]);
+            const int z1 = std::min(h < 0 ? surface - 1 : h, surface - 1);
+            const int z0 = std::max(geoTop,
+                                    z1 - std::max(1, params.paintDepth) + 1);
+            if (z1 >= z0 && surface > geoTop) {
+                pendingLayerPaints_.push_back({off, z0, z1, 0, 1});
+            }
+            break;
+        }
         if (h < 0 || h >= surface) {
             vMap.putTrueColor(off, static_cast<unsigned char>((pixel >> 16) & 0xFF),
                               static_cast<unsigned char>((pixel >> 8) & 0xFF),
@@ -2431,7 +2505,7 @@ void BrushTool::applyEffectToCell(const BrushParams& params, int x, int y, unsig
             const int d = std::max(1, params.paintDepth);
             const int z0 = std::max(0, h - d + 1);
             pendingLayerPaints_.push_back(
-                {off, z0, h, static_cast<int>(pixel & 0x00FFFFFF)});
+                {off, z0, h, static_cast<int>(pixel & 0x00FFFFFF), 0});
         }
         break;
     }

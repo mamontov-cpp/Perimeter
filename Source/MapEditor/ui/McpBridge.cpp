@@ -1151,11 +1151,14 @@ QVariantMap MapEditor::McpBridge::mcpApplyBrush(const QVariantMap& args)
             op.effect = MapEditor::BrushEffect::ImageDecal;
             // Inner-layer paint: an explicit paintHeight below the surface
             // stamps the pixel colors into the voxel layers
-            // [paintHeight-paintDepth+1 .. paintHeight] instead of the top.
+            // [paintHeight-paintDepth+1 .. paintHeight] instead of the top;
+            // paintTransparent: 1 makes them transparent (empty) voxels.
             op.paintHeight = MapEditor::BrushTool::clampPaintHeight(
                 mcpArgInt(args, "paintHeight", -1));
             op.paintDepth = MapEditor::BrushTool::clampPaintDepth(
                 mcpArgInt(args, "paintDepth", 1));
+            op.paintTransparent =
+                mcpArgInt(args, "paintTransparent", 0) != 0;
         } else {
             if (!brushTool_->hasModelBrushData()) {
                 return mcpError(QStringLiteral(
@@ -1194,6 +1197,8 @@ QVariantMap MapEditor::McpBridge::mcpApplyBrush(const QVariantMap& args)
                 op.paintInterior3d = mcpArgInt(args, "paintInterior", 1) != 0;
                 op.paintDepth = MapEditor::BrushTool::clampPaintDepth(
                     mcpArgInt(args, "paintDepth", 1));
+                op.paintTransparent =
+                    mcpArgInt(args, "paintTransparent", 0) != 0;
             }
         }
         brushTool_->setParams(op);
@@ -1288,11 +1293,13 @@ QVariantMap MapEditor::McpBridge::mcpApplyBrush(const QVariantMap& args)
             return mcpError(QStringLiteral(
                 "paintColor needs colorIndex (0..255) or colorR/colorG/colorB"));
         }
-        // Layer painting: height (-1 = top) + depth.
+        // Layer painting: height (-1 = top) + depth. paintTransparent: 1
+        // paints the range as transparent (empty) voxels instead of a color.
         op.paintHeight = MapEditor::BrushTool::clampPaintHeight(
             mcpArgInt(args, "paintHeight", -1));
         op.paintDepth = MapEditor::BrushTool::clampPaintDepth(
             mcpArgInt(args, "paintDepth", 1));
+        op.paintTransparent = mcpArgInt(args, "paintTransparent", 0) != 0;
     } else if (effectName == QLatin1String("smooth")) {
         op.effect = MapEditor::BrushEffect::Smooth;
         setSculpt();
@@ -1423,20 +1430,32 @@ QVariantMap MapEditor::McpBridge::mcpHandleTerrain(const QString& name,
         };
         // Optional "z": the voxel-layer color at (x, y, z) in whole voxels —
         // the internal layer if one covers z, else the column default.
+        // A TRANSPARENT (empty) voxel reports nothing — exactly like a
+        // missing voxel (hasLayer=false, voxelColor=null).
         if (args.contains(QStringLiteral("z"))) {
             const int z = mcpArgInt(args, "z");
             uint32_t rgb = sample.trueColorRgb;
             bool hasLayer = false;
+            bool transparentHit = false;
             if (z >= 0 && z <= MAX_VX_HEIGHT_WHOLE && !vMap.voxLayers.empty()) {
                 uint32_t layerRgb = 0;
+                uint8_t flags = 0;
                 if (vMap.voxLayers.lookup(
                         static_cast<uint32_t>(vMap.offsetBuf(x, y)), z,
-                        &layerRgb)) {
-                    rgb = layerRgb;
-                    hasLayer = true;
+                        &layerRgb, &flags)) {
+                    if (flags & VOX_LAYER_TRANSPARENT) {
+                        transparentHit = true;
+                    } else {
+                        rgb = layerRgb;
+                        hasLayer = true;
+                    }
                 }
             }
-            result[QStringLiteral("voxelColor")] = rgbMap(rgb);
+            if (!transparentHit) {
+                result[QStringLiteral("voxelColor")] = rgbMap(rgb);
+            } else {
+                result[QStringLiteral("voxelColor")] = QVariant();
+            }
             result[QStringLiteral("hasLayer")] = hasLayer;
         }
         return mcpOk(result);

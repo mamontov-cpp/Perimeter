@@ -494,6 +494,21 @@ public:
 		return tVoxSetAll(offB, dV);
 	};
 	inline int tVoxSetAll(int offB, int dV){
+		// Прозрачные воксели (VoxLayers.h): любое изменение высоты
+		// поддерживает инвариант «верхний воксель непрозрачный» — поднятие
+		// заменяет прозрачные воксели сплошными, опускание уничтожает
+		// оказавшиеся сверху. Один перехват на всю игру и редактор: все
+		// тулзеры идут через tVoxSetAll. Проверка дешёвая (миры без слоёв
+		// не платят ничего).
+		const unsigned char oldD = vMap.VxDBuf[offB];
+		const int r = tVoxSetAllBody(offB, dV);
+		if (r && oldD != vMap.VxDBuf[offB] && !vMap.voxLayers.empty()) {
+			vMap.normalizeTransparentColumn(offB, oldD);
+		}
+		return r;
+	};
+private:
+	inline int tVoxSetAllBody(int offB, int dV){
 		unsigned char fraction=vMap.AtrBuf[offB]&VX_FRACTION_MASK;
 		int VD=vMap.VxDBuf[offB];
 		int VG=(vMap.VxGBuf[offB]<<VX_FRACTION) + fraction;
@@ -672,6 +687,7 @@ public:
 		}
 		return 0;
 	};
+public:
 
 };
 

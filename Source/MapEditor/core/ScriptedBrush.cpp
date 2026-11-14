@@ -431,6 +431,53 @@ duk_ret_t apiPaintColorModel(duk_context* ctx)
     return 0;
 }
 
+/// paintTransparentAt(pos, height, depth, radius, square) — paint the
+/// internal voxel layers [height-depth+1 .. height] as TRANSPARENT (empty)
+/// voxels: no color, no terraforming participation, units and line of sight
+/// pass through. A transparent voxel can never be the topmost one — on the
+/// top it is destroyed immediately and the terrain height recalculates to
+/// the nearest solid voxel; raising terrain through a transparent voxel
+/// replaces it with a solid one. height = -1 paints the depth layers at the
+/// column top (which recedes accordingly). Dam cells only.
+duk_ret_t apiPaintTransparentAt(duk_context* ctx)
+{
+    ScriptEnv* env = getEnv(ctx);
+    int x = 0;
+    int y = 0;
+    if (!readPosition(ctx, 0, x, y)) {
+        return duk_error(ctx, DUK_ERR_TYPE_ERROR,
+                         "first argument must be a position {x, y}");
+    }
+    const int height = BrushTool::clampPaintHeight(duk_to_int(ctx, 1));
+    const int depth = BrushTool::clampPaintDepth(duk_to_int(ctx, 2));
+    const int radius = BrushTool::clampRadius(duk_to_int(ctx, 3));
+    if (radius < 1) {
+        return duk_error(ctx, DUK_ERR_RANGE_ERROR,
+                         "radius must be a number >= 1");
+    }
+    const bool square = duk_to_boolean(ctx, 4);
+
+    BrushParams op = *env->params;
+    BrushMask mask;
+    if (op.useImageMask && env->brush->hasImageMask()) {
+        mask = env->brush->imageMask();
+        mask.translate(x, y);
+    } else {
+        mask = square ? BrushMasks::filledSquare(radius)
+                      : BrushMasks::filledCircle(radius);
+        mask.translate(x, y);
+    }
+    op.mode = BrushMode::Dam;
+    op.effect = BrushEffect::SetColor;
+    op.useImageMask = false;
+    op.colorRgb = 0;
+    op.paintHeight = height;
+    op.paintDepth = depth;
+    op.paintTransparent = true;
+    env->brush->applyMask(mask, op);
+    return 0;
+}
+
 /// paintDecal(pos, height, depth) — stamp the loaded image decal (the
 /// ImageDecal brush image, loaded with the UI Image Decal button or the
 /// MCP load_decal_image) centred at pos. height/depth select the internal
@@ -788,6 +835,7 @@ void registerApiBindings(duk_context* ctx)
     registerBinding(ctx, "paintColorShape", apiPaintColorShape, 10);
     registerBinding(ctx, "paintColorModel", apiPaintColorModel, 8);
     registerBinding(ctx, "paintDecal", apiPaintDecal, 3);
+    registerBinding(ctx, "paintTransparentAt", apiPaintTransparentAt, 5);
     registerBinding(ctx, "applyBlur", apiApplyBlur, 5);
     registerBinding(ctx, "applySmooth", apiApplySmooth, 4);
     registerBinding(ctx, "applyHeightFn", apiApplyHeightFn, 4);

@@ -310,6 +310,7 @@ number ≥ 1, the circle radius or the square half-side, up to 512; `square`
 | `paintColorShape(pos, red, green, blue, shape, height, shapeHeight, radius, paintInterior, depth)` | paint a **3D solid's volume WITHOUT changing heights**: `shape` — "cone", "pyramid", "truncatedCone", "truncatedPyramid", "torus", "halfEllipsoid"; every covered column gets the layers `[height .. height + profile*shapeHeight]`; `height < 0` — base 0 (like the shape's height tools); `paintInterior = false` paints only the top slab of `depth` layers at the shape surface; polygonal solids take the side count and angle from the brush UI settings |
 | `paintColorModel(pos, red, green, blue, height, modelHeight, paintInterior, depth)` | paint the **imported model's volume WITHOUT changing heights** (a model must be loaded — the Import Model button or the MCP `import_model`); every covered column gets the layers `[height .. height + the model's normalized height * modelHeight]`; `height < 0` — base 0; `paintInterior = false` paints only the top slab of `depth` layers; the model X/Y scale comes from the brush UI settings |
 | `paintDecal(pos, height, depth)` | stamp the loaded **image decal** (the Image Decal button or the MCP `load_decal_image`), centred at `pos`; `height`/`depth` work like `paintColorAt`: below the surface the pixel colors paint the layers `[height-depth+1 .. height]`, `height = -1` (or at/above the surface) is the classic top-stamp; Dam cells only, transparent pixels are skipped |
+| `paintTransparentAt(pos, height, depth, radius, square)` | paint the layers as **transparent (empty) voxels**: `[height-depth+1 .. height]` behave as the absence of a voxel — no color, no terraforming, units and line of sight pass through; a transparent voxel can never be the topmost one — reaching the top it is destroyed with the height recalculated to the nearest solid voxel (top-hanging ones are also stripped on map load); raising terrain through a transparent voxel makes it solid; `height = -1` paints the layers at the column top (which recedes); a loaded brush image mask is honored |
 | `applyBlur(pos, radius, blurRadius, effect, square)` | Gaussian Blur: smooth the heights with a Gaussian kernel; `blurRadius` is clamped to `1..radius-1`, `effect` — the effect fraction 0..1 (1.0 = reach in one stamp) |
 | `applySmooth(pos, radius, effect, square)` | Tricubic: smooth towards the tricubic (bicubic Catmull-Rom) interpolation of the lattice under the stamp — like the Tricubic brush on the Sculpting toolbar; `effect` — the fraction 0..1 |
 | `applyHeightFn(pos, radius, fn, square)` | set the height **by a function**: `fn(x, y, h)` is called for every covered cell with its coordinates and the PRE-EDIT dam surface height `h` (fractional, 1/32 step; 0 where there is no dam) and returns the cell's new **absolute** height (fractional — like raiseHeight); all reads see the original surface before any write, so cells never influence each other |
@@ -346,6 +347,26 @@ paints the internal layers `[height-depth+1 .. height]` (`depth` ≥ 1,
 default 1 = a one-voxel layer); the layer wins until terraforming moves
 the surface into it. The paint is purely visual, replaces the color, and
 joins the stamp's single Undo step.
+
+Transparent (empty) voxels: the **Transparent** checkbox on the brush
+toolbar (next to H/Depth, for Paint Color and Image Decal; the same paint
+parameter for the 3D shapes and the model) marks the painted range as
+transparent voxels instead of a color. It is a flag: no color, no
+terraforming participation, units and line of sight pass through, nothing
+on the minimap. A transparent voxel can never be the topmost one:
+reaching the top (painting, terraforming, map loading — the rule runs in
+the game and the editor alike) it is destroyed immediately and the height
+recalculates to the nearest solid voxel (a dam of only transparent voxels
+becomes height 0). Raising terrain through a transparent voxel replaces
+it with a solid one (the column's default color). The Slice mode falls
+through transparent voxels to the nearest solid voxel below; the MCP
+`get_terrain_at` with `z` returns nothing for a transparent voxel
+(`hasLayer: false`, `voxelColor: null`), exactly like a missing one.
+Storage is the same layer ranges (a flag in the heights16.bin sidecar;
+old maps read as "everything solid").
+
+Example — a pocket under the dam surface, opened by the slice:
+`paintTransparentAt({x, y}, 30, 4, 12, false)`.
 
 Painting a 3D solid's volume: with a 3D type selected (cone, pyramid,
 ...), the **Paint Color** button paints **the solid's volume WITHOUT
@@ -852,7 +873,11 @@ as the H/Depth spinboxes and `paintColorAt` in the JS API; paintColor
 with a 3D solid paints the solid's volume WITHOUT changing heights
 (`paintInterior` = the whole volume from the base, otherwise the top slab
 of `paintDepth`; the volume base is `paintHeight` ≥ 0, like the H spin,
-otherwise 0).
+otherwise 0); `paintTransparent: 1` paints the range as transparent
+(empty) voxels — no color, no terraforming, units and line of sight pass
+through; a transparent voxel is never the topmost one — stripped with a
+height recalc (on map load too), and raising terrain through it makes it
+solid; works with paintColor (flat, 3D solid, model) and imageDecal.
 In the difference mode the stamp writes to the diff buffer.
 
 **Scripts:** `run_script` (JavaScript in one undo step, the same API as the
@@ -866,7 +891,9 @@ Scripted Brush / Run Script, including `paintColorAt`/`paintColorShape`/
 surface index and colors, the cell attributes; with a `z` argument — the
 color of the internal voxel layer at height z: `voxelColor` `{r, g, b}`
 and `hasLayer` — true when a layer covers z, otherwise the column's
-default color is returned), `get_palette`,
+default color is returned; for a TRANSPARENT voxel — nothing:
+`hasLayer: false`, `voxelColor: null`, exactly like a missing one),
+`get_palette`,
 `set_palette_color`.
 
 **History:** `undo`, `redo`.

@@ -375,8 +375,196 @@ bool runVoxLayerMaskTests()
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// 124 — transparent (empty) voxels: painting, the top-strip invariant, the
+// raise-solidify rule, see-through color lookup and the load-time strip.
+// ---------------------------------------------------------------------------
+
+bool runVoxTransparentTests()
+{
+    MapEditor::Tests::TestContext& ctx = MapEditor::Tests::context();
+
+    TEST_REQUIRE(!ctx.tempRoot.empty() && fs::exists(ctx.tempRoot),
+                 "WorldRoundTripTests did not provide the temporary world.");
+    TEST_REQUIRE(!ctx.worldName.empty(),
+                 "WorldRoundTripTests did not provide the world name.");
+
+    MapEditor::setupErrHWrapper();
+
+    const fs::path loadRoot = ctx.tempRoot / "load_root_voxtransparent";
+    TEST_REQUIRE(buildLoadRoot(ctx.gameDir, ctx.tempWorldDir,
+                               fs::u8path(ctx.worldName), loadRoot),
+                 "could not build the load content root.");
+
+    MapEditor::EditorSession session;
+    session.setUndoCoalescingWindowMs(0);
+    TEST_REQUIRE(session.setGameDir(loadRoot.u8string()),
+                 "EditorSession::setGameDir() failed.");
+    TEST_REQUIRE(session.scanWorlds() && session.worldCount() >= 1,
+                 "EditorSession::scanWorlds() found no world.");
+    TEST_REQUIRE(session.loadWorld(0), "EditorSession::loadWorld(0) failed.");
+
+    const fs::path sidecarPath =
+        session.currentWorldFiles()->worldDir() /
+        MapEditor::WorldFiles::Heights16File;
+
+    // A flat dam patch at height 40 (the playground).
+    for (int j = -8; j <= 8; ++j) {
+        for (int i = -8; i <= 8; ++i) {
+            const int off = offAt(kPx + i, kPy + j);
+            vMap.VxGBuf[off] = 10;
+            vMap.VxDBuf[off] = 40;
+            vMap.AtrBuf[off] = 0;
+            vMap.SurBuf[off] = 5;
+        }
+    }
+
+    MapEditor::BrushTool brush(session);
+    const auto paintAt = [&](int height, int depth, std::uint32_t rgb,
+                             bool transparent) {
+        MapEditor::BrushParams p;
+        p.effect = MapEditor::BrushEffect::SetColor;
+        p.mode = MapEditor::BrushMode::Dam;
+        p.radius = 2;
+        p.colorRgb = rgb;
+        p.paintHeight = height;
+        p.paintDepth = depth;
+        p.paintTransparent = transparent;
+        return brush.applyStamp(kPx, kPy, p);
+    };
+
+    // ------------------------------------------------------------------
+    // 1: a transparent range strictly below the surface: it exists, the
+    //    surface keeps its height, and the color lookup sees THROUGH it to
+    //    the solid voxel below.
+    // ------------------------------------------------------------------
+    TEST_REQUIRE(paintAt(27, 4, 0x00102030, false),
+                 "the colored layer paint was refused.");
+    TEST_REQUIRE(paintAt(30, 3, 0, true), "the transparent paint was refused.");
+    TEST_REQUIRE(vMap.voxLayers.isTransparent(offAt(kPx, kPy), 29),
+                 "voxel 29 must be transparent.");
+    TEST_REQUIRE(vMap.voxLayers.isTransparent(offAt(kPx, kPy), 30),
+                 "voxel 30 must be transparent.");
+    TEST_REQUIRE(!vMap.voxLayers.isTransparent(offAt(kPx, kPy), 31),
+                 "voxel 31 (above the range) must not be transparent.");
+    TEST_REQUIRE((vMap.SGetAlt(offAt(kPx, kPy)) >> VX_FRACTION) == 40,
+                 "an interior transparent range must not change the height.");
+    // Slice view at 30: transparent → falls through to the solid voxel
+    // below (27, the colored layer), not the surface color.
+    session.setViewSliceHeight(30);
+    {
+        const int off = offAt(kPx, kPy);
+        const unsigned int light = vMap.RnrBuf[off] & 0x7F;
+        TEST_REQUIRE(vMap.getColor32(off) ==
+                         vrtMap::trueColor32(0xFF000000u | 0x00102030u, light),
+                     "the slice must see through transparent voxels to the "
+                     "solid voxel below.");
+    }
+    session.setViewSliceHeight(-1);
+    std::printf("[PASS] interior transparent voxels keep the height; the "
+                "slice sees through them.\n");
+
+    // ------------------------------------------------------------------
+    // 2: transparent paint ON the top: the voxels are destroyed and the
+    //    height recalculates to the nearest solid voxel.
+    // ------------------------------------------------------------------
+    TEST_REQUIRE(paintAt(45, 6, 0, true),
+                 "the top transparent paint was refused.");
+    TEST_REQUIRE((vMap.SGetAlt(offAt(kPx, kPy)) >> VX_FRACTION) == 34,
+                 "the top transparent voxels must be stripped: height 40 -> "
+                 "34 (voxel 33 is the solid cap of the colored range).");
+    TEST_REQUIRE(!vMap.voxLayers.isTransparent(offAt(kPx, kPy), 33),
+                 "the new top voxel (33) must be solid.");
+    std::printf("[PASS] transparent voxels on the top are destroyed with a "
+                "height recalc.\n");
+
+    // ------------------------------------------------------------------
+    // 3: raising the terrain through a transparent voxel replaces it with
+    //    a solid one (the column default color). Fresh spot — the column
+    //    above still carries the step-2 ranges.
+    // ------------------------------------------------------------------
+    const int rx = kPx + 16;
+    const int ry = kPy;
+    for (int j = -2; j <= 2; ++j) {
+        for (int i = -2; i <= 2; ++i) {
+            const int off = offAt(rx + i, ry + j);
+            vMap.VxGBuf[off] = 10;
+            vMap.VxDBuf[off] = 40;
+            vMap.AtrBuf[off] = 0;
+            vMap.SurBuf[off] = 5;
+        }
+    }
+    {
+        MapEditor::BrushParams p;
+        p.effect = MapEditor::BrushEffect::SetColor;
+        p.mode = MapEditor::BrushMode::Dam;
+        p.radius = 2;
+        p.paintHeight = 20;
+        p.paintDepth = 3;
+        p.paintTransparent = true;
+        TEST_REQUIRE(brush.applyStamp(rx, ry, p), "the pocket paint refused.");
+    }
+    TEST_REQUIRE(vMap.voxLayers.isTransparent(offAt(rx, ry), 20),
+                 "voxel 20 must be transparent before the raise.");
+    {
+        MapEditor::BrushParams raise;
+        raise.effect = MapEditor::BrushEffect::ChangeHeight;
+        raise.mode = MapEditor::BrushMode::Dam;
+        raise.direction = 1;
+        raise.radius = 2;
+        raise.strength = 25;
+        TEST_REQUIRE(brush.applyStamp(rx, ry, raise), "the raise refused.");
+        TEST_REQUIRE(!vMap.voxLayers.isTransparent(offAt(rx, ry), 20),
+                     "raising through a transparent voxel must solidify it.");
+        std::uint32_t rgb = 0;
+        uint8_t flags = 0;
+        TEST_REQUIRE(vMap.voxLayers.lookup(
+                         static_cast<std::uint32_t>(offAt(rx, ry)), 20,
+                         &rgb, &flags) &&
+                         !(flags & VOX_LAYER_TRANSPARENT),
+                     "the solidified voxel must be a solid layer entry.");
+        TEST_REQUIRE(
+            (vMap.SGetAlt(offAt(rx, ry)) >> VX_FRACTION) == 65,
+            "the raise must reach 40 + 25, got %d.",
+            vMap.SGetAlt(offAt(rx, ry)) >> VX_FRACTION);
+    }
+    std::printf("[PASS] raising through transparent voxels solidifies them "
+                "with the default color.\n");
+
+    // ------------------------------------------------------------------
+    // 4: load-time strip — a sidecar carrying transparent voxels ABOVE the
+    //    solid top loses them on load (no warnings, immediate destruction).
+    //    The column above sits at height 34 with a stale [34..39]
+    //    transparent range; pushing the height back to 40 without
+    //    normalization mimics a hand-edited save.
+    // ------------------------------------------------------------------
+    {
+        const int off = offAt(kPx, kPy);
+        TEST_REQUIRE((vMap.SGetAlt(off) >> VX_FRACTION) == 34,
+                     "the pre-condition height must be 34.");
+        TEST_REQUIRE(paintAt(30, 4, 0, true), "the strip-setup paint refused.");
+        vMap.VxDBuf[off] = 40;
+        TEST_REQUIRE(session.saveWorld(), "saveWorld() failed.");
+        session.unloadWorld();
+        TEST_REQUIRE(session.loadWorld(0), "the reload failed.");
+        TEST_REQUIRE((vMap.SGetAlt(offAt(kPx, kPy)) >> VX_FRACTION) == 34,
+                     "loading must strip transparent voxels hanging on top "
+                     "(40 -> 34).");
+        TEST_REQUIRE(!vMap.voxLayers.isTransparent(offAt(kPx, kPy), 33),
+                     "the stripped top voxel must be solid.");
+    }
+    std::printf("[PASS] the sidecar load strips top-hanging transparent "
+                "voxels.\n");
+
+    (void)sidecarPath;
+    session.unloadWorld();
+    return true;
+}
+
 } // namespace
 
 MAP_EDITOR_REGISTER_TEST("Voxel layer painting", 117, runVoxLayerTests);
 MAP_EDITOR_REGISTER_TEST("Voxel layer paint through an image mask", 122,
                          runVoxLayerMaskTests);
+MAP_EDITOR_REGISTER_TEST("Transparent voxels in the dam", 124,
+                         runVoxTransparentTests);

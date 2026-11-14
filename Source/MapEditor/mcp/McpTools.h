@@ -450,7 +450,19 @@ inline QVector<McpToolSpec> mcpToolCatalog()
                              "paint) and paintDepth (>= 1) paints the "
                              "internal voxel layers [paintHeight-paintDepth+1 "
                              ".. paintHeight] wherever the height is below "
-                             "the surface, leaving heights untouched. 3D SOLID "
+                             "the surface, leaving heights untouched. "
+                             "TRANSPARENT VOXELS: paintTransparent: 1 paints "
+                             "the range as empty/transparent voxels instead "
+                             "of a color — no color, no terraforming, units "
+                             "and line of sight pass through; a transparent "
+                             "voxel is never the topmost one (stripped on "
+                             "top with an immediate height recalc, on load "
+                             "too) and raising terrain through it makes it "
+                             "solid. Works with paintColor (flat, shape and "
+                             "model) and imageDecal. get_terrain_at with z "
+                             "reports nothing (hasLayer=false, voxelColor "
+                             "null) for a transparent voxel, exactly like a "
+                             "missing one. 3D SOLID "
                              "brushes: pass shape (cone, pyramid, "
                              "truncatedCone, truncatedPyramid, torus, "
                              "halfEllipsoid) together with a height effect "
@@ -563,6 +575,9 @@ inline QVector<McpToolSpec> mcpToolCatalog()
                          {QStringLiteral("paintInterior"),
                           obj({{QStringLiteral("type"), integer},
                                {QStringLiteral("default"), 0}})},
+                         {QStringLiteral("paintTransparent"),
+                          obj({{QStringLiteral("type"), integer},
+                               {QStringLiteral("default"), 0}})},
                          {QStringLiteral("paint"),
                           obj({{QStringLiteral("type"), integer},
                                {QStringLiteral("default"), 0}})},
@@ -586,7 +601,9 @@ inline QVector<McpToolSpec> mcpToolCatalog()
                              "volume without height changes) /paintColorModel "
                              "(the imported model's volume) /paintDecal (the "
                              "loaded image decal into inner layers) "
-                             "/getDamHeight/"
+                             "/paintTransparentAt (empty/transparent voxels "
+                             "— never the topmost, stripped with a height "
+                             "recalc) /getDamHeight/"
                              "applySmooth/... plus palette setters). A loaded "
                              "brush image (load_brush_image) owns the stamp "
                              "geometry of the paint calls. The script text "
@@ -628,7 +645,10 @@ inline QVector<McpToolSpec> mcpToolCatalog()
                              "the internal voxel-layer color at that height: "
                              "'voxelColor' {r, g, b} and 'hasLayer' (true "
                              "when a painted layer covers z, else the "
-                             "column's default color is returned)."),
+                             "column's default color is returned). A "
+                             "TRANSPARENT voxel reports nothing — hasLayer "
+                             "false and voxelColor null, exactly like a "
+                             "missing voxel."),
               obj({{QStringLiteral("type"), QStringLiteral("object")},
                    {QStringLiteral("properties"),
                     obj({{QStringLiteral("x"),

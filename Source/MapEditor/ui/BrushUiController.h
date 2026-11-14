@@ -229,6 +229,10 @@ private:
     QSpinBox *brushPaintHeightSpin_ = nullptr;
     QSpinBox *brushPaintDepthSpin_ = nullptr;
     QCheckBox *brushPaintInteriorCheck_ = nullptr;
+    /// "Paint transparent": the painted layer range becomes empty/transparent
+    /// voxels instead of a color (stripped from the column top with a height
+    /// recalc; units/LOS follow the recalculated height).
+    QCheckBox *brushPaintTransparentCheck_ = nullptr;
     // T3.5 — the image-mask scale control and the un-scaled original mask.
     QSpinBox *brushMaskScaleSpin_ = nullptr;
     MapEditor::BrushMask brushMaskOriginal_;

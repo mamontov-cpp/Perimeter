@@ -294,8 +294,22 @@ struct vrtMap {
 	uint32_t* SurColBuf;
 
 	// Внутренние цветовые слои вокселей (диапазоны высот с RGB24 на колонку).
-	// См. VoxLayers.h; сериализуются в sidecar heights16.bin.
+	// См. VoxLayers.h; сериализуются в sidecar heights16.bin. Флаг
+	// VOX_LAYER_TRANSPARENT помечает воксели как пустые/прозрачные.
 	VoxColLayers voxLayers;
+
+	// Инвариант прозрачных вокселей для одной колонки (off): поднятие
+	// (newHeight > oldHeight) заменяет прозрачные воксели [oldHeight,
+	// newHeight) сплошными с цветом по умолчанию колонки; затем верхние
+	// прозрачные воксели уничтожаются и высота дамбы уменьшается до
+	// ближайшего сплошного вокселя (прозрачный воксель не может быть
+	// верхним). Вызывается из tVoxSetAll (игра и редактор), кистей и
+	// загрузки sidecar. oldHeight — высота дамбы ДО изменения, в целых
+	// вокселях.
+	void normalizeTransparentColumn(int off, int oldHeight);
+	// Цвет по умолчанию колонки (сырой RGB24): true-color краска, иначе
+	// палитра текущего слоя по индексу SurBuf.
+	unsigned int defaultColumnRgb(int off) const;
 	// Редакторский срез высоты: >= 0 — getColor32 рисует цвет слоя на этой
 	// высоте (все выше среза «не рендерятся»). Игра не трогает.
 	int viewSliceHeight = -1;
@@ -645,12 +659,19 @@ struct vrtMap {
 	unsigned short getColor(int off){
 		//Внутренние слои побеждают: цвет диапазона, внутри которого лежит
 		//(урезанная срезом) поверхность. Срез — редакторский режим показа
-		//слоя на высоте.
+		//слоя на высоте. Прозрачный воксель «не существует»: показываем
+		//верхний сплошной воксель ниже него (срез проваливается сквозь
+		//пустоту), иначе — обычный цвет поверхности.
 		if(!voxLayers.empty()){
 			const int surface=SGetAlt(off)>>VX_FRACTION;
 			const int h=(viewSliceHeight>=0&&viewSliceHeight<surface)?viewSliceHeight:surface;
 			uint32_t rgb;
-			if(voxLayers.lookup(static_cast<uint32_t>(off),h,&rgb))
+			uint8_t flags=0;
+			if(voxLayers.lookup(static_cast<uint32_t>(off),h,&rgb,&flags) &&
+			   !(flags&VOX_LAYER_TRANSPARENT))
+				return trueColor16(0xFF000000u|rgb, RnrBuf[off]&0x7F);
+			if((flags&VOX_LAYER_TRANSPARENT) &&
+			   voxLayers.lookupSolidBelow(static_cast<uint32_t>(off),h,&rgb))
 				return trueColor16(0xFF000000u|rgb, RnrBuf[off]&0x7F);
 		}
 		//True-color: прямой RGB с освещением вместо палитры SurBuf.
@@ -690,12 +711,19 @@ struct vrtMap {
 	unsigned int getColor32(int off){
 		//Внутренние слои побеждают: цвет диапазона, внутри которого лежит
 		//(урезанная срезом) поверхность. Срез — редакторский режим показа
-		//слоя на высоте.
+		//слоя на высоте. Прозрачный воксель «не существует»: показываем
+		//верхний сплошной воксель ниже него (срез проваливается сквозь
+		//пустоту), иначе — обычный цвет поверхности.
 		if(!voxLayers.empty()){
 			const int surface=SGetAlt(off)>>VX_FRACTION;
 			const int h=(viewSliceHeight>=0&&viewSliceHeight<surface)?viewSliceHeight:surface;
 			uint32_t rgb;
-			if(voxLayers.lookup(static_cast<uint32_t>(off),h,&rgb))
+			uint8_t flags=0;
+			if(voxLayers.lookup(static_cast<uint32_t>(off),h,&rgb,&flags) &&
+			   !(flags&VOX_LAYER_TRANSPARENT))
+				return trueColor32(0xFF000000u|rgb, RnrBuf[off]&0x7F);
+			if((flags&VOX_LAYER_TRANSPARENT) &&
+			   voxLayers.lookupSolidBelow(static_cast<uint32_t>(off),h,&rgb))
 				return trueColor32(0xFF000000u|rgb, RnrBuf[off]&0x7F);
 		}
 		//True-color: прямой RGB с освещением вместо палитры SurBuf.

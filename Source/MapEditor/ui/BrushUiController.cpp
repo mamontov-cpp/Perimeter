@@ -364,6 +364,9 @@ void BrushUiController::updateEnabledStates(bool worldLoaded)
         if (brushPaintDepthSpin_) {
             brushPaintDepthSpin_->setEnabled(colorActive);
         }
+        if (brushPaintTransparentCheck_) {
+            brushPaintTransparentCheck_->setEnabled(colorActive);
+        }
         if (brushPaintInteriorCheck_) {
             brushPaintInteriorCheck_->setEnabled(
                 worldLoaded &&
@@ -1672,6 +1675,27 @@ void BrushUiController::buildBrushToolbar()
     bar->addWidget(new QLabel(tr("Depth:"), bar));
     bar->addWidget(brushPaintDepthSpin_);
 
+    // "Paint transparent": the layer range (2D brushes, the Image Decal, the
+    // 3D shape / model volume paints) becomes EMPTY/TRANSPARENT voxels —
+    // they carry no color, do not participate in terraforming and are never
+    // the topmost voxel: stripped on top with an immediate height recalc
+    // (vrtMap::normalizeTransparentColumn, game and editor).
+    brushPaintTransparentCheck_ = new QCheckBox(tr("Transparent"), bar);
+    brushPaintTransparentCheck_->setToolTip(
+        tr("Paint the layer range as transparent (empty) voxels instead of "
+           "a color: no color, no terraforming participation, units and "
+           "line of sight pass through. A transparent voxel can never be "
+           "the topmost one — painted onto the top it is destroyed and the "
+           "terrain height recalculates to the nearest solid voxel; raising "
+           "terrain through a transparent voxel makes it solid."));
+    connect(brushPaintTransparentCheck_, &QCheckBox::toggled, this,
+            [this](bool on) {
+                MapEditor::BrushParams params = brushTool_->params();
+                params.paintTransparent = on;
+                brushTool_->setParams(params);
+            });
+    bar->addWidget(brushPaintTransparentCheck_);
+
     // T3.3/T4.2 — the paint/pick color types next to their color controls
     // (the same actions the Edit menu carries).
     bar->addAction(actBrushColor_);
@@ -1990,6 +2014,12 @@ void BrushUiController::syncControls()
         brushPaintInteriorCheck_->blockSignals(true);
         brushPaintInteriorCheck_->setChecked(params.paintInterior3d);
         brushPaintInteriorCheck_->blockSignals(false);
+    }
+    if (brushPaintTransparentCheck_ &&
+        brushPaintTransparentCheck_->isChecked() != params.paintTransparent) {
+        brushPaintTransparentCheck_->blockSignals(true);
+        brushPaintTransparentCheck_->setChecked(params.paintTransparent);
+        brushPaintTransparentCheck_->blockSignals(false);
     }
     // The color button is restyled from params by syncColorControls() below.
 

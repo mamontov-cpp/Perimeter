@@ -162,6 +162,54 @@ static bool worldHasTrueColorData(const vrtMap& m) {
 	return false;
 }
 
+unsigned int vrtMap::defaultColumnRgb(int off) const
+{
+	if (SurColBuf && (SurColBuf[off] & 0xFF000000u)) {
+		return SurColBuf[off] & 0x00FFFFFFu;
+	}
+	// Палитра текущего слоя (dam, если дамба есть, иначе geo) по индексу
+	// SurBuf; палитры GeoPal/DamPal — по 256 RGB24 подряд.
+	const unsigned char* pal =
+		(VxDBuf[off] != 0 ? DamPal : GeoPal) + SurBuf[off] * 3;
+	return (static_cast<unsigned int>(pal[0]) << 16) |
+	       (static_cast<unsigned int>(pal[1]) << 8) |
+	       static_cast<unsigned int>(pal[2]);
+}
+
+void vrtMap::normalizeTransparentColumn(int off, int oldHeight)
+{
+	if (voxLayers.empty()) {
+		return;
+	}
+	const int newHeight = VxDBuf[off];
+	if (newHeight > oldHeight) {
+		// Поднятие: ЛЮБОЙ прозрачный воксель колонки ниже нового верха
+		// заменяется сплошным с цветом по умолчанию колонки (правило
+		// «поднятие заменяет прозрачный воксель сплошным»).
+		const unsigned int rgb = defaultColumnRgb(off);
+		voxLayers.solidify(static_cast<uint32_t>(off), 0, newHeight - 1,
+		                   static_cast<unsigned char>((rgb >> 16) & 0xFF),
+		                   static_cast<unsigned char>((rgb >> 8) & 0xFF),
+		                   static_cast<unsigned char>(rgb & 0xFF));
+	}
+	// Инвариант: верхний воксель непрозрачный. Прозрачные воксели сверху
+	// уничтожаются (как невидимые), высота пересчитывается до ближайшего
+	// сплошного вокселя; если в дамбе остались одни прозрачные — высота 0.
+	int h = newHeight;
+	while (h > 0 &&
+	       voxLayers.isTransparent(static_cast<uint32_t>(off), h - 1)) {
+		--h;
+	}
+	if (h != newHeight) {
+		VxDBuf[off] = static_cast<VxWholeHeight>(h);
+		if (h == 0) {
+			// Дамба исчезла полностью — сбрасываем и дробную часть.
+			AtrBuf[off] = static_cast<unsigned char>(
+				AtrBuf[off] & ~VX_FRACTION_MASK);
+		}
+	}
+}
+
 struct sHeights16Header {
 	char id[4];
 	uint32_t version;
@@ -271,6 +319,28 @@ static bool loadHeights16Sidecar(vrtMap& m) {
 				"section in '%s' — dropped.\n",
 				GetTargetName(vrtMap::worldHeights16File).c_str());
 			m.voxLayers.clear();
+		} else {
+			// Инвариант прозрачных вокселей при загрузке: прозрачный
+			// воксель не может лежать наверху колонки — «висящие» сверху
+			// уничтожаются с пересчётом высоты (без предупреждений).
+			// Проход только по колонкам с флагом прозрачности.
+			for (uint32_t i = 0; i < nColumns; ++i) {
+				int count = 0;
+				const VoxLayerRange* rr =
+					m.voxLayers.columnRanges(static_cast<int>(i), &count);
+				bool hasTransparent = false;
+				for (int k = 0; k < count; ++k) {
+					if (rr[k].flags & VOX_LAYER_TRANSPARENT) {
+						hasTransparent = true;
+						break;
+					}
+				}
+				if (hasTransparent) {
+					m.normalizeTransparentColumn(
+						static_cast<int>(m.voxLayers.columnOffset(i)),
+						m.VxDBuf[m.voxLayers.columnOffset(i)]);
+				}
+			}
 		}
 	}
 	fstream.close();

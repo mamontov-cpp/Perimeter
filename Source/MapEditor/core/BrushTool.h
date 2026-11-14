@@ -202,6 +202,13 @@ struct BrushParams
     /// level from the shape base up to its surface at the column gets the
     /// brush color (clipped at the highest part).
     bool paintInterior3d = false;
+    /// Paint the layer range as TRANSPARENT (empty) voxels instead of a
+    /// color: they have no color, do not participate in terraforming, are
+    /// never the topmost voxel (stripped on top with a height recalc — see
+    /// vrtMap::normalizeTransparentColumn) and behave as the absence of a
+    /// voxel (units/LOS/minimap follow the recalculated height). Raising
+    /// terrain through them replaces them with solid voxels.
+    bool paintTransparent = false;
     BrushEffect effect = BrushEffect::ChangeHeight;
 
     /// Height effect direction: +1 raise, -1 lower, 0 — no height change.
@@ -315,6 +322,7 @@ struct BrushParams
                paintHeight == other.paintHeight &&
                paintDepth == other.paintDepth &&
                paintInterior3d == other.paintInterior3d &&
+               paintTransparent == other.paintTransparent &&
                direction == other.direction &&
                heightLevel == other.heightLevel &&
                thickness == other.thickness &&
@@ -651,6 +659,11 @@ private:
                               const BrushParams& params, int bx, int by,
                               int bxEnd, int byEnd);
 
+    /// The transparent-voxel invariant over a rectangle: top transparent
+    /// voxels are stripped with a height recalc (vrtMap). Called after any
+    /// stamp that may have painted transparent ranges.
+    void normalizeTransparentTops(int x0, int y0, int x1, int y1);
+
     EditorSession& session_;
     BrushParams params_;
 
@@ -678,7 +691,7 @@ private:
     /// Transient: layer paints collected during the applyMask cell loop and
     /// applied after it (off, z0, z1, 0x00RRGGBB) — keeps the voxel-layer
     /// structure mutation out of the per-cell routing.
-    std::vector<std::array<int, 4>> pendingLayerPaints_;
+    std::vector<std::array<int, 5>> pendingLayerPaints_;
 
     /// T4.2: the last index pickColorAt() sampled (SurBuf at the click cell).
     unsigned char lastPickedColorIndex_ = 0;
