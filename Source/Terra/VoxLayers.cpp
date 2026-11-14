@@ -92,58 +92,65 @@ void VoxColLayers::setColumn(uint32_t cellOffset, const VoxLayerRange* ranges,
 	if (count < 0) {
 		count = 0;
 	}
-	// Пересборка всех трёх массивов одним проходом: пул диапазонов растёт
-	// строго в порядке колонок, begin_[i] — начало колонки i в нём. (Две
-	// прежние версии ломали инвариант: erase-in-place сдвигал begin_ только
-	// на вычтенное, а rebuild с append новой колонки в конец пула вставлял
-	// begin_ в середину — после ~100 вставок columnRanges давал отрицательные
-	// длины и пересборка падала со std::length_error.)
-	std::vector<uint32_t> newCol;
-	std::vector<uint32_t> newBegin;
-	std::vector<VoxLayerRange> newRanges;
-	newCol.reserve(col_.size() + 1);
-	newBegin.reserve(begin_.size() + 1);
-	newRanges.reserve(ranges_.size() + static_cast<size_t>(count));
-	bool done = false;
-	for (size_t i = 0; i < col_.size(); ++i) {
-		const uint32_t off = col_[i];
-		if (!done && off >= cellOffset) {
-			done = true;
-			if (off != cellOffset && count > 0) {
-				// Новая колонка идёт перед off — пул сращивается здесь.
-				newCol.push_back(cellOffset);
-				newBegin.push_back(static_cast<uint32_t>(newRanges.size()));
-				newRanges.insert(newRanges.end(), ranges, ranges + count);
-			}
-			if (off == cellOffset) {
-				// Замена существующей (count == 0 — удаление).
-				if (count > 0) {
-					newCol.push_back(cellOffset);
-					newBegin.push_back(static_cast<uint32_t>(newRanges.size()));
-					newRanges.insert(newRanges.end(), ranges, ranges + count);
-				}
-				continue; // старые диапазоны колонки выбрасываем
+	// In-place splice. The previous version rebuilt all three vectors for
+	// every call — O(n) allocations + full copies per painted column, which
+	// made a stamp over k cells O(k·n) and visibly slow. All element types
+	// are PODs, so insert/erase are plain memmoves; the only O(n) part is
+	// the begin_ shift (4-byte ints), unavoidable with a flat pool.
+	const int idx = findColumn(cellOffset);
+	if (idx >= 0) {
+		const uint32_t b = begin_[static_cast<size_t>(idx)];
+		const uint32_t e =
+			idx + 1 < static_cast<int>(begin_.size())
+				? begin_[static_cast<size_t>(idx) + 1]
+				: static_cast<uint32_t>(ranges_.size());
+		const uint32_t oldCount = e - b;
+		if (static_cast<uint32_t>(count) == oldCount) {
+			// Same shape: copy the ranges in place (the common repaint).
+			std::copy(ranges, ranges + count, ranges_.begin() + b);
+			return;
+		}
+		ranges_.erase(ranges_.begin() + b, ranges_.begin() + e);
+		if (count > 0) {
+			ranges_.insert(ranges_.begin() + b, ranges, ranges + count);
+		}
+		const int delta = count - static_cast<int>(oldCount);
+		for (size_t j = static_cast<size_t>(idx) + 1; j < begin_.size(); ++j) {
+			begin_[j] = static_cast<uint32_t>(static_cast<int>(begin_[j]) +
+			                                 delta);
+		}
+		if (count == 0) {
+			col_.erase(col_.begin() + idx);
+			begin_.erase(begin_.begin() + idx);
+		}
+		return;
+	}
+	if (count == 0) {
+		return;
+	}
+	// Вставка новой колонки с сохранением сортировки: пул сращивается
+	// в позиции poolPos — между диапазонами колонок pos-1 и pos.
+	size_t pos = 0;
+	{
+		size_t lo = 0, hi = col_.size();
+		while (lo < hi) { // upper bound: первый col_ > cellOffset
+			const size_t mid = (lo + hi) / 2;
+			if (col_[mid] <= cellOffset) {
+				lo = mid + 1;
+			} else {
+				hi = mid;
 			}
 		}
-		const uint32_t b = begin_[static_cast<size_t>(i)];
-		const uint32_t e =
-			i + 1 < begin_.size()
-				? begin_[static_cast<size_t>(i) + 1]
-				: static_cast<uint32_t>(ranges_.size());
-		newCol.push_back(off);
-		newBegin.push_back(static_cast<uint32_t>(newRanges.size()));
-		newRanges.insert(newRanges.end(), ranges_.begin() + b,
-		                 ranges_.begin() + e);
+		pos = lo;
 	}
-	if (!done && count > 0) {
-		// Хвост — новая колонка после всех существующих.
-		newCol.push_back(cellOffset);
-		newBegin.push_back(static_cast<uint32_t>(newRanges.size()));
-		newRanges.insert(newRanges.end(), ranges, ranges + count);
+	const uint32_t poolPos =
+		pos < begin_.size() ? begin_[pos] : static_cast<uint32_t>(ranges_.size());
+	col_.insert(col_.begin() + static_cast<ptrdiff_t>(pos), cellOffset);
+	begin_.insert(begin_.begin() + static_cast<ptrdiff_t>(pos), poolPos);
+	ranges_.insert(ranges_.begin() + poolPos, ranges, ranges + count);
+	for (size_t j = pos + 1; j < begin_.size(); ++j) {
+		begin_[j] = static_cast<uint32_t>(static_cast<int>(begin_[j]) + count);
 	}
-	col_.swap(newCol);
-	begin_.swap(newBegin);
-	ranges_.swap(newRanges);
 }
 
 void VoxColLayers::paint(uint32_t cellOffset, int z0, int z1,

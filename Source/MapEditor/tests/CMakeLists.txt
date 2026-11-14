@@ -46,6 +46,7 @@ ADD_EXECUTABLE(map_editor_tests
         BrushHeightGateTests.cpp
         Shape3DTests.cpp
         ModelBrushTests.cpp
+        BrushPaintPerfTests.cpp
         ModWorldsTests.cpp
         GmpDiffTests.cpp
         MinimapRasterTests.cpp
@@ -137,6 +138,7 @@ IF(MSVC)
             BrushHeightGateTests.cpp
             BrushHeightToolsTests.cpp
             BrushMaskTests.cpp
+            BrushPaintPerfTests.cpp
             BrushPickColorTests.cpp
             BrushSetHeightTests.cpp
             BrushThicknessTests.cpp
