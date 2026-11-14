@@ -1149,6 +1149,13 @@ QVariantMap MapEditor::McpBridge::mcpApplyBrush(const QVariantMap& args)
                     "no decal image loaded (load_decal_image first)"));
             }
             op.effect = MapEditor::BrushEffect::ImageDecal;
+            // Inner-layer paint: an explicit paintHeight below the surface
+            // stamps the pixel colors into the voxel layers
+            // [paintHeight-paintDepth+1 .. paintHeight] instead of the top.
+            op.paintHeight = MapEditor::BrushTool::clampPaintHeight(
+                mcpArgInt(args, "paintHeight", -1));
+            op.paintDepth = MapEditor::BrushTool::clampPaintDepth(
+                mcpArgInt(args, "paintDepth", 1));
         } else {
             if (!brushTool_->hasModelBrushData()) {
                 return mcpError(QStringLiteral(
@@ -1159,6 +1166,35 @@ QVariantMap MapEditor::McpBridge::mcpApplyBrush(const QVariantMap& args)
             op.modelHeight = mcpArgInt(args, "modelHeight", 32);
             op.modelScaleX = std::clamp(mcpArgDbl(args, "scaleX", 1.0), 0.0, 1.0);
             op.modelScaleY = std::clamp(mcpArgDbl(args, "scaleY", 1.0), 0.0, 1.0);
+            if (mcpArgInt(args, "paint", 0) != 0) {
+                // Volume paint without height changes (like paintColor with
+                // a 3D shape): paintHeight >= 0 is the volume base, the
+                // color is colorR/colorG/colorB (or colorIndex).
+                op.effect = MapEditor::BrushEffect::SetColor;
+                const int colorIndex = mcpArgInt(args, "colorIndex", -1);
+                if (colorIndex >= 0 && colorIndex <= 255) {
+                    op.colorRgb = session_->paletteRgb(
+                                      EditorSession::PaletteLayer::Dam,
+                                      colorIndex) &
+                                  0x00FFFFFFu;
+                } else if (args.contains(QStringLiteral("colorR"))) {
+                    const int r = std::clamp(mcpArgInt(args, "colorR"), 0, 255);
+                    const int g = std::clamp(mcpArgInt(args, "colorG"), 0, 255);
+                    const int b = std::clamp(mcpArgInt(args, "colorB"), 0, 255);
+                    op.colorRgb = (static_cast<std::uint32_t>(r) << 16) |
+                                  (static_cast<std::uint32_t>(g) << 8) |
+                                  static_cast<std::uint32_t>(b);
+                } else {
+                    return mcpError(QStringLiteral(
+                        "model paint needs colorIndex (0..255) or "
+                        "colorR/colorG/colorB"));
+                }
+                op.paintHeight = MapEditor::BrushTool::clampPaintHeight(
+                    mcpArgInt(args, "paintHeight", -1));
+                op.paintInterior3d = mcpArgInt(args, "paintInterior", 1) != 0;
+                op.paintDepth = MapEditor::BrushTool::clampPaintDepth(
+                    mcpArgInt(args, "paintDepth", 1));
+            }
         }
         brushTool_->setParams(op);
         if (!brushTool_->applyStamp(x, y)) {
@@ -1176,18 +1212,28 @@ QVariantMap MapEditor::McpBridge::mcpApplyBrush(const QVariantMap& args)
     const bool square = args.value(QStringLiteral("square"), false).toBool();
 
     MapEditor::BrushMask mask;
-    const int sides = mcpArgInt(args, "sides", 0);
-    if (sides >= MapEditor::kMinPolygonSides) {
-        mask = MapEditor::BrushMasks::filledPolygon(
-            radius, sides, mcpArgDbl(args, "angleOffset", 0.0));
+    if (brushTool_->hasImageMask()) {
+        // A brush image loaded via load_brush_image (or the toolbar Load
+        // Brush Image button) owns the stamp geometry, exactly like the UI:
+        // the pixel alpha is the per-cell influence, fully transparent
+        // pixels never stamp. maskScale is applied by the BrushUiController
+        // when the image is loaded.
+        mask = brushTool_->imageMask();
+        mask.translate(x, y);
     } else {
-        mask = square ? MapEditor::BrushMasks::filledSquare(radius)
-                      : MapEditor::BrushMasks::filledCircle(radius);
+        const int sides = mcpArgInt(args, "sides", 0);
+        if (sides >= MapEditor::kMinPolygonSides) {
+            mask = MapEditor::BrushMasks::filledPolygon(
+                radius, sides, mcpArgDbl(args, "angleOffset", 0.0));
+        } else {
+            mask = square ? MapEditor::BrushMasks::filledSquare(radius)
+                          : MapEditor::BrushMasks::filledCircle(radius);
+        }
+        mask.translate(x, y);
     }
-    mask.translate(x, y);
 
     MapEditor::BrushParams op = brushTool_->params();
-    op.useImageMask = false;
+    op.useImageMask = false; // the mask is applied explicitly above
     op.shape = square ? MapEditor::BrushShape::FilledSquare
                       : MapEditor::BrushShape::FilledCircle;
     op.radius = radius;

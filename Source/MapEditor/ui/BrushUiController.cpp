@@ -348,25 +348,32 @@ void BrushUiController::updateEnabledStates(bool worldLoaded)
             worldLoaded &&
             (effect == MapEditor::BrushEffect::SetColor ||
              effect == MapEditor::BrushEffect::PickColor));
+        // The paint height/depth spins serve the color brush AND the image
+        // decal (an explicit height below the surface paints the pixel
+        // colors into the internal voxel layers instead of the top).
         const bool colorActive =
-            worldLoaded && effect == MapEditor::BrushEffect::SetColor;
+            worldLoaded &&
+            (effect == MapEditor::BrushEffect::SetColor ||
+             effect == MapEditor::BrushEffect::ImageDecal);
         brushPaintHeightSpin_->setEnabled(colorActive);
         brushPaintDepthSpin_->setEnabled(colorActive);
         brushPaintInteriorCheck_->setEnabled(
             worldLoaded &&
-            brushTool_->params().shape3d != MapEditor::Shape3DKind::None);
+            (brushTool_->params().shape3d != MapEditor::Shape3DKind::None ||
+             brushTool_->params().modelBrush));
     }
     // T3.2 — the single height control serves the raise/lower step and the
-    // "Level to Height" target; with a 3D shape + Paint Color it is the
-    // shape's base height (the volume paint starts there, see
-    // BrushTool::applyShape3DPaint).
+    // "Level to Height" target; with a 3D shape or the model brush + Paint
+    // Color it is the volume base height (the paint starts there, see
+    // BrushTool::applyShape3DPaint / applyModelBrushPaint).
     if (brushLevelSpin_) {
         const MapEditor::BrushEffect effect =
             brushTool_ ? brushTool_->params().effect
                        : MapEditor::BrushEffect::None;
         const bool shapePaintBase =
             effect == MapEditor::BrushEffect::SetColor &&
-            brushTool_->params().shape3d != MapEditor::Shape3DKind::None;
+            (brushTool_->params().shape3d != MapEditor::Shape3DKind::None ||
+             brushTool_->params().modelBrush);
         brushLevelSpin_->setEnabled(
             worldLoaded &&
             (effect == MapEditor::BrushEffect::ChangeHeight ||
@@ -670,8 +677,12 @@ void BrushUiController::buildModelToolbar()
             params.mode = MapEditor::BrushMode::Dam;
             params.shape3d = MapEditor::Shape3DKind::None;
             params.useImageMask = false;
+            // Paint Color combines with the model stamp (volume paint
+            // without height changes) — keep it; the other non-height
+            // types fall back to a raise so the model has an effect.
             if (params.effect != MapEditor::BrushEffect::ChangeHeight &&
-                params.effect != MapEditor::BrushEffect::AlignVariableH) {
+                params.effect != MapEditor::BrushEffect::AlignVariableH &&
+                params.effect != MapEditor::BrushEffect::SetColor) {
                 params.effect = MapEditor::BrushEffect::ChangeHeight;
                 params.direction = 1;
             }
@@ -1393,12 +1404,12 @@ QAction* BrushUiController::addBrushTypeAction(QActionGroup* group, const QIcon&
         // A common brush type paints a flat mask — the 3D shape solid
         // and the model-heightmap stamp belong to their own buttons
         // (same rule as the image mask). Exception: Paint Color combines
-        // with the 3D shapes (applyShape3DPaint paints the solid's volume
-        // without touching heights), so it keeps the selected shape.
+        // with both (applyShape3DPaint / applyModelBrushPaint paint the
+        // volume without touching heights), so they stay selected.
         if (effect != MapEditor::BrushEffect::SetColor) {
             params.shape3d = MapEditor::Shape3DKind::None;
+            params.modelBrush = false;
         }
-        params.modelBrush = false;
         brushTool_->setParams(params);
         // T4.2 — keep the interaction mode in step with the brush type:
         // the picking type (eyedropper) drives the Eyedropper mode, every
@@ -1544,9 +1555,11 @@ void BrushUiController::buildBrushToolbar()
         if (params.effect == MapEditor::BrushEffect::AlignVariableH ||
             params.effect == MapEditor::BrushEffect::Script ||
             (params.effect == MapEditor::BrushEffect::SetColor &&
-             params.shape3d != MapEditor::Shape3DKind::None)) {
-            // Set Color over a 3D shape: the level is the shape's base
-            // height for the volume paint (applyShape3DPaint).
+             (params.shape3d != MapEditor::Shape3DKind::None ||
+              params.modelBrush))) {
+            // Set Color over a 3D shape / the model stamp: the level is
+            // the volume base for the paint (applyShape3DPaint /
+            // applyModelBrushPaint).
             params.heightLevel = value;
         } else {
             params.strength = MapEditor::BrushTool::clampStrength(value);
@@ -1825,12 +1838,13 @@ void BrushUiController::syncControls()
         // ChangeHeight, the target height for AlignVariableH (and the value
         // getCurrentHeight() reports for the scripted brush; every other
         // type does not consume it — the value display keeps the last
-        // choice of the height tools). With a 3D shape + Paint Color the
-        // spin edits the shape's base height (the volume paint starts
-        // there) — the same heightLevel the shape's height tools use.
+        // choice of the height tools). With a 3D shape or the model brush +
+        // Paint Color the spin edits the volume base height (the paint
+        // starts there) — the same heightLevel the shape's height tools use.
         const bool shapePaintBase =
             params.effect == MapEditor::BrushEffect::SetColor &&
-            params.shape3d != MapEditor::Shape3DKind::None;
+            (params.shape3d != MapEditor::Shape3DKind::None ||
+             params.modelBrush);
         const bool showsTarget =
             params.effect == MapEditor::BrushEffect::AlignVariableH ||
             params.effect == MapEditor::BrushEffect::Script || shapePaintBase;
@@ -1841,10 +1855,10 @@ void BrushUiController::syncControls()
                 ? tr("Height value the scripted brush script reads through "
                      "getCurrentHeight() (whole voxels; 1 voxel = 1/32 m).")
                 : shapePaintBase
-                    ? tr("Base height of the 3D shape (whole voxels; "
-                         "1 voxel = 1/32 m): Paint Color paints the shape's "
-                         "volume upward from this level without changing the "
-                         "terrain.")
+                    ? tr("Base height of the 3D shape / the model stamp "
+                         "(whole voxels; 1 voxel = 1/32 m): Paint Color "
+                         "paints the volume upward from this level without "
+                         "changing the terrain.")
                     : showsTarget
                         ? tr("Target height of the \"Level to Height\" brush "
                              "(whole voxels; 1 voxel = 1/32 m).")

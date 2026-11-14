@@ -444,7 +444,13 @@ inline QVector<McpToolSpec> mcpToolCatalog()
                              "height effects; fraction (0..1) is the sculpting blend "
                              "for smooth/flatten/tricubic/inflate; square "
                              "switches the stamp shape; sides/angleOffset "
-                             "configure the regular-polygon mask. 3D SOLID "
+                             "configure the regular-polygon mask. INNER-LAYER "
+                             "PAINT: paintColor with paintHeight (whole "
+                             "voxels, -1 = the column top = the default "
+                             "paint) and paintDepth (>= 1) paints the "
+                             "internal voxel layers [paintHeight-paintDepth+1 "
+                             ".. paintHeight] wherever the height is below "
+                             "the surface, leaving heights untouched. 3D SOLID "
                              "brushes: pass shape (cone, pyramid, "
                              "truncatedCone, truncatedPyramid, torus, "
                              "halfEllipsoid) together with a height effect "
@@ -457,17 +463,33 @@ inline QVector<McpToolSpec> mcpToolCatalog()
                              "cone's top radius or the torus' inner radius, "
                              "topSide is the truncated pyramid's top edge "
                              "length, and sides/angleOffset define the "
-                             "polygonal bases. 3D shapes are Dam-layer "
+                             "polygonal bases. With paintColor a shape "
+                             "instead paints the solid's VOLUME without "
+                             "changing heights: paintInterior 1 fills "
+                             "[paintHeight (or 0) .. shape surface] per "
+                             "column, 0 paints only the top slab of "
+                             "paintDepth layers. 3D shapes are Dam-layer "
                              "only, like the sculpting effects. IMAGE DECAL: "
                              "effect 'imageDecal' stamps the picture loaded "
                              "by load_decal_image, centred at (x, y) "
-                             "(radius is ignored). MODEL: effect 'model' "
+                             "(radius is ignored); paintHeight/paintDepth "
+                             "stamp the pixel colors into the internal "
+                             "voxel layers [paintHeight-paintDepth+1 .. "
+                             "paintHeight] below the surface instead of "
+                             "the column tops (-1 = the classic top "
+                             "stamp). MODEL: effect 'model' "
                              "stamps the model imported by import_model as a "
                              "heightmap rectangle; modelHeight (voxels), "
                              "scaleX/scaleY (0..1) and mode (0 place, 1 add, "
-                             "2 subtract) configure it. Both are Dam-layer "
+                             "2 subtract) configure it; pass paint: 1 to "
+                             "paint the model's volume without changing "
+                             "heights (needs a color; paintHeight is the "
+                             "volume base, paintInterior defaults to 1 = the "
+                             "whole volume). Both are Dam-layer "
                              "only. IMAGE MASK: after load_brush_image the stamp geometry is the "
-                             "loaded alpha mask instead of the shape; "
+                             "loaded alpha mask instead of the shape — "
+                             "including the inner-layer paint (transparent "
+                             "pixels never stamp); "
                              "maskScale (10-800 percent) rescales it "
                              "like the toolbar Mask spin. DIFFERENCE "
                              "MODE: with set_difference_mode "
@@ -532,6 +554,18 @@ inline QVector<McpToolSpec> mcpToolCatalog()
                           obj({{QStringLiteral("type"), integer}})},
                          {QStringLiteral("colorB"),
                           obj({{QStringLiteral("type"), integer}})},
+                         {QStringLiteral("paintHeight"),
+                          obj({{QStringLiteral("type"), integer},
+                               {QStringLiteral("default"), -1}})},
+                         {QStringLiteral("paintDepth"),
+                          obj({{QStringLiteral("type"), integer},
+                               {QStringLiteral("default"), 1}})},
+                         {QStringLiteral("paintInterior"),
+                          obj({{QStringLiteral("type"), integer},
+                               {QStringLiteral("default"), 0}})},
+                         {QStringLiteral("paint"),
+                          obj({{QStringLiteral("type"), integer},
+                               {QStringLiteral("default"), 0}})},
                          {QStringLiteral("layer"),
                           obj({{QStringLiteral("type"), str},
                                {QStringLiteral("enum"),
@@ -547,8 +581,16 @@ inline QVector<McpToolSpec> mcpToolCatalog()
     t.append({QStringLiteral("run_script"),
               QStringLiteral("Runs a JavaScript through the editor's scripted "
                              "brush API (raiseHeight/setHeight/paintColor/"
-                             "getDamHeight/applySmooth/... plus palette "
-                             "setters). The script text replaces the Run "
+                             "paintColorAt (inner voxel layers at a height "
+                             "with a depth) /paintColorShape (a 3D solid's "
+                             "volume without height changes) /paintColorModel "
+                             "(the imported model's volume) /paintDecal (the "
+                             "loaded image decal into inner layers) "
+                             "/getDamHeight/"
+                             "applySmooth/... plus palette setters). A loaded "
+                             "brush image (load_brush_image) owns the stamp "
+                             "geometry of the paint calls. The script text "
+                             "replaces the Run "
                              "Script dialog's editor. The whole run is ONE "
                              "undo entry and honours the script time limit. "
                              "Errors report the script location."),
@@ -581,12 +623,19 @@ inline QVector<McpToolSpec> mcpToolCatalog()
                              "cell carries one, else the palette color of "
                              "the cell's layer; 'hasTrueColor' tells which), "
                              "and the raw surface attribute bitmask (zero "
-                             "layer, soot, etc.)."),
+                             "layer, soot, etc.). With the optional z "
+                             "(whole voxels) the result additionally carries "
+                             "the internal voxel-layer color at that height: "
+                             "'voxelColor' {r, g, b} and 'hasLayer' (true "
+                             "when a painted layer covers z, else the "
+                             "column's default color is returned)."),
               obj({{QStringLiteral("type"), QStringLiteral("object")},
                    {QStringLiteral("properties"),
                     obj({{QStringLiteral("x"),
                           obj({{QStringLiteral("type"), integer}})},
                          {QStringLiteral("y"),
+                          obj({{QStringLiteral("type"), integer}})},
+                         {QStringLiteral("z"),
                           obj({{QStringLiteral("type"), integer}})}})},
                    {QStringLiteral("required"),
                     QJsonArray{QStringLiteral("x"), QStringLiteral("y")}}})});

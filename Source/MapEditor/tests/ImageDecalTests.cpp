@@ -400,6 +400,65 @@ bool runImageDecalTests()
 
     TEST_REQUIRE(session.undo(), "the geo-cell decal stamp undo failed.");
 
+    // ------------------------------------------------------------------
+    // E: an explicit paint height below the surface stamps the pixel
+    //    colors into the internal voxel layers [h-depth+1 .. h] instead
+    //    of the column tops.
+    // ------------------------------------------------------------------
+    fillPatch(cx, cy, 12, 10, 40, 0, baseSurface);
+    params.paintHeight = 30;
+    params.paintDepth = 4;
+    TEST_REQUIRE(brush.applyStamp(cx, cy, params),
+                 "the layer decal stamp was refused.");
+    for (int dy = 0; dy < decal.height; ++dy) {
+        for (int dx = 0; dx < decal.width; ++dx) {
+            const int off = mapOffset(originX + dx, originY + dy);
+            const std::uint32_t pixel = decal.at(dx, dy);
+            if ((pixel >> 24) == 0xFF) {
+                std::uint32_t rgb = 0;
+                for (int z = 28; z <= 30; ++z) {
+                    TEST_REQUIRE(
+                        vMap.voxLayers.lookup(
+                            static_cast<std::uint32_t>(off), z, &rgb) &&
+                            rgb == (pixel & 0x00FFFFFFu),
+                        "decal pixel (%d,%d) must paint the layer %d with "
+                        "its exact RGB.",
+                        dx, dy, z);
+                }
+                TEST_REQUIRE(!vMap.voxLayers.lookup(
+                                 static_cast<std::uint32_t>(off), 31, &rgb),
+                             "above the paint depth nothing is painted.");
+                // The top keeps NO color override — the paint went inside.
+                TEST_REQUIRE(vMap.SurColBuf[off] == 0,
+                             "the decal layer paint must not touch the top "
+                             "color.");
+            } else {
+                std::uint32_t rgb = 0;
+                TEST_REQUIRE(!vMap.voxLayers.lookup(
+                                 static_cast<std::uint32_t>(off), 30, &rgb),
+                             "a transparent decal pixel must not stamp.");
+            }
+            // Heights are never touched by a colour brush.
+            TEST_REQUIRE(vMap.VxDBuf[off] == 40 && vMap.VxGBuf[off] == 10,
+                         "the decal layer paint must not change heights.");
+        }
+    }
+    std::printf("[PASS] the decal paints inner layers at height+depth.\n");
+
+    TEST_REQUIRE(session.undo(), "the layer decal stamp undo failed.");
+    {
+        // The red pixel (0,0) was painted at layers [28 .. 30].
+        std::uint32_t rgb = 0;
+        TEST_REQUIRE(!vMap.voxLayers.lookup(
+                         static_cast<std::uint32_t>(mapOffset(originX, originY)),
+                         30, &rgb) ||
+                         rgb != 0x00FF0000u,
+                     "undo must remove the painted decal layers.");
+    }
+    std::printf("[PASS] the decal layer paint is one undo entry.\n");
+    params.paintHeight = -1;
+    params.paintDepth = 1;
+
     return true;
 }
 

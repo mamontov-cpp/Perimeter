@@ -830,10 +830,16 @@ bool BrushTool::applyMask(const BrushMask& absoluteMask, const BrushParams& para
         return applyShape3D(absoluteMask, params, bx, by, bxEnd, byEnd);
     }
     // Model-heightmap brush: same self-contained flow through
-    // applyModelBrush (place/add/subtract), Dam layer only.
+    // applyModelBrush (place/add/subtract), Dam layer only. Set Color
+    // paints the model's voxel volume WITHOUT touching heights
+    // (applyModelBrushPaint), like the 3D shape solids.
     if (params.modelBrush) {
         if (params.mode != BrushMode::Dam) {
             return false; // the model brush owns the Dam layer only
+        }
+        if (params.effect == BrushEffect::SetColor) {
+            return applyModelBrushPaint(absoluteMask, params, bx, by, bxEnd,
+                                        byEnd);
         }
         return applyModelBrush(absoluteMask, params, bx, by, bxEnd, byEnd);
     }
@@ -1833,6 +1839,112 @@ bool BrushTool::applyModelBrush(const BrushMask& absoluteMask,
     return true;
 }
 
+bool BrushTool::applyModelBrushPaint(const BrushMask& absoluteMask,
+                                     const BrushParams& params, int bx, int by,
+                                     int bxEnd, int byEnd)
+{
+    if (pendingModel_.empty() ||
+        pendingModelIndices_.size() !=
+            static_cast<std::size_t>(pendingModel_.width) *
+                pendingModel_.height) {
+        return false; // nothing imported yet (defensive)
+    }
+    // Set Color over the imported model: paint the model's voxel volume
+    // with the brush color WITHOUT changing any heights — the same
+    // semantics as applyShape3DPaint, with the model's normalized height
+    // profile instead of the analytic shape profile. The volume base is
+    // the explicit paint height (H spin / MCP paintHeight / the JS height
+    // argument) when set, else the Level (heightLevel).
+    const int heightVox =
+        std::clamp(params.modelHeight, 0, MAX_VX_HEIGHT_WHOLE);
+    const double baseVox = clampHeightLevel(
+        params.paintHeight >= 0 ? static_cast<double>(params.paintHeight)
+                                : params.heightLevel);
+    const int base = std::max(0, static_cast<int>(xm::floor(baseVox)));
+    const int depth = std::max(1, params.paintDepth);
+    const std::uint32_t rgb = params.colorRgb & 0x00FFFFFFu;
+    const unsigned char pr =
+        static_cast<unsigned char>((rgb >> 16) & 0xFF);
+    const unsigned char pg =
+        static_cast<unsigned char>((rgb >> 8) & 0xFF);
+    const unsigned char pb = static_cast<unsigned char>(rgb & 0xFF);
+    const int stampW = pendingModel_.width;
+    const int stampH = pendingModel_.height;
+    const int mx = bx + (bxEnd - bx - stampW) / 2; // stamp bbox == mask bbox
+    const int my = by + (byEnd - by - stampH) / 2;
+
+    // Pass 1 (PRE-edit): the covered cells and their paint ranges, with a
+    // no-op precheck like the shape paint.
+    std::vector<int> offs;
+    std::vector<int> rangeLo;
+    std::vector<int> rangeHi;
+    bool anyNew = false;
+    for (int y = by; y < byEnd; ++y) {
+        for (int x = bx; x < bxEnd; ++x) {
+            const int mdx = x - absoluteMask.x;
+            const int mdy = y - absoluteMask.y;
+            if (mdx < 0 || mdy < 0 || mdx >= absoluteMask.sx ||
+                mdy >= absoluteMask.sy) {
+                continue;
+            }
+            if (!absoluteMask.at(mdx, mdy)) {
+                continue;
+            }
+            const int sy = std::clamp(y - my, 0, stampH - 1);
+            const int sx = std::clamp(x - mx, 0, stampW - 1);
+            const double norm =
+                pendingModel_.normHeight[static_cast<std::size_t>(sy) *
+                                         stampW + sx];
+            const int top = std::clamp(
+                static_cast<int>(std::llround(baseVox +
+                                              norm * heightVox)),
+                0, MAX_VX_HEIGHT_WHOLE);
+            const int lo = params.paintInterior3d
+                               ? base
+                               : std::max(0, top - depth + 1);
+            if (top < lo) {
+                continue;
+            }
+            const int off = y * static_cast<int>(vMap.H_SIZE) + x;
+            bool cellNew = false;
+            for (const int z : {lo, (lo + top) / 2, top}) {
+                std::uint32_t cur = 0;
+                if (!vMap.voxLayers.lookup(static_cast<std::uint32_t>(off), z,
+                                           &cur) ||
+                    cur != rgb) {
+                    cellNew = true;
+                    break;
+                }
+            }
+            anyNew = anyNew || cellNew;
+            offs.push_back(off);
+            rangeLo.push_back(lo);
+            rangeHi.push_back(top);
+        }
+    }
+    if (!anyNew) {
+        return false;
+    }
+
+    session_.recordUndoArea(bx, by, bxEnd - bx, byEnd - by);
+
+    // Pass 2: paint the ranges — heights are never touched.
+    for (std::size_t k = 0; k < offs.size(); ++k) {
+        vMap.voxLayers.paint(static_cast<std::uint32_t>(offs[k]), rangeLo[k],
+                             rangeHi[k], pr, pg, pb);
+    }
+
+    // Grid + viewport dirty rectangles, margin 1 like the generic path.
+    const int mapW = static_cast<int>(vMap.H_SIZE);
+    const int mapH = static_cast<int>(vMap.V_SIZE);
+    const int x0 = std::max(0, bx - 1);
+    const int y0 = std::max(0, by - 1);
+    const int x1 = std::min(mapW - 1, bxEnd + 1);
+    const int y1 = std::min(mapH - 1, byEnd + 1);
+    vMap.recalcArea2Grid(x0, y0, x1, y1);
+    session_.regRenderWithShadowTrail(x0, y0, x1, y1);
+    return true;
+}
 
 //   * Geo — only VxGBuf is driven (dam height caps the raise, the dam buffer
 //     itself is never written), keeping the game invariant "dam ≥ geo";
@@ -2288,10 +2400,14 @@ void BrushTool::applyEffectToCell(const BrushParams& params, int x, int y, unsig
         // Works exactly like SetColor, one pixel at a time, but paints the
         // pixel's exact 24-bit color into the true-color layer instead of a
         // palette entry; the nearest Dam palette index still goes into SurBuf
-        // (surface type/materials, palette fallback). Two extra rules:
+        // (surface type/materials, palette fallback). Extra rules:
         //   * the decal owns the Dam layer only — geo cells are skipped;
         //   * transparent decal pixels are never applied (the mask already
-        //     dropped them; the alpha check keeps a stale origin harmless).
+        //     dropped them; the alpha check keeps a stale origin harmless);
+        //   * an explicit paint height BELOW the surface paints the pixel's
+        //     color into the internal voxel layers [height-depth+1 .. height]
+        //     instead of the top (the H/Depth spins, like the color brush);
+        //     -1 or a height at/above the surface is the default top paint.
         const int dx = x - decalOriginX_;
         const int dy = y - decalOriginY_;
         if (dx < 0 || dy < 0 || dx >= decal_.width || dy >= decal_.height) {
@@ -2304,10 +2420,19 @@ void BrushTool::applyEffectToCell(const BrushParams& params, int x, int y, unsig
         if (vMap.VxDBuf[off] == 0) {
             break; // Dam layer only
         }
-        vMap.putTrueColor(off, static_cast<unsigned char>((pixel >> 16) & 0xFF),
-                          static_cast<unsigned char>((pixel >> 8) & 0xFF),
-                          static_cast<unsigned char>(pixel & 0xFF));
-        vMap.SetTer(x, y, decal_.indexAt(dx, dy));
+        const int surface = vMap.SGetAlt(off) >> VX_FRACTION;
+        const int h = params.paintHeight;
+        if (h < 0 || h >= surface) {
+            vMap.putTrueColor(off, static_cast<unsigned char>((pixel >> 16) & 0xFF),
+                              static_cast<unsigned char>((pixel >> 8) & 0xFF),
+                              static_cast<unsigned char>(pixel & 0xFF));
+            vMap.SetTer(x, y, decal_.indexAt(dx, dy));
+        } else {
+            const int d = std::max(1, params.paintDepth);
+            const int z0 = std::max(0, h - d + 1);
+            pendingLayerPaints_.push_back(
+                {off, z0, h, static_cast<int>(pixel & 0x00FFFFFF)});
+        }
         break;
     }
     case BrushEffect::PlotSoot: {

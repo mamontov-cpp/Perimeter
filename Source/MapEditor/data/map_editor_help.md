@@ -289,8 +289,10 @@ boolean: true — заполненный квадрат, false — заполн�
 | `paintSoot(pos, radius, square)` | гарь |
 | `paintVeryLightDam(pos, radius, square)` | «очень лёгкая дамба» |
 | `paintColor(pos, red, green, blue, radius, square)` | краска: точный RGB (0..255), без квантования в палитру |
-| `paintColorAt(pos, red, green, blue, height, depth, radius, square)` | краска **внутренних слоёв вокселей**: диапазон `[height-depth+1 .. height]` на каждой покрытой клетке; `height = -1` — верх колонки (default-краска); высота не ниже поверхности клампится к верху |
+| `paintColorAt(pos, red, green, blue, height, depth, radius, square)` | краска **внутренних слоёв вокселей**: диапазон `[height-depth+1 .. height]` на каждой покрытой клетке; `height = -1` — верх колонки (default-краска); высота не ниже поверхности клампится к верху; загруженная картинка-маска (Load Brush Image / MCP `load_brush_image`) задаёт геометрию штампа — красят только непрозрачные пиксели, `radius/square` игнорируются |
 | `paintColorShape(pos, red, green, blue, shape, height, shapeHeight, radius, paintInterior, depth)` | краска **объёма 3D-тела без изменения высот**: `shape` — "cone", "pyramid", "truncatedCone", "truncatedPyramid", "torus", "halfEllipsoid"; каждая покрытая колонка получает слои `[height .. height + профиль*shapeHeight]`; `height < 0` — база 0 (как у высотных инструментов фигуры); `paintInterior = false` красит только верхний слой толщиной `depth` у поверхности фигуры; многоугольные тела берут число сторон и угол из настроек кисти UI |
+| `paintColorModel(pos, red, green, blue, height, modelHeight, paintInterior, depth)` | краска **объёма импортированной модели без изменения высот** (модель должна быть загружена — кнопка Import Model или MCP `import_model`); каждая покрытая колонка получает слои `[height .. height + нормированная высота модели * modelHeight]`; `height < 0` — база 0; `paintInterior = false` красит только верхний слой толщиной `depth`; масштаб модели X/Y — из настроек кисти UI |
+| `paintDecal(pos, height, depth)` | штамп загруженной **картинки-декали** (кнопка Image Decal или MCP `load_decal_image`), центрированный на `pos`; `height`/`depth` — как у `paintColorAt`: ниже поверхности пиксельные цвета красят слои `[height-depth+1 .. height]`, `height = -1` (или не ниже поверхности) — классический штамп по верхам; только дамба, прозрачные пиксели пропускаются |
 | `applyBlur(pos, radius, blurRadius, effect, square)` | Gaussian Blur: сглаживание высот гауссовым ядром; `blurRadius` клампится в `1..radius-1`, `effect` — доля эффекта 0..1 (1.0 = доход за один штамп) |
 | `applySmooth(pos, radius, effect, square)` | Tricubic: сглаживание к трикубической (bicubic Catmull-Rom) интерполяции решётки под штампом — как кисть Tricubic в тулбаре Sculpting; `effect` — доля 0..1 |
 | `applyHeightFn(pos, radius, fn, square)` | задать высоту **функцией**: `fn(x, y, h)` вызывается для каждой клетки штампа с её координатами и исходной (до начала операции) высотой дамбы `h` (дробной, шаг 1/32; 0, где дамбы нет) и возвращает новую **абсолютную** высоту (дробные — как у raiseHeight); все чтения идут по исходной поверхности до любой записи — клетки не влияют друг на друга |
@@ -315,7 +317,8 @@ boolean: true — заполненный квадрат, false — заполн�
 строке.
 
 Покраска на высоте: у кисти и у API (аргументы `height`/`depth` у
-`paintColorAt`, у кисти Paint Color — спинбоксы **H** и **Depth** на
+`paintColorAt` и `paintDecal`, у кистей Paint Color и Image Decal —
+спинбоксы **H** и **Depth** на
 тулбаре, режим панели Slice «красить на высоте среза») высота задаётся в
 **целых вокселях от нуля**, а текущая высота поверхности клетки — высота её
 верхнего вокселя. `height = -1` (или высота не ниже поверхности) красит
@@ -330,10 +333,15 @@ boolean: true — заполненный квадрат, false — заполн�
 штампа получает слои от базы фигуры (спин Height) до её поверхности на
 этой колонке. Флажок **Paint interior** включает заливку всего объёма; без
 него красится только верхний слой толщиной **Depth** у поверхности фигуры
-(`[поверхность-depth+1 .. поверхность]`). Цвет станет виден, как только
-дамбу поднимут до фигуры; в режиме Slice его видно сразу. Тот же режим
-доступен агентам: `apply_brush` с `effect: "paintColor"`, `shape` и
-`paintInterior`/`paintDepth`.
+(`[поверхность-depth+1 .. поверхность]`). То же работает с **кистью-моделью**
+(Use Model Brush после Import Model): Paint Color красит объём по хайтмапе
+модели, Paint interior — весь объём, без флага — верхний слой у её
+поверхности. Цвет станет виден, как только дамбу поднимут до фигуры; в
+режиме Slice его видно сразу. Те же режимы доступны агентам: `apply_brush`
+с `effect: "paintColor"`, `shape` и `paintInterior`/`paintDepth`; для модели
+— `effect: "model"` с `paint: 1`, цветом `colorR/colorG/colorB` (или
+`colorIndex`), базой `paintHeight`; в JS — `paintColorShape` и
+`paintColorModel`.
 
 Важно про `raiseHeight`/`lowerHeight`: это **инкрементальные** операции —
 штамп радиуса 1 покрывает область 3×3 вокруг центра, поэтому штампы в
@@ -774,10 +782,15 @@ port=12345
 inflate/gaussianBlur), 3D-тела (`shape`: cone, pyramid, truncatedCone,
 truncatedPyramid, torus, halfEllipsoid; `paintInterior: 1` красит каждый
 воксель внутри тела от базы до поверхности колонки), ImageDecal (`load_decal_image` +
-`effect: "imageDecal"`), маска-картинка (`load_brush_image` — альфа-канал
-задаёт форму штампа: полностью прозрачные пиксели не штампуют вовсе;
+`effect: "imageDecal"`; `paintHeight`/`paintDepth` красят пиксельные цвета
+во внутренние слои `[paintHeight-paintDepth+1 .. paintHeight]` ниже
+поверхности, -1 — классический штамп по верхам), маска-картинка (`load_brush_image` — альфа-канал
+задаёт форму штампа: полностью прозрачные пиксели не штампуют вовсе,
+включая покраску внутренних слоёв `paintHeight`/`paintDepth`;
 масштаб — аргумент `maskScale` у apply_brush, 10–800 %, как спин Mask на
-тулбаре), кисть-модель (`import_model` + `effect: "model"`),
+тулбаре), кисть-модель (`import_model` + `effect: "model"`; объёмная
+покраска без изменения высот — `paint: 1` с `colorR/colorG/colorB` или
+`colorIndex`, база — `paintHeight`),
 параметры штампа (radius, square, sides/angleOffset, fraction, blurRadius,
 layer dam/geo), покраска на высоте у paintColor: `paintHeight` (воксели,
 -1 = верх колонки) и `paintDepth` (глубина слоя, ≥ 1) — семантика та же,
@@ -788,7 +801,8 @@ layer dam/geo), покраска на высоте у paintColor: `paintHeight` 
 пишет в diff-буфер.
 
 **Скрипты:** `run_script` (JavaScript одним undo-шагом, тот же API, что у
-Scripted Brush / Run Script), `set_scripted_brush_script`.
+Scripted Brush / Run Script, включая `paintColorAt`/`paintColorShape`/
+`paintColorModel`/`paintDecal`), `set_scripted_brush_script`.
 
 **Режим различий (.gmp):** `set_difference_mode`, `save_difference`,
 `load_difference`.

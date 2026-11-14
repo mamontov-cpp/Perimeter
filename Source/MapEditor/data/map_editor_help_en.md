@@ -306,8 +306,10 @@ number ≥ 1, the circle radius or the square half-side, up to 512; `square`
 | `paintSoot(pos, radius, square)` | soot |
 | `paintVeryLightDam(pos, radius, square)` | "very light dam" |
 | `paintColor(pos, red, green, blue, radius, square)` | paint: the exact RGB (0..255), no palette quantization |
-| `paintColorAt(pos, red, green, blue, height, depth, radius, square)` | paint the **internal voxel layers**: the range `[height-depth+1 .. height]` at every covered cell; `height = -1` — the column top (the default paint); a height at/above the surface clamps to the top |
+| `paintColorAt(pos, red, green, blue, height, depth, radius, square)` | paint the **internal voxel layers**: the range `[height-depth+1 .. height]` at every covered cell; `height = -1` — the column top (the default paint); a height at/above the surface clamps to the top; a loaded brush image (Load Brush Image / the MCP `load_brush_image`) owns the stamp geometry — only opaque pixels are painted, `radius/square` are ignored |
 | `paintColorShape(pos, red, green, blue, shape, height, shapeHeight, radius, paintInterior, depth)` | paint a **3D solid's volume WITHOUT changing heights**: `shape` — "cone", "pyramid", "truncatedCone", "truncatedPyramid", "torus", "halfEllipsoid"; every covered column gets the layers `[height .. height + profile*shapeHeight]`; `height < 0` — base 0 (like the shape's height tools); `paintInterior = false` paints only the top slab of `depth` layers at the shape surface; polygonal solids take the side count and angle from the brush UI settings |
+| `paintColorModel(pos, red, green, blue, height, modelHeight, paintInterior, depth)` | paint the **imported model's volume WITHOUT changing heights** (a model must be loaded — the Import Model button or the MCP `import_model`); every covered column gets the layers `[height .. height + the model's normalized height * modelHeight]`; `height < 0` — base 0; `paintInterior = false` paints only the top slab of `depth` layers; the model X/Y scale comes from the brush UI settings |
+| `paintDecal(pos, height, depth)` | stamp the loaded **image decal** (the Image Decal button or the MCP `load_decal_image`), centred at `pos`; `height`/`depth` work like `paintColorAt`: below the surface the pixel colors paint the layers `[height-depth+1 .. height]`, `height = -1` (or at/above the surface) is the classic top-stamp; Dam cells only, transparent pixels are skipped |
 | `applyBlur(pos, radius, blurRadius, effect, square)` | Gaussian Blur: smooth the heights with a Gaussian kernel; `blurRadius` is clamped to `1..radius-1`, `effect` — the effect fraction 0..1 (1.0 = reach in one stamp) |
 | `applySmooth(pos, radius, effect, square)` | Tricubic: smooth towards the tricubic (bicubic Catmull-Rom) interpolation of the lattice under the stamp — like the Tricubic brush on the Sculpting toolbar; `effect` — the fraction 0..1 |
 | `applyHeightFn(pos, radius, fn, square)` | set the height **by a function**: `fn(x, y, h)` is called for every covered cell with its coordinates and the PRE-EDIT dam surface height `h` (fractional, 1/32 step; 0 where there is no dam) and returns the cell's new **absolute** height (fractional — like raiseHeight); all reads see the original surface before any write, so cells never influence each other |
@@ -333,9 +335,10 @@ different palettes. The message boxes are the script's only access to the
 UI; any JS value is converted to a string for them.
 
 Painting at a height: the brush and the API take the height in **whole
-voxels from zero** (the `height`/`depth` arguments of `paintColorAt`, the
-**H** and **Depth** spinboxes on the brush toolbar for the Paint Color
-brush, the slice panel's "paint at the slice height" mode); the current
+voxels from zero** (the `height`/`depth` arguments of `paintColorAt` and
+`paintDecal`, the **H** and **Depth** spinboxes on the brush toolbar for
+the Paint Color and Image Decal brushes, the slice panel's "paint at the
+slice height" mode); the current
 surface height of a cell is the height of its topmost voxel.
 `height = -1` (or any height at/above the surface) paints the column top —
 the column's **default color**. An explicit height **below** the surface
@@ -350,10 +353,15 @@ changing any heights** — every covered column gets the layers from the
 shape base (the Height spin) up to the shape surface at that column. The
 **Paint interior** checkbox fills the whole volume; unchecked, only the
 top slab of thickness **Depth** at the shape surface is painted
-(`[surface-depth+1 .. surface]`). The color becomes visible once the dam
-is raised into the shape; the Slice mode shows it right away. The same
-mode is available to agents: `apply_brush` with `effect: "paintColor"`,
-`shape` and `paintInterior`/`paintDepth`.
+(`[surface-depth+1 .. surface]`). The same works with the **model brush**
+(Use Model Brush after Import Model): Paint Color paints the volume along
+the model's heightmap, Paint interior the whole volume, unchecked the top
+slab at its surface. The color becomes visible once the dam is raised into
+the shape; the Slice mode shows it right away. The same modes are
+available to agents: `apply_brush` with `effect: "paintColor"`, `shape`
+and `paintInterior`/`paintDepth`; for the model — `effect: "model"` with
+`paint: 1`, the color as `colorR/colorG/colorB` (or `colorIndex`), the
+base as `paintHeight`; in JS — `paintColorShape` and `paintColorModel`.
 
 A note on `raiseHeight`/`lowerHeight`: these are **incremental** ops — a
 radius-1 stamp covers a 3×3 area around the centre, so stamps at adjacent
@@ -812,11 +820,17 @@ inflate/gaussianBlur sculpting), 3D solids (`shape`: cone, pyramid,
 truncatedCone, truncatedPyramid, torus, halfEllipsoid; `paintInterior: 1`
 paints every voxel inside the solid from its base up to the column
 surface), ImageDecal
-(`load_decal_image` + `effect: "imageDecal"`), the image mask
-(`load_brush_image` — the alpha channel defines the stamp shape: fully
-transparent pixels do not stamp at all; the scale is the `maskScale`
+(`load_decal_image` + `effect: "imageDecal"`; `paintHeight`/`paintDepth`
+stamp the pixel colors into the internal layers
+`[paintHeight-paintDepth+1 .. paintHeight]` below the surface, -1 = the
+classic top stamp), the image mask
+(`load_brush_image` — the alpha channel
+defines the stamp shape: fully transparent pixels do not stamp at all,
+including the inner-layer paint with `paintHeight`/`paintDepth`; the scale is the `maskScale`
 argument of apply_brush, 10–800 %, like the Mask spin on the toolbar), the
-model brush (`import_model` + `effect: "model"`), the stamp parameters
+model brush (`import_model` + `effect: "model"`; the volume paint without
+height changes is `paint: 1` with `colorR/colorG/colorB` or `colorIndex`,
+the base is `paintHeight`), the stamp parameters
 (radius, square, sides/angleOffset, fraction, blurRadius, layer dam/geo),
 painting at a height for paintColor: `paintHeight` (voxels, -1 = the
 column top) and `paintDepth` (the layer depth, ≥ 1) — the same semantics
@@ -828,7 +842,8 @@ otherwise 0).
 In the difference mode the stamp writes to the diff buffer.
 
 **Scripts:** `run_script` (JavaScript in one undo step, the same API as the
-Scripted Brush / Run Script), `set_scripted_brush_script`.
+Scripted Brush / Run Script, including `paintColorAt`/`paintColorShape`/
+`paintColorModel`/`paintDecal`), `set_scripted_brush_script`.
 
 **Difference mode (.gmp):** `set_difference_mode`, `save_difference`,
 `load_difference`.

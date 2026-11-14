@@ -19,6 +19,7 @@
 
 #include "BrushTool.h"
 #include "EditorSession.h"
+#include "ModelBrush.h"
 #include "ScriptedBrush.h"
 #include "errh_wrapper.h"
 
@@ -1058,6 +1059,186 @@ bool runScriptPaintShapeTests()
                      "a refused paintColorShape must touch nothing.");
     }
     std::printf("[PASS] an unknown shape name errors out cleanly.\n");
+
+    // paintColorModel: the model brush volume paint from JavaScript. Uses
+    // the model imported into the same brush instance.
+    {
+        MapEditor::ModelBrush::ModelRaster raster;
+        raster.width = 4;
+        raster.height = 4;
+        raster.normHeight.assign(16, 1.0); // a flat-top 4x4 pad
+        raster.rgb.assign(16, 0x808080);
+        MapEditor::ImageDecal::DecalImage indices;
+        indices.width = 4;
+        indices.height = 4;
+        indices.pixels.assign(16, 0xFF000000u);
+        indices.indices.assign(16, 0);
+        brush.setModelBrushData(raster, indices);
+
+        const std::uint32_t kModelRgb = 0x00007A66; // (0, 122, 102)
+        const RegionBytes beforeModel = RegionBytes::read(
+            cx - 4, cy - 4, 9, 9);
+        std::string modelError;
+        TEST_REQUIRE(MapEditor::runEditorScript(
+                         session, brush, brush.params(), cx, cy,
+                         "paintColorModel({x: " + std::to_string(cx) +
+                             ", y: " + std::to_string(cy) +
+                             "}, 0, 122, 102, 17, 9, true, 1);",
+                         modelError),
+                     "the paintColorModel run refused: %s",
+                     modelError.c_str());
+        const RegionBytes afterModel = RegionBytes::read(cx - 4, cy - 4, 9, 9);
+        TEST_REQUIRE(afterModel.equals(beforeModel),
+                     "paintColorModel must not change heights.");
+        std::uint32_t rgb = 0;
+        for (int z = 17; z <= 26; ++z) {
+            TEST_REQUIRE(layerAt(cx, cy, z, &rgb) && rgb == kModelRgb,
+                         "the model pad layer %d must carry the script color.",
+                         z);
+        }
+        TEST_REQUIRE(!layerAt(cx, cy, 16, &rgb),
+                     "below the model base nothing is painted.");
+        TEST_REQUIRE(!layerAt(cx, cy, 27, &rgb),
+                     "above the model top nothing is painted.");
+        // One run = one undo entry removing the volume.
+        TEST_REQUIRE(session.undo(), "the paintColorModel undo failed.");
+        TEST_REQUIRE(!layerAt(cx, cy, 26, &rgb) || rgb != kModelRgb,
+                     "undo must remove the painted model volume.");
+        std::printf("[PASS] paintColorModel paints the imported model's "
+                    "volume, heights untouched.\n");
+
+        // Without an imported model the call is a clean script error.
+        MapEditor::BrushTool bareBrush(session);
+        std::string noModelError;
+        TEST_REQUIRE(!MapEditor::runEditorScript(
+                         session, bareBrush, bareBrush.params(), cx, cy,
+                         "paintColorModel({x: " + std::to_string(cx) +
+                             ", y: " + std::to_string(cy) +
+                             "}, 0, 122, 102, 17, 9, true, 1);",
+                         noModelError) &&
+                         !noModelError.empty(),
+                     "paintColorModel without a model must fail with a "
+                     "message.");
+        std::printf("[PASS] paintColorModel without a model errors out "
+                    "cleanly.\n");
+    }
+
+    // paintColorAt with a loaded brush image mask: the mask owns the stamp
+    // geometry (the radius argument is ignored) and only its opaque pixels
+    // receive the layer paint.
+    {
+        // Drain the earlier stamps so the layer checks below see only this
+        // mask's paint.
+        while (session.undo()) {
+        }
+        MapEditor::BrushMask imageMask;
+        imageMask.sx = 3;
+        imageMask.sy = 3;
+        imageMask.influence.assign(9, 0);
+        imageMask.influence[0] = 255; // the stamp centre after translate
+        brush.setImageMask(imageMask);
+        MapEditor::BrushParams maskParams = brush.params();
+        maskParams.useImageMask = true;
+        brush.setParams(maskParams);
+
+        const std::uint32_t kMaskRgb = 0x00B0B422; // (176, 180, 34)
+        // Plant a flat dam pad so a below-surface layer paint is possible
+        // (at/above the surface the brush paints the column top instead).
+        for (int j = -4; j <= 4; ++j) {
+            for (int i = -4; i <= 4; ++i) {
+                const int off = (cy + j) * mapW + (cx + i);
+                vMap.VxDBuf[off] = 25;
+                vMap.AtrBuf[off] = 0;
+            }
+        }
+        const int paintH = 24; // below the pad surface (25)
+        const int paintD = 2;  // layers [paintH-1 .. paintH]
+        const RegionBytes beforeMask = RegionBytes::read(cx - 3, cy - 3, 7, 7);
+        std::string maskError;
+        TEST_REQUIRE(MapEditor::runEditorScript(
+                         session, brush, brush.params(), cx, cy,
+                         "paintColorAt({x: " + std::to_string(cx) + ", y: " +
+                             std::to_string(cy) + "}, 176, 180, 34, " +
+                             std::to_string(paintH) + ", " +
+                             std::to_string(paintD) + ", 9, false);",
+                         maskError),
+                     "the masked paintColorAt refused: %s",
+                     maskError.c_str());
+        const RegionBytes afterMask = RegionBytes::read(cx - 3, cy - 3, 7, 7);
+        TEST_REQUIRE(afterMask.equals(beforeMask),
+                     "the masked paint must not change heights.");
+        std::uint32_t rgb = 0;
+        TEST_REQUIRE(layerAt(cx, cy, paintH, &rgb) && rgb == kMaskRgb,
+                     "the mask centre must carry the layer at the paint "
+                     "height.");
+        TEST_REQUIRE(layerAt(cx, cy, paintH - 1, &rgb) && rgb == kMaskRgb,
+                     "the depth must span [paintH-1 .. paintH].");
+        TEST_REQUIRE(!layerAt(cx, cy, paintH + 1, &rgb),
+                     "above the depth nothing is painted.");
+        TEST_REQUIRE(!layerAt(cx + 1, cy, paintH, &rgb),
+                     "a transparent mask pixel must not stamp (radius "
+                     "ignored).");
+        std::printf("[PASS] paintColorAt honors the loaded brush image "
+                    "mask.\n");
+
+        maskParams.useImageMask = false;
+        brush.setParams(maskParams);
+    }
+
+    // paintDecal: the loaded image decal stamps the inner layers — the
+    // pixel colors at [height-depth+1 .. height], nothing on the tops.
+    {
+        MapEditor::ImageDecal::DecalImage decal;
+        decal.width = 3;
+        decal.height = 3;
+        decal.pixels.assign(9, 0); // all transparent except the centre
+        decal.indices.assign(9, 0);
+        decal.pixels[1 * 3 + 1] = 0xFF2266AAu;
+        brush.setDecalImage(decal);
+
+        const std::uint32_t kDecalRgb = 0x002266AA;
+        const RegionBytes beforeDecal = RegionBytes::read(cx - 3, cy - 3, 7, 7);
+        std::string decalError;
+        TEST_REQUIRE(MapEditor::runEditorScript(
+                         session, brush, brush.params(), cx, cy,
+                         "paintDecal({x: " + std::to_string(cx) + ", y: " +
+                             std::to_string(cy) + "}, 24, 2);",
+                         decalError),
+                     "the paintDecal run refused: %s", decalError.c_str());
+        const RegionBytes afterDecal = RegionBytes::read(cx - 3, cy - 3, 7, 7);
+        TEST_REQUIRE(afterDecal.equals(beforeDecal),
+                     "paintDecal must not change heights.");
+        std::uint32_t rgb = 0;
+        TEST_REQUIRE(layerAt(cx, cy, 24, &rgb) && rgb == kDecalRgb,
+                     "the decal centre must carry the layer at 24.");
+        TEST_REQUIRE(layerAt(cx, cy, 23, &rgb) && rgb == kDecalRgb,
+                     "the depth must span [23 .. 24].");
+        TEST_REQUIRE(!layerAt(cx, cy, 25, &rgb),
+                     "above the paint depth nothing is painted.");
+        TEST_REQUIRE(!vMap.cellHasTrueColor(cx + cy * mapW),
+                     "the decal layer paint must not touch the top color.");
+        TEST_REQUIRE(!layerAt(cx + 1, cy, 24, &rgb),
+                     "a transparent decal pixel must not stamp.");
+        // One run = one undo entry removing the layers.
+        TEST_REQUIRE(session.undo(), "the paintDecal undo failed.");
+        TEST_REQUIRE(!layerAt(cx, cy, 24, &rgb) || rgb != kDecalRgb,
+                     "undo must remove the painted decal layers.");
+        std::printf("[PASS] paintDecal stamps the image into the inner "
+                    "layers, tops untouched.\n");
+
+        // Without a decal image the call is a clean script error.
+        MapEditor::BrushTool bareBrush2(session);
+        std::string noDecalError;
+        TEST_REQUIRE(!MapEditor::runEditorScript(
+                         session, bareBrush2, bareBrush2.params(), cx, cy,
+                         "paintDecal({x: " + std::to_string(cx) + ", y: " +
+                             std::to_string(cy) + "}, 24, 2);",
+                         noDecalError) &&
+                         !noDecalError.empty(),
+                     "paintDecal without an image must fail with a message.");
+        std::printf("[PASS] paintDecal without an image errors out "
+                    "cleanly.\n");
+    }
 
     (void)altAt;
     session.unloadWorld();

@@ -259,7 +259,11 @@ duk_ret_t apiPaintColor(duk_context* ctx)
 /// paintColorAt(pos, red, green, blue, height, depth, radius, square) —
 /// paint the internal voxel layers: [height-depth+1 .. height] at every
 /// covered cell (height -1 = the column top = the default paint). A height
-/// at/above the surface clamps to the top.
+/// at/above the surface clamps to the top. When a brush image is loaded
+/// (the toolbar Load Brush Image button / the MCP load_brush_image) it owns
+/// the stamp geometry exactly like the UI: the pixel alpha is the
+/// influence, fully transparent pixels are skipped, and radius/square are
+/// ignored.
 duk_ret_t apiPaintColorAt(duk_context* ctx)
 {
     ScriptEnv* env = getEnv(ctx);
@@ -282,13 +286,19 @@ duk_ret_t apiPaintColorAt(duk_context* ctx)
     }
     const bool square = duk_to_boolean(ctx, 7);
 
-    BrushMask mask = square ? BrushMasks::filledSquare(radius)
-                            : BrushMasks::filledCircle(radius);
-    mask.translate(x, y);
     BrushParams op = *env->params;
+    BrushMask mask;
+    if (op.useImageMask && env->brush->hasImageMask()) {
+        mask = env->brush->imageMask();
+        mask.translate(x, y);
+    } else {
+        mask = square ? BrushMasks::filledSquare(radius)
+                      : BrushMasks::filledCircle(radius);
+        mask.translate(x, y);
+    }
     op.mode = BrushMode::Dam;
     op.effect = BrushEffect::SetColor;
-    op.useImageMask = false;
+    op.useImageMask = false; // the mask is applied explicitly above
     op.colorRgb = rgb;
     op.paintHeight = height;
     op.paintDepth = depth;
@@ -370,6 +380,91 @@ duk_ret_t apiPaintColorShape(duk_context* ctx)
             : BrushMasks::filledCircle(radius);
     mask.translate(x, y);
     env->brush->applyMask(mask, op);
+    return 0;
+}
+
+/// paintColorModel(pos, red, green, blue, height, modelHeight,
+///                   paintInterior, depth) — paint the voxel volume of the
+/// imported model WITHOUT changing any heights (the model brush must have
+/// an imported model — the UI Import Model button or the MCP import_model).
+/// Every covered column gets the layers [height .. height +
+/// norm*modelHeight] following the model's heightmap; height < 0 paints
+/// from 0. paintInterior false paints only the top slab of `depth` layers.
+/// The model scale comes from the current brush UI settings.
+duk_ret_t apiPaintColorModel(duk_context* ctx)
+{
+    ScriptEnv* env = getEnv(ctx);
+    int x = 0;
+    int y = 0;
+    if (!readPosition(ctx, 0, x, y)) {
+        return duk_error(ctx, DUK_ERR_TYPE_ERROR,
+                         "first argument must be a position {x, y}");
+    }
+    if (!env->brush->hasModelBrushData()) {
+        return duk_error(ctx, DUK_ERR_ERROR,
+                         "no model imported (use the Import Model button or "
+                         "the MCP import_model first)");
+    }
+    const std::uint32_t rgb =
+        (static_cast<std::uint32_t>(duk_to_int(ctx, 1) & 0xFF) << 16) |
+        (static_cast<std::uint32_t>(duk_to_int(ctx, 2) & 0xFF) << 8) |
+        static_cast<std::uint32_t>(duk_to_int(ctx, 3) & 0xFF);
+    const int height = BrushTool::clampPaintHeight(duk_to_int(ctx, 4));
+    const int modelHeight = std::clamp(duk_to_int(ctx, 5), 0,
+                                       MAX_VX_HEIGHT_WHOLE);
+    const bool paintInterior = duk_to_boolean(ctx, 6);
+    const int depth = BrushTool::clampPaintDepth(duk_to_int(ctx, 7));
+
+    BrushParams op = *env->params;
+    op.mode = BrushMode::Dam;
+    op.effect = BrushEffect::SetColor;
+    op.useImageMask = false;
+    op.shape3d = Shape3DKind::None;
+    op.modelBrush = true;
+    op.colorRgb = rgb;
+    op.paintHeight = height;
+    op.modelHeight = modelHeight;
+    op.paintInterior3d = paintInterior;
+    op.paintDepth = depth;
+    // The model raster is resampled inside applyStamp's rectangle path.
+    env->brush->applyStamp(x, y, op);
+    return 0;
+}
+
+/// paintDecal(pos, height, depth) — stamp the loaded image decal (the
+/// ImageDecal brush image, loaded with the UI Image Decal button or the
+/// MCP load_decal_image) centred at pos. height/depth select the internal
+/// voxel layers exactly like paintColorAt: [height-depth+1 .. height] below
+/// the surface; height = -1 (or at/above the surface) paints the pixel
+/// colors onto the column tops (the default decal behaviour). Dam cells
+/// only; transparent pixels never apply.
+duk_ret_t apiPaintDecal(duk_context* ctx)
+{
+    ScriptEnv* env = getEnv(ctx);
+    int x = 0;
+    int y = 0;
+    if (!readPosition(ctx, 0, x, y)) {
+        return duk_error(ctx, DUK_ERR_TYPE_ERROR,
+                         "first argument must be a position {x, y}");
+    }
+    if (env->brush->decalImage().empty()) {
+        return duk_error(ctx, DUK_ERR_ERROR,
+                         "no decal image loaded (use the Image Decal button "
+                         "or the MCP load_decal_image first)");
+    }
+    const int height = BrushTool::clampPaintHeight(duk_to_int(ctx, 1));
+    const int depth = BrushTool::clampPaintDepth(duk_to_int(ctx, 2));
+
+    BrushParams op = *env->params;
+    op.mode = BrushMode::Dam;
+    op.effect = BrushEffect::ImageDecal;
+    op.useImageMask = false;
+    op.shape3d = Shape3DKind::None;
+    op.modelBrush = false;
+    op.paintHeight = height;
+    op.paintDepth = depth;
+    // The decal rectangle is built inside applyStamp's decal path.
+    env->brush->applyStamp(x, y, op);
     return 0;
 }
 
@@ -691,6 +786,8 @@ void registerApiBindings(duk_context* ctx)
     registerBinding(ctx, "paintColor", apiPaintColor, 6);
     registerBinding(ctx, "paintColorAt", apiPaintColorAt, 8);
     registerBinding(ctx, "paintColorShape", apiPaintColorShape, 10);
+    registerBinding(ctx, "paintColorModel", apiPaintColorModel, 8);
+    registerBinding(ctx, "paintDecal", apiPaintDecal, 3);
     registerBinding(ctx, "applyBlur", apiApplyBlur, 5);
     registerBinding(ctx, "applySmooth", apiApplySmooth, 4);
     registerBinding(ctx, "applyHeightFn", apiApplyHeightFn, 4);

@@ -673,9 +673,168 @@ bool runModelBrushApplyTests()
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// 121 — Set Color over the model paints the volume WITHOUT height changes.
+// ---------------------------------------------------------------------------
+
+bool runModelBrushPaintTests()
+{
+    MapEditor::Tests::TestContext& ctx = MapEditor::Tests::context();
+    MapEditor::setupErrHWrapper();
+
+    TEST_REQUIRE(!ctx.tempRoot.empty() && fs::exists(ctx.tempRoot),
+                 "earlier tests did not provide the temporary world.");
+    TEST_REQUIRE(!ctx.worldName.empty(),
+                 "earlier tests did not provide the world name.");
+
+    const fs::path loadRoot = ctx.tempRoot / "load_root_modelpaint";
+    {
+        std::error_code ec;
+        fs::create_directories(loadRoot / "RESOURCE" / "Worlds", ec);
+        TEST_REQUIRE(!ec, "could not create the load content root.");
+        MapEditor::Tests::copyDirectoryRecursive(
+            ctx.gameDir / "RESOURCE" / "GeoTx", loadRoot / "RESOURCE" / "GeoTx");
+        fs::copy_file(ctx.gameDir / "Perimeter.ini", loadRoot / "Perimeter.ini",
+                      fs::copy_options::overwrite_existing, ec);
+        TEST_REQUIRE(!ec, "could not copy Perimeter.ini into the load root.");
+        MapEditor::Tests::copyDirectoryRecursive(
+            ctx.tempWorldDir, loadRoot / "RESOURCE" / "Worlds" /
+                                  fs::u8path(ctx.worldName));
+    }
+
+    MapEditor::EditorSession session;
+    session.setUndoCoalescingWindowMs(0);
+    TEST_REQUIRE(session.setGameDir(loadRoot.u8string()),
+                 "EditorSession::setGameDir() failed.");
+    TEST_REQUIRE(session.scanWorlds() && session.worldCount() >= 1,
+                 "EditorSession::scanWorlds() found no world.");
+    TEST_REQUIRE(session.loadWorld(0), "EditorSession::loadWorld(0) failed.");
+
+    const int mapW = static_cast<int>(vMap.H_SIZE);
+    const int mapH = static_cast<int>(vMap.V_SIZE);
+    TEST_REQUIRE(mapW >= 512 && mapH >= 512,
+                 "the world is too small for the model paint test.");
+
+    int cx = mapW / 2;
+    int cy = mapH / 2;
+    {
+        bool found = false;
+        for (int gy = 32; gy < mapH - 32 && !found; gy += 64) {
+            for (int gx = 32; gx < mapW - 32 && !found; gx += 64) {
+                int localMax = 0;
+                for (int dy = -8; dy <= 8; ++dy) {
+                    for (int dx = -8; dx <= 8; ++dx) {
+                        localMax = std::max(
+                            localMax,
+                            static_cast<int>(vMap.SGetAlt(gx + dx, gy + dy)));
+                    }
+                }
+                if ((localMax >> VX_FRACTION) + 40 <= 240) {
+                    cx = gx;
+                    cy = gy;
+                    found = true;
+                }
+            }
+        }
+        TEST_REQUIRE(found, "no suitably low region for the model paint test.");
+    }
+
+    const auto altAt = [](int x, int y) {
+        return static_cast<int>(vMap.SGetAlt(x, y));
+    };
+    const auto layerAt = [&](int x, int y, int z, std::uint32_t* rgb) {
+        return vMap.voxLayers.lookup(
+            static_cast<std::uint32_t>(y * mapW + x), z, rgb);
+    };
+
+    MapEditor::BrushTool brush(session);
+    brush.setModelBrushData(makeRampRaster(), makeFlatIndices(4, 4, 42));
+
+    BrushParams params;
+    params.mode = BrushMode::Dam;
+    params.modelBrush = true;
+    params.effect = BrushEffect::SetColor;
+    params.colorRgb = 0x00336699;
+    params.paintHeight = 20; // the explicit volume base (the H spin value)
+    params.modelHeight = 12; // tops: 20 + norm*12 = 20, 24, 28, 32
+    params.paintInterior3d = true;
+
+    // Heights BEFORE — the paint stamp must not move a single cell.
+    int altsBefore[5][5];
+    for (int dy = -2; dy <= 2; ++dy) {
+        for (int dx = -2; dx <= 2; ++dx) {
+            altsBefore[dy + 2][dx + 2] = altAt(cx + dx, cy + dy);
+        }
+    }
+
+    TEST_REQUIRE(brush.applyStamp(cx, cy, params),
+                 "the model paint stamp was refused.");
+    for (int dy = -2; dy <= 2; ++dy) {
+        for (int dx = -2; dx <= 2; ++dx) {
+            TEST_REQUIRE(altAt(cx + dx, cy + dy) == altsBefore[dy + 2][dx + 2],
+                         "the model paint stamp must not change heights.");
+        }
+    }
+    std::printf("[PASS] the model paint stamp leaves all heights unchanged.\n");
+
+    // The ramp volume is painted per column: [20 .. 20+norm*12].
+    {
+        const std::uint32_t kRgb = 0x00336699;
+        std::uint32_t rgb = 0;
+        const int tops[4] = {20, 24, 28, 32};
+        for (int k = 0; k < 4; ++k) {
+            const int columnX = cx - 2 + k;
+            for (int z = 20; z <= tops[k]; ++z) {
+                TEST_REQUIRE(layerAt(columnX, cy, z, &rgb) && rgb == kRgb,
+                             "ramp column %d layer %d must carry the paint.",
+                             k, z);
+            }
+            TEST_REQUIRE(!layerAt(columnX, cy, tops[k] + 1, &rgb),
+                         "above the ramp surface nothing is painted.");
+        }
+        TEST_REQUIRE(!layerAt(cx, cy, 19, &rgb),
+                     "below the volume base nothing is painted.");
+    }
+    std::printf("[PASS] the model volume is painted per the heightmap.\n");
+
+    // Undo removes the painted volume.
+    TEST_REQUIRE(session.undo(), "the model paint undo failed.");
+    {
+        std::uint32_t rgb = 0;
+        TEST_REQUIRE(!layerAt(cx, cy, 32, &rgb) || rgb != 0x00336699,
+                     "undo must remove the painted model volume.");
+    }
+    std::printf("[PASS] the model paint stamp is one undo entry.\n");
+
+    // Slab mode: only [top-depth+1 .. top] per column.
+    params.paintInterior3d = false;
+    params.paintDepth = 2;
+    TEST_REQUIRE(brush.applyStamp(cx, cy, params),
+                 "the slab paint stamp was refused.");
+    {
+        const std::uint32_t kRgb = 0x00336699;
+        std::uint32_t rgb = 0;
+        // East column (norm 1): top 32, slab [31 .. 32].
+        TEST_REQUIRE(layerAt(cx + 1, cy, 32, &rgb) && rgb == kRgb,
+                     "the slab top layer must be painted.");
+        TEST_REQUIRE(layerAt(cx + 1, cy, 31, &rgb) && rgb == kRgb,
+                     "the slab must span the depth.");
+        TEST_REQUIRE(!layerAt(cx + 1, cy, 30, &rgb),
+                     "below the slab nothing is painted.");
+    }
+    std::printf("[PASS] slab mode paints [top-depth+1 .. top] only.\n");
+
+    while (session.undo()) {
+    }
+    session.unloadWorld();
+    return true;
+}
+
 } // namespace
 
 MAP_EDITOR_REGISTER_TEST("ModelBrush PLY import", 95,
                          runModelBrushImportTests);
 MAP_EDITOR_REGISTER_TEST("ModelBrush application", 96,
                          runModelBrushApplyTests);
+MAP_EDITOR_REGISTER_TEST("ModelBrush volume paint (no height change)", 121,
+                         runModelBrushPaintTests);

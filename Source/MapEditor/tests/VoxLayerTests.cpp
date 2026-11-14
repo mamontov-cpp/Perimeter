@@ -280,6 +280,103 @@ bool runVoxLayerTests()
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// 122 — the loaded brush image (useImageMask) stamps the inner-layer paint:
+// the pixel alpha gates the cells, the radius is ignored.
+// ---------------------------------------------------------------------------
+
+bool runVoxLayerMaskTests()
+{
+    MapEditor::Tests::TestContext& ctx = MapEditor::Tests::context();
+
+    TEST_REQUIRE(!ctx.tempRoot.empty() && fs::exists(ctx.tempRoot),
+                 "WorldRoundTripTests did not provide the temporary world.");
+    TEST_REQUIRE(!ctx.worldName.empty(),
+                 "WorldRoundTripTests did not provide the world name.");
+
+    MapEditor::setupErrHWrapper();
+
+    const fs::path loadRoot = ctx.tempRoot / "load_root_voxlayermask";
+    TEST_REQUIRE(buildLoadRoot(ctx.gameDir, ctx.tempWorldDir,
+                               fs::u8path(ctx.worldName), loadRoot),
+                 "could not build the load content root.");
+
+    MapEditor::EditorSession session;
+    session.setUndoCoalescingWindowMs(0);
+    TEST_REQUIRE(session.setGameDir(loadRoot.u8string()),
+                 "EditorSession::setGameDir() failed.");
+    TEST_REQUIRE(session.scanWorlds() && session.worldCount() >= 1,
+                 "EditorSession::scanWorlds() found no world.");
+    TEST_REQUIRE(session.loadWorld(0), "EditorSession::loadWorld(0) failed.");
+
+    // A flat dam patch at height 40 (the paint playground).
+    for (int j = -6; j <= 6; ++j) {
+        for (int i = -6; i <= 6; ++i) {
+            const int off = offAt(kPx + i, kPy + j);
+            vMap.VxGBuf[off] = 10;
+            vMap.VxDBuf[off] = 40;
+            vMap.AtrBuf[off] = 0;
+            vMap.SurBuf[off] = 5;
+        }
+    }
+
+    // A 3x3 brush image with only the top-left pixel (the stamp centre
+    // after translate) opaque.
+    MapEditor::BrushMask imageMask;
+    imageMask.sx = 3;
+    imageMask.sy = 3;
+    imageMask.influence.assign(9, 0);
+    imageMask.influence[0] = 255;
+
+    MapEditor::BrushTool brush(session);
+    brush.setImageMask(imageMask);
+
+    MapEditor::BrushParams p;
+    p.effect = MapEditor::BrushEffect::SetColor;
+    p.mode = MapEditor::BrushMode::Dam;
+    p.radius = 5; // ignored while the image mask owns the stamp
+    p.useImageMask = true;
+    p.colorRgb = 0x00FF2040;
+    p.paintHeight = 30;
+    p.paintDepth = 3;
+
+    const int altBefore =
+        static_cast<int>(vMap.SGetAlt(offAt(kPx, kPy)));
+    TEST_REQUIRE(brush.applyStamp(kPx, kPy, p),
+                 "the masked layer paint was refused.");
+
+    uint32_t rgb = 0;
+    // Only the mask's opaque centre cell is painted: [28 .. 30].
+    TEST_REQUIRE(vMap.voxLayers.lookup(offAt(kPx, kPy), 30, &rgb) &&
+                     rgb == 0x00FF2040,
+                 "the mask centre must carry the layer at 30.");
+    TEST_REQUIRE(vMap.voxLayers.lookup(offAt(kPx, kPy), 28, &rgb) &&
+                     rgb == 0x00FF2040,
+                 "the depth must span [28 .. 30].");
+    TEST_REQUIRE(!vMap.voxLayers.lookup(offAt(kPx, kPy), 27, &rgb),
+                 "below the depth nothing is painted.");
+    // Transparent mask pixels never stamp, whatever the radius says.
+    TEST_REQUIRE(!vMap.voxLayers.lookup(offAt(kPx + 1, kPy), 30, &rgb),
+                 "a transparent mask pixel must not stamp.");
+    TEST_REQUIRE(!vMap.voxLayers.lookup(offAt(kPx, kPy - 1), 30, &rgb),
+                 "a transparent mask pixel must not stamp.");
+    // Heights are untouched by the paint.
+    TEST_REQUIRE(static_cast<int>(vMap.SGetAlt(offAt(kPx, kPy))) == altBefore,
+                 "the masked paint must not change heights.");
+    std::printf("[PASS] the image mask stamps the inner-layer paint.\n");
+
+    TEST_REQUIRE(session.undo(), "the masked paint undo failed.");
+    TEST_REQUIRE(!vMap.voxLayers.lookup(offAt(kPx, kPy), 30, &rgb) ||
+                     rgb != 0x00FF2040,
+                 "undo must remove the masked layer paint.");
+    std::printf("[PASS] the masked layer paint is one undo entry.\n");
+
+    session.unloadWorld();
+    return true;
+}
+
 } // namespace
 
 MAP_EDITOR_REGISTER_TEST("Voxel layer painting", 117, runVoxLayerTests);
+MAP_EDITOR_REGISTER_TEST("Voxel layer paint through an image mask", 122,
+                         runVoxLayerMaskTests);

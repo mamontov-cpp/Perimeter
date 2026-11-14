@@ -644,6 +644,13 @@ private:
                          const BrushParams& params, int bx, int by, int bxEnd,
                          int byEnd);
 
+    /// Set Color over the imported model: paints the model's voxel volume
+    /// (its height profile per column) with the brush color WITHOUT touching
+    /// heights — the same semantics as applyShape3DPaint. Dam mode only.
+    bool applyModelBrushPaint(const BrushMask& absoluteMask,
+                              const BrushParams& params, int bx, int by,
+                              int bxEnd, int byEnd);
+
     EditorSession& session_;
     BrushParams params_;
 
