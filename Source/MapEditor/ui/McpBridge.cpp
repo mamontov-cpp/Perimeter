@@ -1278,19 +1278,22 @@ QVariantMap MapEditor::McpBridge::mcpApplyBrush(const QVariantMap& args)
             "gaussianBlur) are Dam-layer only"));
     }
     // 3D solid brushes (cone/pyramid/truncated*/torus/halfEllipsoid):
-    // the shape replaces the flat stamp; only the height effects make
-    // sense as the motion (raise/lower directional, setHeight absolute
-    // base), exactly like the sculpting toolbar.
+    // the shape replaces the flat stamp. The height effects move the dam
+    // towards the shape (raise/lower directional, setHeight absolute base);
+    // paintColor instead paints the solid's voxel volume WITHOUT touching
+    // heights (paintHeight >= 0 = the volume base, paintInterior = the
+    // whole volume, otherwise the top slab of paintDepth).
     const QString shapeName = mcpArgStr(args, "shape");
     if (!shapeName.isEmpty()) {
-        const bool isHeightEffect =
+        const bool isShapeEffect =
             effectName == QLatin1String("raiseHeight") ||
             effectName == QLatin1String("lowerHeight") ||
-            effectName == QLatin1String("setHeight");
-        if (!isHeightEffect) {
+            effectName == QLatin1String("setHeight") ||
+            effectName == QLatin1String("paintColor");
+        if (!isShapeEffect) {
             return mcpError(QStringLiteral(
-                "a 3D shape requires effect raiseHeight, lowerHeight or "
-                "setHeight"));
+                "a 3D shape requires effect raiseHeight, lowerHeight, "
+                "setHeight or paintColor"));
         }
         static const QHash<QString, MapEditor::Shape3DKind> shapes = {
             {QStringLiteral("cone"), MapEditor::Shape3DKind::Cone},

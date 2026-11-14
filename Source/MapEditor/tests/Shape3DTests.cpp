@@ -581,6 +581,26 @@ bool runShape3DPaintTests()
     }
     std::printf("[PASS] slab mode paints [top-depth+1 .. top] only.\n");
 
+    // An explicit paint height (the H spin / MCP paintHeight / the JS height
+    // argument) overrides the Level as the volume base.
+    params.paintInterior3d = true;
+    params.paintHeight = baseVox + 30;
+    params.heightLevel = baseVox; // would be the base without the override
+    TEST_REQUIRE(brush.applyStamp(cx, cy, params),
+                 "the explicit-base paint stamp was refused.");
+    {
+        std::uint32_t rgb = 0;
+        TEST_REQUIRE(layerAt(cx, cy, baseVox + 30, &rgb) && rgb == kPaintRgb,
+                     "the explicit base layer must be painted.");
+        TEST_REQUIRE(layerAt(cx, cy, baseVox + 40, &rgb) && rgb == kPaintRgb,
+                     "the explicit-base apex (base+30+10) must be painted.");
+        TEST_REQUIRE(!layerAt(cx, cy, baseVox + 29, &rgb),
+                     "below the explicit base nothing new is painted.");
+    }
+    params.paintHeight = -1;
+    params.paintInterior3d = false;
+    std::printf("[PASS] an explicit paint height overrides the Level base.\n");
+
     // Geo mode refuses the shape paint like the height-moving shapes.
     params.mode = BrushMode::Geo;
     TEST_REQUIRE(!brush.applyStamp(cx, cy, params),

@@ -60,6 +60,7 @@
 
 #include <climits>
 #include <cmath>
+#include <cstring>
 
 #include "duktape.h"
 
@@ -291,6 +292,83 @@ duk_ret_t apiPaintColorAt(duk_context* ctx)
     op.colorRgb = rgb;
     op.paintHeight = height;
     op.paintDepth = depth;
+    env->brush->applyMask(mask, op);
+    return 0;
+}
+
+/// paintColorShape(pos, red, green, blue, shape, height, shapeHeight,
+///                   radius, paintInterior, depth) — paint the voxel volume
+/// of a 3D solid WITHOUT changing any heights. `shape` is one of "cone",
+/// "pyramid", "truncatedCone", "truncatedPyramid", "torus",
+/// "halfEllipsoid". Every covered column gets the layers [height ..
+/// height + profile*shapeHeight] (Paint interior semantics); a negative
+/// `height` paints from 0 (the same base as the shape's height tools).
+/// paintInterior false paints only the top slab of `depth` layers at the
+/// shape surface. Polygonal solids (pyramid/frustum) take the polygon
+/// side count and angle from the current brush UI settings.
+duk_ret_t apiPaintColorShape(duk_context* ctx)
+{
+    ScriptEnv* env = getEnv(ctx);
+    int x = 0;
+    int y = 0;
+    if (!readPosition(ctx, 0, x, y)) {
+        return duk_error(ctx, DUK_ERR_TYPE_ERROR,
+                         "first argument must be a position {x, y}");
+    }
+    const std::uint32_t rgb =
+        (static_cast<std::uint32_t>(duk_to_int(ctx, 1) & 0xFF) << 16) |
+        (static_cast<std::uint32_t>(duk_to_int(ctx, 2) & 0xFF) << 8) |
+        static_cast<std::uint32_t>(duk_to_int(ctx, 3) & 0xFF);
+    const char* shapeName = duk_safe_to_string(ctx, 4);
+    static const std::pair<const char*, Shape3DKind> kShapes[] = {
+        {"cone", Shape3DKind::Cone},
+        {"pyramid", Shape3DKind::Pyramid},
+        {"truncatedCone", Shape3DKind::TruncatedCone},
+        {"truncatedPyramid", Shape3DKind::TruncatedPyramid},
+        {"torus", Shape3DKind::Torus},
+        {"halfEllipsoid", Shape3DKind::HalfEllipsoid},
+    };
+    Shape3DKind kind = Shape3DKind::None;
+    for (const auto& entry : kShapes) {
+        if (std::strcmp(shapeName, entry.first) == 0) {
+            kind = entry.second;
+            break;
+        }
+    }
+    if (kind == Shape3DKind::None) {
+        return duk_error(ctx, DUK_ERR_TYPE_ERROR,
+                         "unknown shape '%s' (cone, pyramid, truncatedCone, "
+                         "truncatedPyramid, torus, halfEllipsoid)",
+                         shapeName);
+    }
+    const int height = BrushTool::clampPaintHeight(duk_to_int(ctx, 5));
+    const int shapeHeight = std::clamp(duk_to_int(ctx, 6), 0,
+                                       MAX_VX_HEIGHT_WHOLE);
+    int radius = BrushTool::clampRadius(duk_to_int(ctx, 7));
+    if (radius < 1) {
+        return duk_error(ctx, DUK_ERR_RANGE_ERROR,
+                         "radius must be a number >= 1");
+    }
+    const bool paintInterior = duk_to_boolean(ctx, 8);
+    const int depth = BrushTool::clampPaintDepth(duk_to_int(ctx, 9));
+
+    BrushParams op = *env->params;
+    op.mode = BrushMode::Dam;
+    op.effect = BrushEffect::SetColor;
+    op.useImageMask = false;
+    op.modelBrush = false;
+    op.colorRgb = rgb;
+    op.shape3d = kind;
+    op.paintHeight = height;
+    op.shapeHeight = shapeHeight;
+    op.paintInterior3d = paintInterior;
+    op.paintDepth = depth;
+    BrushMask mask =
+        shape3DIsPolygonal(kind)
+            ? BrushMasks::filledPolygon(radius, op.polygonSides,
+                                        op.polygonAngleDeg)
+            : BrushMasks::filledCircle(radius);
+    mask.translate(x, y);
     env->brush->applyMask(mask, op);
     return 0;
 }
@@ -612,6 +690,7 @@ void registerApiBindings(duk_context* ctx)
     registerBinding(ctx, "paintVeryLightDam", apiPaintVeryLightDam, 3);
     registerBinding(ctx, "paintColor", apiPaintColor, 6);
     registerBinding(ctx, "paintColorAt", apiPaintColorAt, 8);
+    registerBinding(ctx, "paintColorShape", apiPaintColorShape, 10);
     registerBinding(ctx, "applyBlur", apiApplyBlur, 5);
     registerBinding(ctx, "applySmooth", apiApplySmooth, 4);
     registerBinding(ctx, "applyHeightFn", apiApplyHeightFn, 4);

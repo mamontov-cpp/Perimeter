@@ -290,6 +290,7 @@ boolean: true — заполненный квадрат, false — заполн�
 | `paintVeryLightDam(pos, radius, square)` | «очень лёгкая дамба» |
 | `paintColor(pos, red, green, blue, radius, square)` | краска: точный RGB (0..255), без квантования в палитру |
 | `paintColorAt(pos, red, green, blue, height, depth, radius, square)` | краска **внутренних слоёв вокселей**: диапазон `[height-depth+1 .. height]` на каждой покрытой клетке; `height = -1` — верх колонки (default-краска); высота не ниже поверхности клампится к верху |
+| `paintColorShape(pos, red, green, blue, shape, height, shapeHeight, radius, paintInterior, depth)` | краска **объёма 3D-тела без изменения высот**: `shape` — "cone", "pyramid", "truncatedCone", "truncatedPyramid", "torus", "halfEllipsoid"; каждая покрытая колонка получает слои `[height .. height + профиль*shapeHeight]`; `height < 0` — база 0 (как у высотных инструментов фигуры); `paintInterior = false` красит только верхний слой толщиной `depth` у поверхности фигуры; многоугольные тела берут число сторон и угол из настроек кисти UI |
 | `applyBlur(pos, radius, blurRadius, effect, square)` | Gaussian Blur: сглаживание высот гауссовым ядром; `blurRadius` клампится в `1..radius-1`, `effect` — доля эффекта 0..1 (1.0 = доход за один штамп) |
 | `applySmooth(pos, radius, effect, square)` | Tricubic: сглаживание к трикубической (bicubic Catmull-Rom) интерполяции решётки под штампом — как кисть Tricubic в тулбаре Sculpting; `effect` — доля 0..1 |
 | `applyHeightFn(pos, radius, fn, square)` | задать высоту **функцией**: `fn(x, y, h)` вызывается для каждой клетки штампа с её координатами и исходной (до начала операции) высотой дамбы `h` (дробной, шаг 1/32; 0, где дамбы нет) и возвращает новую **абсолютную** высоту (дробные — как у raiseHeight); все чтения идут по исходной поверхности до любой записи — клетки не влияют друг на друга |
@@ -781,8 +782,9 @@ truncatedPyramid, torus, halfEllipsoid; `paintInterior: 1` красит кажд
 layer dam/geo), покраска на высоте у paintColor: `paintHeight` (воксели,
 -1 = верх колонки) и `paintDepth` (глубина слоя, ≥ 1) — семантика та же,
 что у спинбоксов H/Depth и `paintColorAt` в JS-API; paintColor с 3D-телом
-красит объём фигуры БЕЗ изменения высот (`paintInterior` — весь объём,
-иначе верхний слой толщиной `paintDepth`). В режиме различий штамп
+красит объём фигуры БЕЗ изменения высот (`paintInterior` — весь объём от
+базы, иначе верхний слой толщиной `paintDepth`; база объёма — `paintHeight`
+≥ 0, как спин H, иначе 0). В режиме различий штамп
 пишет в diff-буфер.
 
 **Скрипты:** `run_script` (JavaScript одним undo-шагом, тот же API, что у

@@ -15,6 +15,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <unordered_set>
 #include <vector>
 
 #include "EditorTrace.h"
@@ -1915,13 +1916,11 @@ void EditorSession::finalizePendingUndoGroup()
     if (hasCol) {
         merged.col.resize(cells);
     }
-    // Слои: семя — текущее состояние (как и прочие буферы); снапшоты
-    // перезаписывают свои колонки, per-cell выигрывает самый ранний снимок.
-    if (!vMap.voxLayers.empty()) {
-        merged.lay.col_ = vMap.voxLayers.col_;
-        merged.lay.begin_ = vMap.voxLayers.begin_;
-        merged.lay.ranges_ = vMap.voxLayers.ranges_;
-    }
+    // Слои: снимки пишутся первыми (ниже), семя добивает колонки, которые
+    // ни один снапшот не захватил — порядок обязан быть именно таким: семя
+    // это ТЕКУЩЕЕ состояние (с правками группы), записанное первым, оно
+    // перехватывало «первый-снимок-выигрывает» и undo слоёв в транзакции
+    // восстанавливало не до-состояние, а текущее.
     std::size_t seed = 0;
     for (int j = 0; j < sy; ++j) {
         const int row = (y0 + j) * static_cast<int>(vMap.H_SIZE) + x0;
@@ -1962,17 +1961,46 @@ void EditorSession::finalizePendingUndoGroup()
         }
     }
 
-    // Слои: самый ранний снимок, покрывший колонку, определяет до-состояние.
+    // Слои: до-состояние колонки определяет самый ранний снимок, ПОКРЫВШИЙ
+    // её прямоугольник; «покрыл, но не записал» = колонки тогда НЕ БЫЛО
+    // (recordUndoArea перебирал live на момент записи). Поэтому решающими
+    // помечаются ВСЕ колонки прямоугольника снимка, а не только записанные:
+    // иначе колонка, созданная внутри группы и запечённая более поздним
+    // снапшотом, пережила бы undo как «до-состояние». Вне объединённого
+    // прямоугольника группа ничего не правила — до-состояние = текущее.
+    std::unordered_set<std::uint32_t> decided;
+    const int H = static_cast<int>(vMap.H_SIZE);
     for (const UndoAreaSnapshot& snap : undoGroup_) {
         for (int i = 0; i < snap.lay.columnCount(); ++i) {
-            const uint32_t off = snap.lay.columnOffset(i);
-            if (merged.lay.findColumn(off) >= 0) {
-                continue; // уже записан более ранний снимок (или семя)
+            const std::uint32_t off = snap.lay.columnOffset(i);
+            if (decided.insert(off).second) {
+                int count = 0;
+                const VoxLayerRange* r = snap.lay.columnRanges(i, &count);
+                merged.lay.setColumn(off, r, count);
             }
-            int count = 0;
-            const VoxLayerRange* r = snap.lay.columnRanges(i, &count);
-            merged.lay.setColumn(off, r, count);
         }
+        for (std::uint32_t off : vMap.voxLayers.col_) {
+            const int x = static_cast<int>(off % H);
+            const int y = static_cast<int>(off / H);
+            if (x >= snap.x && x < snap.x + snap.sx &&
+                y >= snap.y && y < snap.y + snap.sy) {
+                decided.insert(off);
+            }
+        }
+    }
+    for (std::uint32_t off : vMap.voxLayers.col_) {
+        const int x = static_cast<int>(off % H);
+        const int y = static_cast<int>(off / H);
+        if (x >= x0 && x < x1 && y >= y0 && y < y1) {
+            continue; // решение вынесено снимками (вплоть до «не было»)
+        }
+        if (merged.lay.findColumn(off) >= 0) {
+            continue;
+        }
+        int count = 0;
+        const VoxLayerRange* r = vMap.voxLayers.columnRanges(
+            vMap.voxLayers.findColumn(off), &count);
+        merged.lay.setColumn(off, r, count);
     }
 
     undoGroup_.clear();

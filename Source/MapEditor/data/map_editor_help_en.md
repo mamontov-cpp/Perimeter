@@ -307,6 +307,7 @@ number ≥ 1, the circle radius or the square half-side, up to 512; `square`
 | `paintVeryLightDam(pos, radius, square)` | "very light dam" |
 | `paintColor(pos, red, green, blue, radius, square)` | paint: the exact RGB (0..255), no palette quantization |
 | `paintColorAt(pos, red, green, blue, height, depth, radius, square)` | paint the **internal voxel layers**: the range `[height-depth+1 .. height]` at every covered cell; `height = -1` — the column top (the default paint); a height at/above the surface clamps to the top |
+| `paintColorShape(pos, red, green, blue, shape, height, shapeHeight, radius, paintInterior, depth)` | paint a **3D solid's volume WITHOUT changing heights**: `shape` — "cone", "pyramid", "truncatedCone", "truncatedPyramid", "torus", "halfEllipsoid"; every covered column gets the layers `[height .. height + profile*shapeHeight]`; `height < 0` — base 0 (like the shape's height tools); `paintInterior = false` paints only the top slab of `depth` layers at the shape surface; polygonal solids take the side count and angle from the brush UI settings |
 | `applyBlur(pos, radius, blurRadius, effect, square)` | Gaussian Blur: smooth the heights with a Gaussian kernel; `blurRadius` is clamped to `1..radius-1`, `effect` — the effect fraction 0..1 (1.0 = reach in one stamp) |
 | `applySmooth(pos, radius, effect, square)` | Tricubic: smooth towards the tricubic (bicubic Catmull-Rom) interpolation of the lattice under the stamp — like the Tricubic brush on the Sculpting toolbar; `effect` — the fraction 0..1 |
 | `applyHeightFn(pos, radius, fn, square)` | set the height **by a function**: `fn(x, y, h)` is called for every covered cell with its coordinates and the PRE-EDIT dam surface height `h` (fractional, 1/32 step; 0 where there is no dam) and returns the cell's new **absolute** height (fractional — like raiseHeight); all reads see the original surface before any write, so cells never influence each other |
@@ -821,8 +822,9 @@ painting at a height for paintColor: `paintHeight` (voxels, -1 = the
 column top) and `paintDepth` (the layer depth, ≥ 1) — the same semantics
 as the H/Depth spinboxes and `paintColorAt` in the JS API; paintColor
 with a 3D solid paints the solid's volume WITHOUT changing heights
-(`paintInterior` = the whole volume, otherwise the top slab of
-`paintDepth`).
+(`paintInterior` = the whole volume from the base, otherwise the top slab
+of `paintDepth`; the volume base is `paintHeight` ≥ 0, like the H spin,
+otherwise 0).
 In the difference mode the stamp writes to the diff buffer.
 
 **Scripts:** `run_script` (JavaScript in one undo step, the same API as the

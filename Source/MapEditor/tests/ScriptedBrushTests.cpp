@@ -942,6 +942,128 @@ bool runScriptHeightFnTests()
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// 120 — paintColorShape: the 3D solid volume paint from JavaScript.
+// ---------------------------------------------------------------------------
+
+bool runScriptPaintShapeTests()
+{
+    MapEditor::EditorSession session;
+    session.setUndoCoalescingWindowMs(0);
+    const bool loaded =
+        prepareBrushTestSession("load_root_paint_shape", session);
+    TEST_REQUIRE(loaded,
+                 "the paintColorShape test could not load the temporary "
+                 "world.");
+
+    const int mapW = static_cast<int>(vMap.H_SIZE);
+    const int mapH = static_cast<int>(vMap.V_SIZE);
+    const int radius = 6;
+    const int margin = radius + 4;
+    int cx = 0;
+    int cy = 0;
+    bool found = false;
+    for (int gy = margin + 8; gy < mapH - margin - 8 && !found; gy += 24) {
+        for (int gx = margin + 8; gx < mapW - margin - 8 && !found; gx += 24) {
+            int localMax = 0;
+            for (int dy = -margin; dy <= margin; ++dy) {
+                for (int dx = -margin; dx <= margin; ++dx) {
+                    localMax = std::max(
+                        localMax,
+                        static_cast<int>(vMap.SGetAlt(gx + dx, gy + dy)));
+                }
+            }
+            if (localMax >> VX_FRACTION <= 200) {
+                cx = gx;
+                cy = gy;
+                found = true;
+            }
+        }
+    }
+    TEST_REQUIRE(found, "no suitable area for the paintColorShape test.");
+
+    MapEditor::BrushTool brush(session);
+    const std::uint32_t kRgb = 0x0014C81E; // the script's (20, 200, 30)
+    const auto layerAt = [&](int x, int y, int z, std::uint32_t* rgb) {
+        return vMap.voxLayers.lookup(
+            static_cast<std::uint32_t>(y * mapW + x), z, rgb);
+    };
+    const auto altAt = [&](int x, int y) {
+        return static_cast<int>(vMap.SGetAlt(x, y));
+    };
+
+    const RegionBytes before = RegionBytes::read(cx - margin, cy - margin,
+                                                 2 * margin + 1, 2 * margin + 1);
+    std::string error;
+    TEST_REQUIRE(MapEditor::runEditorScript(
+                     session, brush, brush.params(), cx, cy,
+                     "paintColorShape({x: " + std::to_string(cx) + ", y: " +
+                         std::to_string(cy) +
+                         "}, 20, 200, 30, \"cone\", 12, 20, " +
+                         std::to_string(radius) + ", true, 1);",
+                     error),
+                 "the paintColorShape run refused: %s", error.c_str());
+
+    // Heights are untouched; the cone interior [12 .. 12+20] is painted.
+    {
+        const RegionBytes after = RegionBytes::read(cx - margin, cy - margin,
+                                                    2 * margin + 1,
+                                                    2 * margin + 1);
+        TEST_REQUIRE(after.equals(before),
+                     "paintColorShape must not change heights.");
+        std::uint32_t rgb = 0;
+        for (int z = 12; z <= 32; ++z) {
+            TEST_REQUIRE(layerAt(cx, cy, z, &rgb) && rgb == kRgb,
+                         "the apex column layer %d must carry the script "
+                         "color.",
+                         z);
+        }
+        TEST_REQUIRE(!layerAt(cx, cy, 11, &rgb),
+                     "below the base nothing is painted.");
+        TEST_REQUIRE(!layerAt(cx, cy, 33, &rgb),
+                     "above the apex nothing is painted.");
+        TEST_REQUIRE(layerAt(cx + radius, cy, 12, &rgb) && rgb == kRgb,
+                     "the boundary column must carry the base layer.");
+    }
+    std::printf("[PASS] paintColorShape paints the cone volume, heights "
+                "untouched.\n");
+
+    // One run = one undo entry restoring the layers too.
+    TEST_REQUIRE(session.undo(), "undo failed.");
+    {
+        std::uint32_t rgb = 0;
+        TEST_REQUIRE(!layerAt(cx, cy, 32, &rgb) || rgb != kRgb,
+                     "undo must remove the painted volume.");
+    }
+    std::printf("[PASS] paintColorShape is one undo entry.\n");
+
+    // Unknown shape name is a script error touching nothing.
+    {
+        const RegionBytes check = RegionBytes::read(cx - margin, cy - margin,
+                                                    2 * margin + 1,
+                                                    2 * margin + 1);
+        std::string badError;
+        TEST_REQUIRE(!MapEditor::runEditorScript(
+                         session, brush, brush.params(), cx, cy,
+                         "paintColorShape({x: " + std::to_string(cx) +
+                             ", y: " + std::to_string(cy) +
+                             "}, 20, 200, 30, \"blob\", 12, 20, 6, true, 1);",
+                         badError) &&
+                         !badError.empty(),
+                     "an unknown shape must fail with a message.");
+        const RegionBytes after = RegionBytes::read(cx - margin, cy - margin,
+                                                    2 * margin + 1,
+                                                    2 * margin + 1);
+        TEST_REQUIRE(after.equals(check),
+                     "a refused paintColorShape must touch nothing.");
+    }
+    std::printf("[PASS] an unknown shape name errors out cleanly.\n");
+
+    (void)altAt;
+    session.unloadWorld();
+    return true;
+}
+
 } // namespace
 
 MAP_EDITOR_REGISTER_TEST("Scripted brush (duktape)", 90,
@@ -950,3 +1072,5 @@ MAP_EDITOR_REGISTER_TEST("Script palette API + Run Script", 99,
                          runScriptPaletteApiTests);
 MAP_EDITOR_REGISTER_TEST("applyHeightFn (script height function)", 105,
                          runScriptHeightFnTests);
+MAP_EDITOR_REGISTER_TEST("paintColorShape (3D volume paint from JS)", 120,
+                         runScriptPaintShapeTests);

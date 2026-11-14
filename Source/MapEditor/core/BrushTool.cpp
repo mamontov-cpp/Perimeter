@@ -1568,9 +1568,15 @@ bool BrushTool::applyShape3DPaint(const BrushMask& absoluteMask,
     shape.topSide = params.shapeTopSide;
     shape = clampShape3DSettings(params.shape3d, shape);
 
+    // The volume base: an explicit paint height (the H spin / the MCP
+    // paintHeight argument / the JS height argument) wins; otherwise the
+    // shape base is the Level (heightLevel) — the same value the shape's
+    // height tools stamp from.
     const int shapeHeightVox =
         std::clamp(params.shapeHeight, 0, MAX_VX_HEIGHT_WHOLE);
-    const double baseVox = clampHeightLevel(params.heightLevel);
+    const double baseVox = clampHeightLevel(
+        params.paintHeight >= 0 ? static_cast<double>(params.paintHeight)
+                                : params.heightLevel);
     const int base = std::max(0, static_cast<int>(xm::floor(baseVox)));
     const int depth = std::max(1, params.paintDepth);
     const std::uint32_t rgb = params.colorRgb & 0x00FFFFFFu;
