@@ -357,15 +357,21 @@ void BrushUiController::updateEnabledStates(bool worldLoaded)
             brushTool_->params().shape3d != MapEditor::Shape3DKind::None);
     }
     // T3.2 — the single height control serves the raise/lower step and the
-    // "Level to Height" target.
+    // "Level to Height" target; with a 3D shape + Paint Color it is the
+    // shape's base height (the volume paint starts there, see
+    // BrushTool::applyShape3DPaint).
     if (brushLevelSpin_) {
         const MapEditor::BrushEffect effect =
             brushTool_ ? brushTool_->params().effect
                        : MapEditor::BrushEffect::None;
+        const bool shapePaintBase =
+            effect == MapEditor::BrushEffect::SetColor &&
+            brushTool_->params().shape3d != MapEditor::Shape3DKind::None;
         brushLevelSpin_->setEnabled(
             worldLoaded &&
             (effect == MapEditor::BrushEffect::ChangeHeight ||
-             effect == MapEditor::BrushEffect::AlignVariableH));
+             effect == MapEditor::BrushEffect::AlignVariableH ||
+             shapePaintBase));
     }
 }
 void BrushUiController::setColorRgb(unsigned int rgb)
@@ -1104,10 +1110,11 @@ void BrushUiController::createShape3DActions()
     // Dam-mode solids stamped instead of a flat mask (Shape3D.h). They layer
     // on the COMMON brush types: with Raise/Lower Terrain the cells close on
     // the shape from below/above only, with Set-to-Height the Height spin is
-    // the shape's base and the move goes both ways. Selecting a 3D shape
-    // forces the Dam layer and drops any non-height brush type back to a
-    // raise; selecting any other brush type or stamp shape clears the 3D
-    // shape (mirrors the image-mask rule).
+    // the shape's base and the move goes both ways, with Paint Color the
+    // shape's volume is painted without touching heights. Selecting a 3D
+    // shape forces the Dam layer and drops any other non-height brush type
+    // back to a raise; selecting any other brush type or stamp shape clears
+    // the 3D shape, except Paint Color (mirrors the image-mask rule).
     QActionGroup *shape3dGroup = new QActionGroup(this);
     const auto addShape3D = [this, shape3dGroup](
             MapEditor::Shape3DKind kind, const QString &text,
@@ -1122,8 +1129,12 @@ void BrushUiController::createShape3DActions()
             params.mode = MapEditor::BrushMode::Dam;
             params.useImageMask = false;
             params.modelBrush = false;
+            // Paint Color combines with the shapes (volume paint without
+            // height changes) — keep it; the other non-height types fall
+            // back to a raise so the shape has an immediate effect.
             if (params.effect != MapEditor::BrushEffect::ChangeHeight &&
-                params.effect != MapEditor::BrushEffect::AlignVariableH) {
+                params.effect != MapEditor::BrushEffect::AlignVariableH &&
+                params.effect != MapEditor::BrushEffect::SetColor) {
                 params.effect = MapEditor::BrushEffect::ChangeHeight;
                 params.direction = 1;
             }
@@ -1142,7 +1153,9 @@ void BrushUiController::createShape3DActions()
         tr("3D shape brush (Dam layer only): stamps a cone — the base is the "
            "stamp footprint, every covered cell moves towards Height + the "
            "cone profile * Shape Height. Combine with Raise / Lower / "
-           "Set-to-Height; the upper part offset tilts the apex."));
+           "Set-to-Height; Paint Color paints the cone's volume without "
+           "touching heights (Paint interior = the whole volume). The upper "
+           "part offset tilts the apex."));
     actBrush3DPyramid_ = addShape3D(
         MapEditor::Shape3DKind::Pyramid, tr("Pyramid"),
         tr("3D shape brush (Dam layer only): stamps a pyramid on a regular "
@@ -1379,8 +1392,12 @@ QAction* BrushUiController::addBrushTypeAction(QActionGroup* group, const QIcon&
         params.direction = direction;
         // A common brush type paints a flat mask — the 3D shape solid
         // and the model-heightmap stamp belong to their own buttons
-        // (same rule as the image mask).
-        params.shape3d = MapEditor::Shape3DKind::None;
+        // (same rule as the image mask). Exception: Paint Color combines
+        // with the 3D shapes (applyShape3DPaint paints the solid's volume
+        // without touching heights), so it keeps the selected shape.
+        if (effect != MapEditor::BrushEffect::SetColor) {
+            params.shape3d = MapEditor::Shape3DKind::None;
+        }
         params.modelBrush = false;
         brushTool_->setParams(params);
         // T4.2 — keep the interaction mode in step with the brush type:
@@ -1525,7 +1542,11 @@ void BrushUiController::buildBrushToolbar()
     connect(brushLevelSpin_, &QSpinBox::valueChanged, this, [this](int value) {
         MapEditor::BrushParams params = brushTool_->params();
         if (params.effect == MapEditor::BrushEffect::AlignVariableH ||
-            params.effect == MapEditor::BrushEffect::Script) {
+            params.effect == MapEditor::BrushEffect::Script ||
+            (params.effect == MapEditor::BrushEffect::SetColor &&
+             params.shape3d != MapEditor::Shape3DKind::None)) {
+            // Set Color over a 3D shape: the level is the shape's base
+            // height for the volume paint (applyShape3DPaint).
             params.heightLevel = value;
         } else {
             params.strength = MapEditor::BrushTool::clampStrength(value);
@@ -1804,22 +1825,32 @@ void BrushUiController::syncControls()
         // ChangeHeight, the target height for AlignVariableH (and the value
         // getCurrentHeight() reports for the scripted brush; every other
         // type does not consume it — the value display keeps the last
-        // choice of the height tools).
+        // choice of the height tools). With a 3D shape + Paint Color the
+        // spin edits the shape's base height (the volume paint starts
+        // there) — the same heightLevel the shape's height tools use.
+        const bool shapePaintBase =
+            params.effect == MapEditor::BrushEffect::SetColor &&
+            params.shape3d != MapEditor::Shape3DKind::None;
         const bool showsTarget =
             params.effect == MapEditor::BrushEffect::AlignVariableH ||
-            params.effect == MapEditor::BrushEffect::Script;
+            params.effect == MapEditor::BrushEffect::Script || shapePaintBase;
         const int shown = static_cast<int>(std::lround(
             showsTarget ? params.heightLevel : params.strength));
         brushLevelSpin_->setToolTip(
             params.effect == MapEditor::BrushEffect::Script
                 ? tr("Height value the scripted brush script reads through "
                      "getCurrentHeight() (whole voxels; 1 voxel = 1/32 m).")
-                : showsTarget
-                    ? tr("Target height of the \"Level to Height\" brush "
-                         "(whole voxels; 1 voxel = 1/32 m).")
-                    : tr("Height change per stamp of the Raise/Lower Terrain "
-                         "brush, at full mask influence (whole voxels; "
-                         "1 voxel = 1/32 m)."));
+                : shapePaintBase
+                    ? tr("Base height of the 3D shape (whole voxels; "
+                         "1 voxel = 1/32 m): Paint Color paints the shape's "
+                         "volume upward from this level without changing the "
+                         "terrain.")
+                    : showsTarget
+                        ? tr("Target height of the \"Level to Height\" brush "
+                             "(whole voxels; 1 voxel = 1/32 m).")
+                        : tr("Height change per stamp of the Raise/Lower Terrain "
+                             "brush, at full mask influence (whole voxels; "
+                             "1 voxel = 1/32 m)."));
         if (brushLevelSpin_->value() != shown) {
             brushLevelSpin_->blockSignals(true);
             brushLevelSpin_->setValue(shown);

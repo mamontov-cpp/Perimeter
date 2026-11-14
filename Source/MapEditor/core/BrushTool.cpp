@@ -820,6 +820,13 @@ bool BrushTool::applyMask(const BrushMask& absoluteMask, const BrushParams& para
         if (params.mode != BrushMode::Dam) {
             return false; // 3D shapes own the Dam layer only
         }
+        // Set Color over a 3D solid paints the solid's voxel volume with
+        // color WITHOUT touching any heights (applyShape3DPaint) — the
+        // height-moving flow below is only for Raise / Lower / Set-to-Height.
+        if (params.effect == BrushEffect::SetColor) {
+            return applyShape3DPaint(absoluteMask, params, bx, by, bxEnd,
+                                     byEnd);
+        }
         return applyShape3D(absoluteMask, params, bx, by, bxEnd, byEnd);
     }
     // Model-heightmap brush: same self-contained flow through
@@ -1523,6 +1530,119 @@ bool BrushTool::applyShape3D(const BrushMask& absoluteMask,
                                      static_cast<unsigned char>(rgb & 0xFF));
             }
         }
+    }
+
+    // Grid + viewport dirty rectangles, margin 1 like the generic path.
+    const int mapW = static_cast<int>(vMap.H_SIZE);
+    const int mapH = static_cast<int>(vMap.V_SIZE);
+    const int x0 = std::max(0, bx - 1);
+    const int y0 = std::max(0, by - 1);
+    const int x1 = std::min(mapW - 1, bxEnd + 1);
+    const int y1 = std::min(mapH - 1, byEnd + 1);
+    vMap.recalcArea2Grid(x0, y0, x1, y1);
+    session_.regRenderWithShadowTrail(x0, y0, x1, y1);
+    return true;
+}
+
+bool BrushTool::applyShape3DPaint(const BrushMask& absoluteMask,
+                                  const BrushParams& params, int bx, int by,
+                                  int bxEnd, int byEnd)
+{
+    // Set Color over a 3D solid (cone / pyramid / ...): paint the solid's
+    // voxel volume with the brush color WITHOUT changing any heights. The
+    // per-column paint range follows the shape profile exactly like the
+    // height-moving applyShape3D targets. "Paint interior" paints every
+    // level from the shape base (the Height spin) up to the shape surface
+    // at the column — clipped at the highest part; unchecked paints only
+    // the top slab [surface-depth+1 .. surface], honouring the Depth spin
+    // like the 2D paint. The layer ranges are stored regardless of the
+    // current surface height, so the color becomes visible as soon as the
+    // dam is raised into the shape (and the slice view shows it at once).
+    Shape3DSettings shape;
+    shape.radius = params.radius;
+    shape.sides = params.polygonSides;
+    shape.angleDeg = params.polygonAngleDeg;
+    shape.topOffsetX = params.shapeTopOffsetX;
+    shape.topOffsetY = params.shapeTopOffsetY;
+    shape.topRadius = params.shapeTopRadius;
+    shape.topSide = params.shapeTopSide;
+    shape = clampShape3DSettings(params.shape3d, shape);
+
+    const int shapeHeightVox =
+        std::clamp(params.shapeHeight, 0, MAX_VX_HEIGHT_WHOLE);
+    const double baseVox = clampHeightLevel(params.heightLevel);
+    const int base = std::max(0, static_cast<int>(xm::floor(baseVox)));
+    const int depth = std::max(1, params.paintDepth);
+    const std::uint32_t rgb = params.colorRgb & 0x00FFFFFFu;
+    const unsigned char pr =
+        static_cast<unsigned char>((rgb >> 16) & 0xFF);
+    const unsigned char pg =
+        static_cast<unsigned char>((rgb >> 8) & 0xFF);
+    const unsigned char pb = static_cast<unsigned char>(rgb & 0xFF);
+    const int cx = (bx + bxEnd - 1) / 2;
+    const int cy = (by + byEnd - 1) / 2;
+
+    // Pass 1 (PRE-edit): the covered cells and their paint ranges, with a
+    // no-op precheck — a stamp whose whole volume already carries the color
+    // changes nothing and must not enter the undo history.
+    std::vector<int> offs;
+    std::vector<int> rangeLo;
+    std::vector<int> rangeHi;
+    bool anyNew = false;
+    for (int y = by; y < byEnd; ++y) {
+        for (int x = bx; x < bxEnd; ++x) {
+            const int mdx = x - absoluteMask.x;
+            const int mdy = y - absoluteMask.y;
+            if (mdx < 0 || mdy < 0 || mdx >= absoluteMask.sx ||
+                mdy >= absoluteMask.sy) {
+                continue; // clipped-away mask border
+            }
+            if (!absoluteMask.at(mdx, mdy)) {
+                continue;
+            }
+            const double profile =
+                shape3DProfile(params.shape3d, shape,
+                               static_cast<double>(x - cx),
+                               static_cast<double>(y - cy));
+            const int top = std::clamp(
+                static_cast<int>(std::llround(baseVox +
+                                              profile * shapeHeightVox)),
+                0, MAX_VX_HEIGHT_WHOLE);
+            const int lo = params.paintInterior3d
+                               ? base
+                               : std::max(0, top - depth + 1);
+            if (top < lo) {
+                continue;
+            }
+            const int off = y * static_cast<int>(vMap.H_SIZE) + x;
+            // Sample the range ends + middle: all already this color —
+            // nothing to do for this column.
+            bool cellNew = false;
+            for (const int z : {lo, (lo + top) / 2, top}) {
+                std::uint32_t cur = 0;
+                if (!vMap.voxLayers.lookup(static_cast<std::uint32_t>(off), z,
+                                           &cur) ||
+                    cur != rgb) {
+                    cellNew = true;
+                    break;
+                }
+            }
+            anyNew = anyNew || cellNew;
+            offs.push_back(off);
+            rangeLo.push_back(lo);
+            rangeHi.push_back(top);
+        }
+    }
+    if (!anyNew) {
+        return false;
+    }
+
+    session_.recordUndoArea(bx, by, bxEnd - bx, byEnd - by);
+
+    // Pass 2: paint the ranges — heights are never touched.
+    for (std::size_t k = 0; k < offs.size(); ++k) {
+        vMap.voxLayers.paint(static_cast<std::uint32_t>(offs[k]), rangeLo[k],
+                             rangeHi[k], pr, pg, pb);
     }
 
     // Grid + viewport dirty rectangles, margin 1 like the generic path.

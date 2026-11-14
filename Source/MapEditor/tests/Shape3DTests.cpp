@@ -402,8 +402,200 @@ bool runShape3DBrushTests()
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// 119 — Set Color over a 3D solid paints the solid's voxel volume WITHOUT
+// touching any heights (applyShape3DPaint).
+// ---------------------------------------------------------------------------
+
+bool runShape3DPaintTests()
+{
+    MapEditor::Tests::TestContext& ctx = MapEditor::Tests::context();
+    MapEditor::setupErrHWrapper();
+
+    TEST_REQUIRE(!ctx.tempRoot.empty() && fs::exists(ctx.tempRoot),
+                 "earlier tests did not provide the temporary world.");
+    TEST_REQUIRE(!ctx.worldName.empty(),
+                 "earlier tests did not provide the world name.");
+
+    const fs::path loadRoot = ctx.tempRoot / "load_root_shape3dpaint";
+    {
+        std::error_code ec;
+        fs::create_directories(loadRoot / "RESOURCE" / "Worlds", ec);
+        TEST_REQUIRE(!ec, "could not create the load content root.");
+        MapEditor::Tests::copyDirectoryRecursive(
+            ctx.gameDir / "RESOURCE" / "GeoTx", loadRoot / "RESOURCE" / "GeoTx");
+        fs::copy_file(ctx.gameDir / "Perimeter.ini", loadRoot / "Perimeter.ini",
+                      fs::copy_options::overwrite_existing, ec);
+        TEST_REQUIRE(!ec, "could not copy Perimeter.ini into the load root.");
+        MapEditor::Tests::copyDirectoryRecursive(
+            ctx.tempWorldDir, loadRoot / "RESOURCE" / "Worlds" /
+                                  fs::u8path(ctx.worldName));
+    }
+
+    MapEditor::EditorSession session;
+    session.setUndoCoalescingWindowMs(0);
+    TEST_REQUIRE(session.setGameDir(loadRoot.u8string()),
+                 "EditorSession::setGameDir() failed.");
+    TEST_REQUIRE(session.scanWorlds() && session.worldCount() >= 1,
+                 "EditorSession::scanWorlds() found no world.");
+    TEST_REQUIRE(session.loadWorld(0), "EditorSession::loadWorld(0) failed.");
+
+    const int mapW = static_cast<int>(vMap.H_SIZE);
+    const int mapH = static_cast<int>(vMap.V_SIZE);
+    TEST_REQUIRE(mapW >= 512 && mapH >= 512,
+                 "the world is too small for the shape paint test.");
+
+    const int radius = 8;
+    int cx = mapW / 2;
+    int cy = mapH / 2;
+    int baseVox = 0;
+    {
+        bool found = false;
+        for (int gy = 32; gy < mapH - 32 && !found; gy += 64) {
+            for (int gx = 32; gx < mapW - 32 && !found; gx += 64) {
+                int localMax = 0;
+                for (int dy = -radius - 2; dy <= radius + 2; ++dy) {
+                    for (int dx = -radius - 2; dx <= radius + 2; ++dx) {
+                        localMax = std::max(
+                            localMax,
+                            static_cast<int>(vMap.SGetAlt(gx + dx, gy + dy)));
+                    }
+                }
+                if (localMax >> VX_FRACTION <= 200) {
+                    cx = gx;
+                    cy = gy;
+                    baseVox = (localMax >> VX_FRACTION) + 4;
+                    found = true;
+                }
+            }
+        }
+        TEST_REQUIRE(found, "no suitably low region for the shape paint test.");
+    }
+    const std::uint32_t kPaintRgb = 0x00AA3366;
+
+    const auto altAt = [](int x, int y) {
+        return static_cast<int>(vMap.SGetAlt(x, y));
+    };
+    const auto layerAt = [](int x, int y, int z, std::uint32_t* rgb) {
+        return vMap.voxLayers.lookup(
+            static_cast<std::uint32_t>(y * static_cast<int>(vMap.H_SIZE) + x),
+            z, rgb);
+    };
+
+    MapEditor::BrushTool brush(session);
+    BrushParams params;
+    params.radius = radius;
+    params.mode = BrushMode::Dam;
+    params.shape3d = Shape3DKind::Cone;
+    params.shapeHeight = 10;
+    params.effect = BrushEffect::SetColor;
+    params.colorRgb = kPaintRgb;
+    params.heightLevel = baseVox;
+    params.paintInterior3d = true;
+
+    // Heights BEFORE — the paint stamp must not move a single cell.
+    std::vector<int> altsBefore;
+    for (int y = cy - radius - 1; y <= cy + radius + 1; ++y) {
+        for (int x = cx - radius - 1; x <= cx + radius + 1; ++x) {
+            altsBefore.push_back(altAt(x, y));
+        }
+    }
+
+    TEST_REQUIRE(brush.applyStamp(cx, cy, params),
+                 "the interior-paint stamp was refused.");
+
+    // Heights are byte-identical after the paint stamp.
+    {
+        std::size_t k = 0;
+        for (int y = cy - radius - 1; y <= cy + radius + 1; ++y) {
+            for (int x = cx - radius - 1; x <= cx + radius + 1; ++x, ++k) {
+                TEST_REQUIRE(altAt(x, y) == altsBefore[k],
+                             "the paint stamp must not change heights "
+                             "(%d,%d).",
+                             x - cx, y - cy);
+            }
+        }
+    }
+    std::printf("[PASS] the shape paint stamp leaves all heights unchanged.\n");
+
+    // The interior is painted per the cone profile: the apex column carries
+    // [base .. base+10], the boundary column [base .. base].
+    {
+        std::uint32_t rgb = 0;
+        for (int z = baseVox; z <= baseVox + 10; ++z) {
+            TEST_REQUIRE(layerAt(cx, cy, z, &rgb) && rgb == kPaintRgb,
+                         "the apex column layer %d must carry the paint "
+                         "color.",
+                         z);
+        }
+        TEST_REQUIRE(layerAt(cx + radius, cy, baseVox, &rgb) &&
+                         rgb == kPaintRgb,
+                     "the boundary column must carry the base layer.");
+        TEST_REQUIRE(!layerAt(cx, cy, baseVox + 11, &rgb),
+                     "above the shape surface nothing is painted.");
+        TEST_REQUIRE(!layerAt(cx, cy, baseVox - 1, &rgb),
+                     "below the shape base nothing is painted.");
+    }
+    std::printf("[PASS] the cone interior is painted per the profile.\n");
+
+    // A re-stamp with the same color is a refused no-op (no history entry).
+    TEST_REQUIRE(!brush.applyStamp(cx, cy, params),
+                 "a same-color re-stamp must be a refused no-op.");
+    std::printf("[PASS] a same-color re-stamp is a refused no-op.\n");
+
+    // Undo removes the paint (the layer data is part of the snapshot).
+    TEST_REQUIRE(session.undo(), "the paint stamp undo failed.");
+    {
+        std::uint32_t rgb = 0;
+        TEST_REQUIRE(!layerAt(cx, cy, baseVox + 10, &rgb) ||
+                         rgb != kPaintRgb,
+                     "undo must remove the painted layers.");
+    }
+    TEST_REQUIRE(session.redo(), "the paint stamp redo failed.");
+    {
+        std::uint32_t rgb = 0;
+        TEST_REQUIRE(layerAt(cx, cy, baseVox + 10, &rgb) && rgb == kPaintRgb,
+                     "redo must restore the painted layers.");
+        TEST_REQUIRE(session.undo(), "the second undo failed.");
+    }
+    std::printf("[PASS] the paint stamp participates in undo/redo.\n");
+
+    // Slab mode: Paint interior OFF paints only [top-depth+1 .. top].
+    params.paintInterior3d = false;
+    params.paintDepth = 2;
+    TEST_REQUIRE(brush.applyStamp(cx, cy, params),
+                 "the slab-paint stamp was refused.");
+    {
+        std::uint32_t rgb = 0;
+        // Apex top = base + 10: the slab is [base+9 .. base+10].
+        TEST_REQUIRE(layerAt(cx, cy, baseVox + 10, &rgb) && rgb == kPaintRgb,
+                     "the apex slab top layer must be painted.");
+        TEST_REQUIRE(layerAt(cx, cy, baseVox + 9, &rgb) && rgb == kPaintRgb,
+                     "the apex slab must span the depth.");
+        TEST_REQUIRE(!layerAt(cx, cy, baseVox + 8, &rgb),
+                     "below the slab nothing is painted.");
+        // Boundary top = base: the slab is [base .. base].
+        TEST_REQUIRE(layerAt(cx + radius, cy, baseVox, &rgb) &&
+                         rgb == kPaintRgb,
+                     "the boundary slab must paint the base layer.");
+    }
+    std::printf("[PASS] slab mode paints [top-depth+1 .. top] only.\n");
+
+    // Geo mode refuses the shape paint like the height-moving shapes.
+    params.mode = BrushMode::Geo;
+    TEST_REQUIRE(!brush.applyStamp(cx, cy, params),
+                 "the shape paint in Geo mode must be refused.");
+
+    while (session.undo()) {
+    }
+    session.unloadWorld();
+    return true;
+}
+
 } // namespace
 
 MAP_EDITOR_REGISTER_TEST("Shape3D profiles", 93, runShape3DProfileTests);
 MAP_EDITOR_REGISTER_TEST("Shape3D brush application", 94,
                          runShape3DBrushTests);
+MAP_EDITOR_REGISTER_TEST("Shape3D color paint (no height change)", 119,
+                         runShape3DPaintTests);

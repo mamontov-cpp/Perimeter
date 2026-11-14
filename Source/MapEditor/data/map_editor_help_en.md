@@ -343,6 +343,17 @@ default 1 = a one-voxel layer); the layer wins until terraforming moves
 the surface into it. The paint is purely visual, replaces the color, and
 joins the stamp's single Undo step.
 
+Painting a 3D solid's volume: with a 3D type selected (cone, pyramid,
+...), the **Paint Color** button paints **the solid's volume WITHOUT
+changing any heights** — every covered column gets the layers from the
+shape base (the Height spin) up to the shape surface at that column. The
+**Paint interior** checkbox fills the whole volume; unchecked, only the
+top slab of thickness **Depth** at the shape surface is painted
+(`[surface-depth+1 .. surface]`). The color becomes visible once the dam
+is raised into the shape; the Slice mode shows it right away. The same
+mode is available to agents: `apply_brush` with `effect: "paintColor"`,
+`shape` and `paintInterior`/`paintDepth`.
+
 A note on `raiseHeight`/`lowerHeight`: these are **incremental** ops — a
 radius-1 stamp covers a 3×3 area around the centre, so stamps at adjacent
 cells (distance 1) always overlap and the overlapped cell receives, say,
@@ -808,7 +819,10 @@ model brush (`import_model` + `effect: "model"`), the stamp parameters
 (radius, square, sides/angleOffset, fraction, blurRadius, layer dam/geo),
 painting at a height for paintColor: `paintHeight` (voxels, -1 = the
 column top) and `paintDepth` (the layer depth, ≥ 1) — the same semantics
-as the H/Depth spinboxes and `paintColorAt` in the JS API.
+as the H/Depth spinboxes and `paintColorAt` in the JS API; paintColor
+with a 3D solid paints the solid's volume WITHOUT changing heights
+(`paintInterior` = the whole volume, otherwise the top slab of
+`paintDepth`).
 In the difference mode the stamp writes to the diff buffer.
 
 **Scripts:** `run_script` (JavaScript in one undo step, the same API as the

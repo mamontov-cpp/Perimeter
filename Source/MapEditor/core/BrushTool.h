@@ -624,6 +624,15 @@ private:
     bool applyShape3D(const BrushMask& absoluteMask, const BrushParams& params,
                       int bx, int by, int bxEnd, int byEnd);
 
+    /// Set Color over a 3D solid: paints the solid's voxel volume (the shape
+    /// profile per column) with the brush color WITHOUT touching heights.
+    /// "Paint interior" fills [shape base .. shape surface]; unchecked paints
+    /// the top slab [surface-depth+1 .. surface] honouring paintDepth.
+    /// Dam mode only; one stamp = one undo entry.
+    bool applyShape3DPaint(const BrushMask& absoluteMask,
+                           const BrushParams& params, int bx, int by,
+                           int bxEnd, int byEnd);
+
     /// Model-heightmap brush (see BrushParams::modelBrush): stamps the
     /// imported model raster as a rectangle — "place" sets the dam to the
     /// scaled model height and paints the model's exact 24-bit colors, "add"
