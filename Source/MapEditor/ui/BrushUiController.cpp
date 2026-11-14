@@ -355,12 +355,21 @@ void BrushUiController::updateEnabledStates(bool worldLoaded)
             worldLoaded &&
             (effect == MapEditor::BrushEffect::SetColor ||
              effect == MapEditor::BrushEffect::ImageDecal);
-        brushPaintHeightSpin_->setEnabled(colorActive);
-        brushPaintDepthSpin_->setEnabled(colorActive);
-        brushPaintInteriorCheck_->setEnabled(
-            worldLoaded &&
-            (brushTool_->params().shape3d != MapEditor::Shape3DKind::None ||
-             brushTool_->params().modelBrush));
+        // Null-guarded: these live on the brush / Sculpting toolbars and
+        // updateEnabledStates re-enters during the toolbar build (a spinbox
+        // change inside syncControls emits actionStatesNeedUpdate again).
+        if (brushPaintHeightSpin_) {
+            brushPaintHeightSpin_->setEnabled(colorActive);
+        }
+        if (brushPaintDepthSpin_) {
+            brushPaintDepthSpin_->setEnabled(colorActive);
+        }
+        if (brushPaintInteriorCheck_) {
+            brushPaintInteriorCheck_->setEnabled(
+                worldLoaded &&
+                (brushTool_->params().shape3d != MapEditor::Shape3DKind::None ||
+                 brushTool_->params().modelBrush));
+        }
     }
     // T3.2 — the single height control serves the raise/lower step and the
     // "Level to Height" target; with a 3D shape or the model brush + Paint
@@ -563,6 +572,24 @@ void BrushUiController::buildSculptToolbar()
             });
     bar->addWidget(new QLabel(tr("Top side:"), bar));
     bar->addWidget(shapeTopSideSpin_);
+
+    // 3D shapes / the model brush: paint the whole interior of the solid
+    // (every voxel level from the base up to its surface at the column)
+    // instead of only the top slab. Lives here on the 3D brushes toolbar —
+    // the option only means something with a solid selected.
+    brushPaintInteriorCheck_ = new QCheckBox(tr("Paint interior"), bar);
+    brushPaintInteriorCheck_->setToolTip(
+        tr("3D shape brushes and the model brush: paint every voxel inside "
+           "the solid with the brush color (the full volume from the base up "
+           "to the surface at each column); unchecked paints only the top "
+           "slab of the Depth layers at the surface."));
+    connect(brushPaintInteriorCheck_, &QCheckBox::toggled, this,
+            [this](bool on) {
+                MapEditor::BrushParams params = brushTool_->params();
+                params.paintInterior3d = on;
+                brushTool_->setParams(params);
+            });
+    bar->addWidget(brushPaintInteriorCheck_);
 
     // Type buttons are created in createBrushActions() — mirror the rest of
     // the initial control state into the new toolbar.
@@ -1644,20 +1671,6 @@ void BrushUiController::buildBrushToolbar()
             });
     bar->addWidget(new QLabel(tr("Depth:"), bar));
     bar->addWidget(brushPaintDepthSpin_);
-
-    // 3D shapes: paint the interior of the solid (every voxel level from
-    // the shape base up to its surface at the column).
-    brushPaintInteriorCheck_ = new QCheckBox(tr("Paint interior"), bar);
-    brushPaintInteriorCheck_->setToolTip(
-        tr("3D shape brushes: paint every voxel inside the solid with the "
-           "brush color (clipped at the shape surface per column)."));
-    connect(brushPaintInteriorCheck_, &QCheckBox::toggled, this,
-            [this](bool on) {
-                MapEditor::BrushParams params = brushTool_->params();
-                params.paintInterior3d = on;
-                brushTool_->setParams(params);
-            });
-    bar->addWidget(brushPaintInteriorCheck_);
 
     // T3.3/T4.2 — the paint/pick color types next to their color controls
     // (the same actions the Edit menu carries).

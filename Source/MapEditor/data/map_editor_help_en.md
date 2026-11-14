@@ -473,7 +473,11 @@ that use them):
 - **Upper part radius** — the top radius of the truncated cone / the torus
   INNER radius — less than the base radius (clamped);
 - **Upper part side** — the top edge length of the truncated pyramid (the
-  upper polygon is similar to the base) — clamped inside the base.
+  upper polygon is similar to the base) — clamped inside the base;
+- **Paint interior** (the checkbox on this toolbar) — with Paint Color,
+  paints the whole volume of the solid from the base up to the column
+  surface; unchecked paints only the top slab of Depth layers at the shape
+  surface (no height change).
 
 They work with the Apply Above / Below Height modifiers (the decision uses
 the pre-stamp height) and refuse in Geo mode. One shape — one stamp — one
@@ -665,6 +669,16 @@ the cell's layer.
 - **Minimap** — the minimap panel; a click moves the view, the frame shows
   the visible area. The picture updates immediately on terrain edits
   (brush, undo/redo) without saving the world.
+- **Slice Panel** (View → Slice Panel) — show colors at a height: the
+  "Show colors at a height" checkbox + the height spinbox clip the whole
+  map at the slice — every cell shows the color of the voxel layer at that
+  height (everything above the slice is not rendered). Editing the spinbox
+  does NOT re-render by itself — the changes take effect on the **Apply**
+  button (the full-map re-render through TerrainGpuView is expensive; the
+  button stays enabled while the panel state differs from the applied
+  one). The "2D brushes paint at this height" checkbox takes effect
+  immediately — it only sets the paint height of the brushes (the toolbar
+  H spin).
 - A click in the 3D view paints the cell under the cursor (the brush works
   in 3D too).
 
