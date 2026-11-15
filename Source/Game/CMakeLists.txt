@@ -17,6 +17,7 @@ target_sources(perimeter PRIVATE
         GameContent.cpp
         Config.cpp
         "${PROJECT_SOURCE_DIR}/Source/TriggerEditor/TriggerExport.cpp"
+        "${PROJECT_SOURCE_DIR}/Source/Render/tilemap/VoxCavityOverlay.cpp"
 )
 
 target_include_directories(perimeter PRIVATE

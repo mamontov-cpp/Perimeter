@@ -11,6 +11,7 @@ SET(Render_SRCS
         src/UnkObj.cpp
         src/CChaos.cpp
         src/cPlane.cpp
+        src/RawMeshObj.cpp
         src/lighting.cpp
         src/Line3d.cpp
         src/SpriteNode.cpp

@@ -502,8 +502,14 @@ public:
 		// не платят ничего).
 		const unsigned char oldD = vMap.VxDBuf[offB];
 		const int r = tVoxSetAllBody(offB, dV);
-		if (r && oldD != vMap.VxDBuf[offB] && !vMap.voxLayers.empty()) {
-			vMap.normalizeTransparentColumn(offB, oldD);
+		if (r && oldD != vMap.VxDBuf[offB]) {
+			// Высота изменилась: бамп версии (оверлей полостей
+			// перестраивается только по реальным изменениям террейна —
+			// игровые обновления видимости юнитов высот не трогают).
+			++vMap.terraVersion;
+			if (!vMap.voxLayers.empty()) {
+				vMap.normalizeTransparentColumn(offB, oldD);
+			}
 		}
 		return r;
 	};

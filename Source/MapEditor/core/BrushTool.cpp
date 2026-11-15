@@ -1651,9 +1651,14 @@ bool BrushTool::applyShape3DPaint(const BrushMask& absoluteMask,
             bool cellNew = false;
             for (const int z : {lo, (lo + top) / 2, top}) {
                 std::uint32_t cur = 0;
+                uint8_t curFlags = 0;
+                // Флаг учитываем: чёрная краска (rgb 0) поверх
+                // прозрачного диапазона (тоже rgb 0) — это ИЗМЕНЕНИЕ.
                 if (!vMap.voxLayers.lookup(static_cast<std::uint32_t>(off), z,
-                                           &cur) ||
-                    cur != rgb) {
+                                           &cur, &curFlags) ||
+                    cur != rgb ||
+                    ((curFlags & VOX_LAYER_TRANSPARENT) != 0) !=
+                        params.paintTransparent) {
                     cellNew = true;
                     break;
                 }
@@ -1934,9 +1939,14 @@ bool BrushTool::applyModelBrushPaint(const BrushMask& absoluteMask,
             bool cellNew = false;
             for (const int z : {lo, (lo + top) / 2, top}) {
                 std::uint32_t cur = 0;
+                uint8_t curFlags = 0;
+                // Флаг учитываем: чёрная краска (rgb 0) поверх
+                // прозрачного диапазона (тоже rgb 0) — это ИЗМЕНЕНИЕ.
                 if (!vMap.voxLayers.lookup(static_cast<std::uint32_t>(off), z,
-                                           &cur) ||
-                    cur != rgb) {
+                                           &cur, &curFlags) ||
+                    cur != rgb ||
+                    ((curFlags & VOX_LAYER_TRANSPARENT) != 0) !=
+                        params.paintTransparent) {
                     cellNew = true;
                     break;
                 }

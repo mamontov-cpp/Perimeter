@@ -297,6 +297,11 @@ struct vrtMap {
 	// См. VoxLayers.h; сериализуются в sidecar heights16.bin. Флаг
 	// VOX_LAYER_TRANSPARENT помечает воксели как пустые/прозрачные.
 	VoxColLayers voxLayers;
+	// Монотонный счётчик изменений высот (бампит обёртка tVoxSetAll):
+	// оверлей полостей скипает перестройки по обновлениям, которые высот
+	// и слоёв не меняли (игровые UpdateMap от движущихся юнитов — чистая
+	// перекраска видимости).
+	uint64_t terraVersion = 0;
 
 	// Инвариант прозрачных вокселей для одной колонки (off): поднятие
 	// (newHeight > oldHeight) заменяет прозрачные воксели [oldHeight,
@@ -310,6 +315,14 @@ struct vrtMap {
 	// Цвет по умолчанию колонки (сырой RGB24): true-color краска, иначе
 	// палитра текущего слоя по индексу SurBuf.
 	unsigned int defaultColumnRgb(int off) const;
+	// Высота, которую heightfield-рендерер должен показать для колонки с
+	// прозрачными вокселями: верх основания под САМЫМ НИЖНИМ прозрачным
+	// диапазоном (z0 минимального диапазона). Рендер террейна (TerraInterface
+	// GetZ/GetZf) опускает поверхность до этой высоты — полость «вырезается»
+	// из меша, а оверлейный меш (VoxCavity.h) рисует парящий остров
+	// (крышку, бока, низ) отдельной геометрией. -1 — колонки без прозрачных
+	// диапазонов (вызывающий рисует обычную поверхность).
+	int cavityDisplayHeight(int off) const;
 	// Редакторский срез высоты: >= 0 — getColor32 рисует цвет слоя на этой
 	// высоте (все выше среза «не рендерятся»). Игра не трогает.
 	int viewSliceHeight = -1;
@@ -663,7 +676,13 @@ struct vrtMap {
 		//верхний сплошной воксель ниже него (срез проваливается сквозь
 		//пустоту), иначе — обычный цвет поверхности.
 		if(!voxLayers.empty()){
-			const int surface=SGetAlt(off)>>VX_FRACTION;
+			// Цвет считаем для той поверхности, которую РЕНДЕРИТ heightfield:
+			// у колонки с прозрачными вокселями это display height (основание
+			// под полостью), а не полная высота дамбы — иначе пол под островом
+			// красился бы цветом вершины колонки, а не слоем под полостью.
+			const int rawSurface=SGetAlt(off)>>VX_FRACTION;
+			const int displayH=cavityDisplayHeight(off);
+			const int surface=(displayH>=0&&displayH<rawSurface)?displayH:rawSurface;
 			const int h=(viewSliceHeight>=0&&viewSliceHeight<surface)?viewSliceHeight:surface;
 			uint32_t rgb;
 			uint8_t flags=0;
@@ -715,7 +734,13 @@ struct vrtMap {
 		//верхний сплошной воксель ниже него (срез проваливается сквозь
 		//пустоту), иначе — обычный цвет поверхности.
 		if(!voxLayers.empty()){
-			const int surface=SGetAlt(off)>>VX_FRACTION;
+			// Цвет считаем для той поверхности, которую РЕНДЕРИТ heightfield:
+			// у колонки с прозрачными вокселями это display height (основание
+			// под полостью), а не полная высота дамбы — иначе пол под островом
+			// красился бы цветом вершины колонки, а не слоем под полостью.
+			const int rawSurface=SGetAlt(off)>>VX_FRACTION;
+			const int displayH=cavityDisplayHeight(off);
+			const int surface=(displayH>=0&&displayH<rawSurface)?displayH:rawSurface;
 			const int h=(viewSliceHeight>=0&&viewSliceHeight<surface)?viewSliceHeight:surface;
 			uint32_t rgb;
 			uint8_t flags=0;

@@ -56,19 +56,37 @@ unsigned int color32WithLighting(int off, unsigned int lighting)
 /// The composite surface color of a cell with the SAME precedence as
 /// vrtMap::getColor32(): an internal voxel-layer range containing the
 /// (slice-clamped) surface wins, then the true-color override, then the
-/// palette tables. Without this the editor views (2D cache, GPU tilemap
-/// via GetTileColor, smooth-3D pyramid) would quantize/ignore both the
-/// extended palette and the height-slice mode.
+/// palette tables. Transparent (empty) voxels carry no color: the lookup
+/// falls through to the nearest SOLID voxel below — a transparent hit must
+/// never paint its stored (zero) rgb, that produced black patches on the
+/// crater floors left by the strip rule.
 unsigned int surfaceColor32(int off)
 {
     if (!vMap.voxLayers.empty()) {
-        const int surface = vMap.SGetAlt(off) >> VX_FRACTION;
+        // The color follows the surface the heightfield RENDERS: for a
+        // cavity column that is the display height (the base under the
+        // cavity), not the full dam top — otherwise the cavity floor
+        // (rendered by the heightfield at the display height) would be
+        // colored with the column top color instead of the painted layer
+        // underneath the island.
+        const int rawSurface = vMap.SGetAlt(off) >> VX_FRACTION;
+        const int displayH = vMap.cavityDisplayHeight(off);
+        const int surface =
+            (displayH >= 0 && displayH < rawSurface) ? displayH : rawSurface;
         const int h = (vMap.viewSliceHeight >= 0 &&
                        vMap.viewSliceHeight < surface)
                           ? vMap.viewSliceHeight
                           : surface;
         std::uint32_t rgb = 0;
-        if (vMap.voxLayers.lookup(static_cast<std::uint32_t>(off), h, &rgb)) {
+        uint8_t flags = 0;
+        if (vMap.voxLayers.lookup(static_cast<std::uint32_t>(off), h, &rgb,
+                                  &flags) &&
+            !(flags & VOX_LAYER_TRANSPARENT)) {
+            return vrtMap::trueColor32(0xFF000000u | rgb, vMap.RnrBuf[off] & 0x7F);
+        }
+        if ((flags & VOX_LAYER_TRANSPARENT) &&
+            vMap.voxLayers.lookupSolidBelow(static_cast<std::uint32_t>(off),
+                                            h, &rgb)) {
             return vrtMap::trueColor32(0xFF000000u | rgb, vMap.RnrBuf[off] & 0x7F);
         }
     }
@@ -391,9 +409,18 @@ unsigned char ViewportRenderer::mipEffectiveHeight(int x, int y)
 {
     // viewV2D draws lvD where it is non-zero and falls back to lvG
     // (VxDBuf/VxGBuf, VMAP.cpp:2118-2123) — bake that choice into the
-    // pyramid so rendering only samples one buffer.
+    // pyramid so rendering only samples one buffer. Cavity columns cut
+    // the heightfield at the display height (TerraInterface::GetZ) — the
+    // pyramid follows so the smooth CPU 3D matches the GPU mesh.
     const int off = vMap.offsetBuf(x, y);
-    return vMap.VxDBuf[off] != 0 ? vMap.VxDBuf[off] : vMap.VxGBuf[off];
+    int eff = vMap.VxDBuf[off] != 0 ? vMap.VxDBuf[off] : vMap.VxGBuf[off];
+    if (!vMap.voxLayers.empty()) {
+        const int display = vMap.cavityDisplayHeight(off);
+        if (display >= 0 && eff > display) {
+            eff = display;
+        }
+    }
+    return static_cast<unsigned char>(eff);
 }
 
 void ViewportRenderer::refreshMipRegion(int x0, int y0, int x1, int y1) const

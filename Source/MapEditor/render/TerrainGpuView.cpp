@@ -80,6 +80,12 @@ inline float sampleTerrainZ(double x, double y) {
     clampToMap(xi, yi);
     int ofs = xi + vMap.H_SIZE * yi;
     float z = vMap.SGetAlt(ofs) / static_cast<float>(1 << VX_FRACTION);
+    // The heightfield is cut at cavities (TerraInterface GetZf) — picking
+    // follows the rendered base under the cavity.
+    const int display = vMap.cavityDisplayHeight(ofs);
+    if (display >= 0 && z > static_cast<float>(display)) {
+        z = static_cast<float>(display);
+    }
     const int slice = vMap.viewSliceHeight;
     if (slice >= 0 && z > static_cast<float>(slice)) {
         z = static_cast<float>(slice);
@@ -190,6 +196,10 @@ bool TerrainGpuView::buildScene() {
         return false;
     }
 
+    // The transparent-voxel cavity overlay rides the same UpdateMap stream
+    // (brush stamps via updateCells, world reloads via reloadWorld).
+    cavityOverlay_.init(scene_, tileMap_);
+
     // Placed-building models ride the same scene->Draw.
     buildingModels_.init(scene_);
     return true;
@@ -201,6 +211,8 @@ void TerrainGpuView::destroyScene() {
     // device — tear them down first.
     buildingModels_.shutdown();
     destroyIconScene();
+    // The cavity overlay must unregister from the tilemap before it dies.
+    cavityOverlay_.shutdown();
     // Order matters: the tilemap feeds through the camera/scene and holds the
     // device reference (dtor calls gb_RenderDevice->DeleteTilemap), the
     // camera/scene own per-frame node lists. All while the device is alive.

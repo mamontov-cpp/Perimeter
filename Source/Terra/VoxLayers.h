@@ -19,6 +19,7 @@
 #define VOX_LAYERS_H
 
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 // Один цветовой диапазон колонки. 8 байт (выравнивание).
@@ -82,6 +83,11 @@ public:
 	std::vector<uint32_t> col_;    // cell offsets, ascending
 	std::vector<uint32_t> begin_;  // begin into ranges_; end = next begin
 	std::vector<VoxLayerRange> ranges_; // per column sorted by z0
+	std::vector<uint32_t> blockCount_;  // mightHaveColumn index, see above
+	// Монотонный счётчик мутаций (setColumn): потребители (оверлей
+	// полостей) скипают перестройки, пока слои и высоты не менялись —
+	// игровые обновления видимости юнитов не трогают ни того, ни другого.
+	uint64_t version = 0;
 
 	// Заменить данные колонки целиком (undo/diff). Пересоздаёт запись;
 	// ranges == nullptr или count == 0 — удалить колонку.
@@ -91,9 +97,33 @@ public:
 	bool empty() const { return col_.empty(); }
 	void clear();
 
+	// Индексный диапазон колонок с offsets в [offBeg..offEnd] (sorted col_ —
+	// окно через lower_bound/upper_bound). Для оверлейного мешера полостей
+	// и прочих проходов по подмножеству колонок.
+	std::pair<int, int> columnIndexRange(uint32_t offBeg,
+	                                     uint32_t offEnd) const;
+	// true, если у колонки есть хотя бы один прозрачный диапазон
+	// (мешер полостей: владение гранью на границе двух cavity-колонок).
+	bool columnHasTransparent(uint32_t cellOffset) const;
+
+	// Грубый блочный индекс по offset-ам: blockCount_[off >> kBlockShift]
+	// — число колонок в блоке 1024 клетки. O(1)-предпроверка для горячих
+	// путей (getColor32 на тексель тайловой текстуры при терраформинге —
+	// двоичный поиск «колонки нет» стоил дороже самой раскраски).
+	static const uint32_t kBlockShift = 10; // 1024 клетки на блок
+	bool mightHaveColumn(uint32_t cellOffset) const
+	{
+		const size_t b = static_cast<size_t>(cellOffset) >> kBlockShift;
+		return b < blockCount_.size() && blockCount_[b] != 0;
+	}
+	// Построить индекс заново (загрузка sidecar пишет col_ напрямую).
+	void buildBlockIndex();
+
 private:
 	static bool sameColor(const VoxLayerRange& a, uint8_t r, uint8_t g,
 	                      uint8_t b, bool transparent);
+	// Докинуть размер индекса блоков под offset (вставка колонки).
+	void growBlockIndex(uint32_t cellOffset);
 };
 
 #endif // VOX_LAYERS_H

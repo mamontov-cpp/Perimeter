@@ -156,6 +156,7 @@ IF(OPTION_SOKOL)
             src/UnkObj.cpp
             src/CChaos.cpp
             src/cPlane.cpp
+            src/RawMeshObj.cpp
             src/lighting.cpp
             src/Line3d.cpp
             src/SpriteNode.cpp
@@ -243,6 +244,7 @@ IF(OPTION_SOKOL)
             render/EditorTerraInterface.cpp
             render/TerrainGpuView.cpp
             render/BuildingModels.cpp
+            "${PROJECT_SOURCE_DIR}/Source/Render/tilemap/VoxCavityOverlay.cpp"
     )
 
     IF(MSVC)

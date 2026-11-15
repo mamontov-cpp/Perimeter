@@ -12,11 +12,18 @@ public:
 	int SizeY() override { return vMap.V_SIZE; }
 	int GetZ(int x,int y) override {
 		int ofs=x+vMap.H_SIZE*y;
+		// Прозрачные воксели «вырезают» полость: heightfield показывает
+		// основание под самым нижним прозрачным диапазоном, а парящий
+		// остров над полостью рисует оверлейный меш (VoxCavity.h).
+		const int display=vMap.cavityDisplayHeight(ofs);
+		if(display>=0) return display;
 		return ((vMap.VxDBuf[ofs] != 0) ? vMap.VxDBuf[ofs] : vMap.VxGBuf[ofs]);
 	}
 
 	float GetZf(int x,int y) override {
 		int ofs=x+vMap.H_SIZE*y;
+		const int display=vMap.cavityDisplayHeight(ofs);
+		if(display>=0) return static_cast<float>(display);
 		return  vMap.SGetAlt(ofs)*inv_vx_fraction;
 	}
 

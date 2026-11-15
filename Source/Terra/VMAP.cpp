@@ -6,6 +6,7 @@
 
 #include "../Util/SystemUtil.h"
 #include "files/files.h"
+#include "VoxPerf.h"
 
 #pragma warning( disable : 4554 )  
 
@@ -176,9 +177,53 @@ unsigned int vrtMap::defaultColumnRgb(int off) const
 	       static_cast<unsigned int>(pal[2]);
 }
 
+int vrtMap::cavityDisplayHeight(int off) const
+{
+	const int height = VxDBuf[off];
+	if (height <= 0 ||
+	    !voxLayers.mightHaveColumn(static_cast<uint32_t>(off))) {
+		return -1;
+	}
+	const int idx = voxLayers.findColumn(static_cast<uint32_t>(off));
+	if (idx < 0) {
+		return -1;
+	}
+	int count = 0;
+	const VoxLayerRange* ranges = voxLayers.columnRanges(idx, &count);
+	int display = -1;
+	for (int i = 0; i < count; ++i) {
+		if (ranges[i].flags & VOX_LAYER_TRANSPARENT) {
+			const int t0 = ranges[i].z0;
+			if (t0 < height && (display < 0 || t0 < display)) {
+				display = t0;
+			}
+		}
+	}
+	if (display < 0) {
+		return -1;
+	}
+	// Не выше полной высоты (прозрачные диапазоны живут ниже верха).
+	return display <= height ? display : height;
+}
+
 void vrtMap::normalizeTransparentColumn(int off, int oldHeight)
 {
-	if (voxLayers.empty()) {
+	static thread_local unsigned nCalls = 0;
+	static thread_local double totalMs = 0.0;
+	struct Agg {
+		unsigned& n;
+		double& t;
+		double t0;
+		Agg(unsigned& nn, double& tt, double t00) : n(nn), t(tt), t0(t00) {}
+		~Agg()
+		{
+			t += voxperf::nowMs() - t0;
+			if (++n % 2000 == 0) {
+				voxperf::log("normalizeTransparentColumn: %u calls, %.2f ms total", n, t);
+			}
+		}
+	} agg(nCalls, totalMs, voxperf::nowMs());
+	if (!voxLayers.mightHaveColumn(static_cast<uint32_t>(off))) {
 		return;
 	}
 	const int newHeight = VxDBuf[off];
@@ -299,6 +344,9 @@ static bool loadHeights16Sidecar(vrtMap& m) {
 		if (totalRanges) {
 			fstream.read(m.voxLayers.ranges_.data(), poolBytes);
 		}
+		// col_ заполнен напрямую (не через setColumn) — индекс блоков
+		// строим здесь.
+		m.voxLayers.buildBlockIndex();
 		// Валидация: повреждённые/чужие смещения (не по возрастанию, за
 		// пределами пула) приводят к отрицательным длинам колонок при
 		// пересборке — std::length_error/выход за буфер дальше по коду.
@@ -324,6 +372,8 @@ static bool loadHeights16Sidecar(vrtMap& m) {
 			// воксель не может лежать наверху колонки — «висящие» сверху
 			// уничтожаются с пересчётом высоты (без предупреждений).
 			// Проход только по колонкам с флагом прозрачности.
+			voxperf::log("loadHeights16: transparent strip over %u columns", nColumns);
+			const double tStrip = voxperf::nowMs();
 			for (uint32_t i = 0; i < nColumns; ++i) {
 				int count = 0;
 				const VoxLayerRange* rr =
@@ -341,6 +391,7 @@ static bool loadHeights16Sidecar(vrtMap& m) {
 						m.VxDBuf[m.voxLayers.columnOffset(i)]);
 				}
 			}
+			voxperf::log("loadHeights16: strip took %.2f ms", voxperf::nowMs() - tStrip);
 		}
 	}
 	fstream.close();
@@ -2618,11 +2669,25 @@ void vrtMap::viewV2D(int cx,int cy,int xc,int yc,int xside,int yside, unsigned s
 			// Срез высоты (показ слоя на высоте вокселя): геометрия
 			// урезается до высоты среза — воксели выше не рисуются.
 			// Пустые колонки (h==0) урезанию не подлежат.
+			// Срез высоты (показ слоя на высоте вокселя) и вырез полостей:
+			// геометрия урезается как у TerraInterface::GetZ (display height
+			// колонки с прозрачными вокселями) — пустые колонки (h==0)
+			// урезанию не подлежат.
 			if (viewSliceHeight >= 0) {
 				if (h0 > viewSliceHeight) h0 = viewSliceHeight;
 				if (h1 > viewSliceHeight) h1 = viewSliceHeight;
 				if (h2 > viewSliceHeight) h2 = viewSliceHeight;
 				if (h3 > viewSliceHeight) h3 = viewSliceHeight;
+			}
+			if (!voxLayers.empty()) {
+				const int dv0=cavityDisplayHeight(u0+v0);
+				const int dv1=cavityDisplayHeight(u1+v0);
+				const int dv2=cavityDisplayHeight(u0+v1);
+				const int dv3=cavityDisplayHeight(u1+v1);
+				if (dv0 >= 0 && h0 > dv0) h0 = dv0;
+				if (dv1 >= 0 && h1 > dv1) h1 = dv1;
+				if (dv2 >= 0 && h2 > dv2) h2 = dv2;
+				if (dv3 >= 0 && h3 > dv3) h3 = dv3;
 			}
 
 			// Compute the height using bilinear interpolation
@@ -2671,14 +2736,29 @@ void vrtMap::viewV2D(int cx,int cy,int xc,int yc,int xside,int yside, unsigned s
 			c=((h0<<8)+b*(h2-h0));
 			// Внутренние слои побеждают: цвет диапазона, внутри которого лежит
 			// (урезанная срезом) поверхность угловой клетки — тот же приоритет,
-			// что в getColor32. Далее true-color клетки, затем палитра.
+			// что в getColor32. Прозрачный воксель цвета не несёт: показываем
+			// верхний сплошной воксель ниже (срез проваливается сквозь пустоту).
 			bool layerColored=false;
 			if (!voxLayers.empty()) {
 				int hc=lvD[u0+v0]; if(!hc) hc=lvG[u0+v0];
 				if (viewSliceHeight >= 0 && hc > viewSliceHeight)
 					hc = viewSliceHeight;
+				// Цвет — для той поверхности, которую рендерит heightfield
+				// (основание под полостью, см. GetZ/cavityDisplayHeight).
+				const int hdc=cavityDisplayHeight(u0+v0);
+				if (hdc >= 0 && hc > hdc) hc = hdc;
 				uint32_t rgb;
-				if (voxLayers.lookup(static_cast<uint32_t>(u0+v0), hc, &rgb)) {
+				uint8_t vflags=0;
+				if (voxLayers.lookup(static_cast<uint32_t>(u0+v0), hc, &rgb,
+				                     &vflags) &&
+				    !(vflags&VOX_LAYER_TRANSPARENT)) {
+					c=static_cast<int>(trueColor16(0xFF000000u|rgb,
+					                               (c>>16)&0x7F))<<16;
+					layerColored=true;
+				}
+				else if ((vflags&VOX_LAYER_TRANSPARENT) &&
+				         voxLayers.lookupSolidBelow(
+				             static_cast<uint32_t>(u0+v0), hc, &rgb)) {
 					c=static_cast<int>(trueColor16(0xFF000000u|rgb,
 					                               (c>>16)&0x7F))<<16;
 					layerColored=true;

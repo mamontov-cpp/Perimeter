@@ -32,6 +32,8 @@
 
 #include "terra.h"
 
+#include "VoxCavity.h"
+
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -475,6 +477,22 @@ bool runVoxTransparentTests()
                  "34 (voxel 33 is the solid cap of the colored range).");
     TEST_REQUIRE(!vMap.voxLayers.isTransparent(offAt(kPx, kPy), 33),
                  "the new top voxel (33) must be solid.");
+    // Regression: the crater floor must NOT render black. The stripped
+    // surface (34) still sits inside the stale transparent range
+    // [34..39] — the color lookup has to fall through it to the nearest
+    // solid voxel below (the colored layer at 27), never to the stored
+    // zero rgb of the transparent range.
+    {
+        const int off = offAt(kPx, kPy);
+        const unsigned int light = vMap.RnrBuf[off] & 0x7F;
+        TEST_REQUIRE(vMap.getColor32(off) ==
+                         vrtMap::trueColor32(0xFF000000u | 0x00102030u,
+                                             light),
+                     "the stripped crater floor must show the solid voxel "
+                     "below, not black.");
+        TEST_REQUIRE((vMap.getColor32(off) & 0x00FFFFFFu) != 0,
+                     "the crater floor must not be black.");
+    }
     std::printf("[PASS] transparent voxels on the top are destroyed with a "
                 "height recalc.\n");
 
@@ -561,6 +579,242 @@ bool runVoxTransparentTests()
     return true;
 }
 
+
+// ---------------------------------------------------------------------------
+// 125 — the cavity overlay mesher: a plateau column with a transparent
+// pocket gets island underside + cavity floor; a solid column emits
+// nothing; vertices are never black.
+// ---------------------------------------------------------------------------
+
+bool runVoxCavityMesherTests()
+{
+    MapEditor::Tests::TestContext& ctx = MapEditor::Tests::context();
+
+    TEST_REQUIRE(!ctx.tempRoot.empty() && fs::exists(ctx.tempRoot),
+                 "WorldRoundTripTests did not provide the temporary world.");
+    TEST_REQUIRE(!ctx.worldName.empty(),
+                 "WorldRoundTripTests did not provide the world name.");
+
+    MapEditor::setupErrHWrapper();
+
+    const fs::path loadRoot = ctx.tempRoot / "load_root_voxcavitymesh";
+    TEST_REQUIRE(buildLoadRoot(ctx.gameDir, ctx.tempWorldDir,
+                               fs::u8path(ctx.worldName), loadRoot),
+                 "could not build the load content root.");
+
+    MapEditor::EditorSession session;
+    session.setUndoCoalescingWindowMs(0);
+    TEST_REQUIRE(session.setGameDir(loadRoot.u8string()),
+                 "EditorSession::setGameDir() failed.");
+    TEST_REQUIRE(session.scanWorlds() && session.worldCount() >= 1,
+                 "EditorSession::scanWorlds() found no world.");
+    TEST_REQUIRE(session.loadWorld(0), "EditorSession::loadWorld(0) failed.");
+
+    // A 5x5 playground: plateau 500, geo 10, transparent pocket [251..300]
+    // in the centre column; ring neighbors at 100.
+    for (int j = -2; j <= 2; ++j) {
+        for (int i = -2; i <= 2; ++i) {
+            const int off = offAt(kPx + i, kPy + j);
+            vMap.VxGBuf[off] = 10;
+            vMap.VxDBuf[off] = 100;
+            vMap.AtrBuf[off] = 0;
+            vMap.SurBuf[off] = 5;
+        }
+    }
+    {
+        const int off = offAt(kPx, kPy);
+        vMap.VxDBuf[off] = 500;
+        vMap.voxLayers.paint(static_cast<std::uint32_t>(off), 251, 300, 0, 0,
+                             0, /*transparent=*/true);
+    }
+
+    // The heightfield renders the base at the display height (251); the
+    // overlay renders the island: cap at 500 + underside at 301 + side
+    // quads against the lower ring. The floor at 251 must NOT be emitted
+    // (the heightfield draws it — re-emitting would z-fight).
+    TEST_REQUIRE(vMap.cavityDisplayHeight(offAt(kPx, kPy)) == 251,
+                 "the display height must be the base top under the pocket.");
+    std::vector<VoxCavityVertex> tris;
+    voxCavityAppendColumn(vMap, kPx, kPy, tris);
+    TEST_REQUIRE(!tris.empty(),
+                 "a cavity column must produce overlay geometry.");
+    {
+        bool hasCeiling = false, hasCap = false, hasFloorTriangle = false;
+        for (const VoxCavityVertex& v : tris) {
+            if (v.z == 301.f) {
+                hasCeiling = true;
+            }
+        }
+        // The island CAP lives in the merged per-row generator, not the
+        // per-column mesher.
+        std::vector<VoxCavityVertex> caps;
+        voxCavityAppendRowCaps(vMap, kPy, kPx - 2, kPx + 2, caps);
+        for (const VoxCavityVertex& v : caps) {
+            if (v.z == 500.f) {
+                hasCap = true;
+            }
+        }
+        // A full triangle in the z=251 plane would be a floor quad
+        // (z-fighting with the heightfield) — edge vertices at 251 (side
+        // quads of the base wall) are fine.
+        for (size_t i = 0; i + 2 < tris.size(); i += 3) {
+            if (tris[i].z == 251.f && tris[i + 1].z == 251.f &&
+                tris[i + 2].z == 251.f) {
+                hasFloorTriangle = true;
+            }
+        }
+        TEST_REQUIRE(!hasFloorTriangle,
+                     "the floor at the display height belongs to the "
+                     "heightfield, not the overlay.");
+        TEST_REQUIRE(hasCap,
+                     "the island cap (z=500) must come from the row "
+                     "merger.");
+        TEST_REQUIRE(hasCeiling,
+                     "the island underside (z=301) must be emitted.");
+    }
+    for (const VoxCavityVertex& v : tris) {
+        TEST_REQUIRE((v.diffuse & 0x00FFFFFFu) != 0,
+                     "cavity vertices must not be black (0x%08X).",
+                     v.diffuse);
+    }
+    // The ring neighbors are LOWER (height 100) and carry no transparent
+    // ranges — the column must draw ALL FOUR side walls by itself; the
+    // west/south planes sit a small epsilon inside the neighbor cell.
+    {
+        bool hasWest = false, hasSouth = false;
+        for (const VoxCavityVertex& v : tris) {
+            if (v.x > kPx - 0.02f && v.x < kPx - 0.005f) {
+                hasWest = true;
+            }
+            if (v.y > kPy - 0.02f && v.y < kPy - 0.005f) {
+                hasSouth = true;
+            }
+        }
+        TEST_REQUIRE(hasWest,
+                     "the west face against lower terrain must be emitted.");
+        TEST_REQUIRE(hasSouth,
+                     "the south face against lower terrain must be emitted.");
+    }
+    std::printf("[PASS] the cavity mesher emits floor/ceiling with colors.\n");
+
+    // A ring column (height 100, no transparent ranges) emits nothing.
+    std::vector<VoxCavityVertex> ringTris;
+    voxCavityAppendColumn(vMap, kPx + 1, kPy, ringTris);
+    TEST_REQUIRE(ringTris.empty(),
+                 "a column without transparent ranges must emit nothing.");
+    std::printf("[PASS] non-cavity columns emit no overlay geometry.\n");
+
+    // The normalize pass must not break the mesher: an interior pocket is
+    // not stripped (height stays 500) and re-meshing is stable.
+    vMap.normalizeTransparentColumn(offAt(kPx, kPy), 500);
+    std::vector<VoxCavityVertex> strippedTris;
+    voxCavityAppendColumn(vMap, kPx, kPy, strippedTris);
+    TEST_REQUIRE((vMap.SGetAlt(offAt(kPx, kPy)) >> VX_FRACTION) == 500,
+                 "an interior pocket must survive normalization.");
+    TEST_REQUIRE(strippedTris.size() == tris.size(),
+                 "re-meshing a normalized column must be stable.");
+    std::printf("[PASS] the mesher handles stripped columns.\n");
+
+    session.unloadWorld();
+    return true;
+}
+
+
+// ---------------------------------------------------------------------------
+// 126 — painting a colored layer under/into a cavity: the cavity floor the
+// heightfield renders (at the display height) must show the PAINTED color,
+// not the column top color.
+// ---------------------------------------------------------------------------
+
+bool runVoxCavityFloorColorTests()
+{
+    MapEditor::Tests::TestContext& ctx = MapEditor::Tests::context();
+
+    TEST_REQUIRE(!ctx.tempRoot.empty() && fs::exists(ctx.tempRoot),
+                 "WorldRoundTripTests did not provide the temporary world.");
+    TEST_REQUIRE(!ctx.worldName.empty(),
+                 "WorldRoundTripTests did not provide the world name.");
+
+    MapEditor::setupErrHWrapper();
+
+    const fs::path loadRoot = ctx.tempRoot / "load_root_voxfloorcolor";
+    TEST_REQUIRE(buildLoadRoot(ctx.gameDir, ctx.tempWorldDir,
+                               fs::u8path(ctx.worldName), loadRoot),
+                 "could not build the load content root.");
+
+    MapEditor::EditorSession session;
+    session.setUndoCoalescingWindowMs(0);
+    TEST_REQUIRE(session.setGameDir(loadRoot.u8string()),
+                 "EditorSession::setGameDir() failed.");
+    TEST_REQUIRE(session.scanWorlds() && session.worldCount() >= 1,
+                 "EditorSession::scanWorlds() found no world.");
+    TEST_REQUIRE(session.loadWorld(0), "EditorSession::loadWorld(0) failed.");
+
+    // Plateau 500, geo 10, transparent pocket [251..300] in the centre.
+    for (int j = -3; j <= 3; ++j) {
+        for (int i = -3; i <= 3; ++i) {
+            const int off = offAt(kPx + i, kPy + j);
+            vMap.VxGBuf[off] = 10;
+            vMap.VxDBuf[off] = 500;
+            vMap.AtrBuf[off] = 0;
+            vMap.SurBuf[off] = 5;
+        }
+    }
+    {
+        const int off = offAt(kPx, kPy);
+        vMap.voxLayers.paint(static_cast<std::uint32_t>(off), 251, 300, 0, 0,
+                             0, /*transparent=*/true);
+    }
+    TEST_REQUIRE(vMap.cavityDisplayHeight(offAt(kPx, kPy)) == 251,
+                 "the display height must start at 251.");
+
+    // The user's scenario: yellow paint at H=252, depth=100 → layers
+    // [153..252] — the paint eats into the cavity bottom (transparent
+    // becomes [253..300]) and colors the base under the island.
+    {
+        MapEditor::BrushTool brush(session);
+        MapEditor::BrushParams p;
+        p.effect = MapEditor::BrushEffect::SetColor;
+        p.mode = MapEditor::BrushMode::Dam;
+        p.shape = MapEditor::BrushShape::FilledCircle;
+        p.radius = 2;
+        p.colorRgb = 0x00E6D200; // yellow
+        p.paintHeight = 252;
+        p.paintDepth = 100;
+        TEST_REQUIRE(brush.applyStamp(kPx, kPy, p),
+                     "the under-island paint was refused.");
+    }
+    // The cavity shrunk to [253..300] — the display height follows.
+    TEST_REQUIRE(vMap.cavityDisplayHeight(offAt(kPx, kPy)) == 253,
+                 "painting into the cavity bottom must shrink it.");
+    // The color the RENDERER shows at the column: the painted layer under
+    // the cavity (seen through the floor cut), NOT the column top color.
+    {
+        const int off = offAt(kPx, kPy);
+        const unsigned int light = vMap.RnrBuf[off] & 0x7F;
+        TEST_REQUIRE(vMap.getColor32(off) ==
+                         vrtMap::trueColor32(0xFF000000u | 0x00E6D200u,
+                                             light),
+                     "the cavity floor must show the painted yellow layer "
+                     "(got 0x%06X).",
+                     vMap.getColor32(off) & 0xFFFFFF);
+    }
+    std::printf("[PASS] painting under the island colors the cavity floor.\n");
+
+    // Ring-0 undersides: the island is fully interior (same-height
+    // ring), so the per-column mesher emits nothing — the visible parts
+    // are the merged row cap (above) and the heightfield floor.
+    std::vector<VoxCavityVertex> tris;
+    voxCavityAppendColumn(vMap, kPx, kPy, tris);
+    TEST_REQUIRE(tris.empty(),
+                 "a fully interior island column emits no per-column "
+                 "geometry with ring-0 undersides.");
+    std::printf("[PASS] the overlay follows the repainted cavity bottom.\n");
+
+    session.unloadWorld();
+    return true;
+}
+
 } // namespace
 
 MAP_EDITOR_REGISTER_TEST("Voxel layer painting", 117, runVoxLayerTests);
@@ -568,3 +822,7 @@ MAP_EDITOR_REGISTER_TEST("Voxel layer paint through an image mask", 122,
                          runVoxLayerMaskTests);
 MAP_EDITOR_REGISTER_TEST("Transparent voxels in the dam", 124,
                          runVoxTransparentTests);
+MAP_EDITOR_REGISTER_TEST("Cavity overlay mesher", 125,
+                         runVoxCavityMesherTests);
+MAP_EDITOR_REGISTER_TEST("Cavity floor paint color", 126,
+                         runVoxCavityFloorColorTests);

@@ -38,6 +38,16 @@
 #include "AIPrm.h"
 
 #include "Mutation.h"
+
+#include "../Render/tilemap/VoxCavityOverlay.h"
+
+// Transparent-voxel cavity overlay (floating islands / exposed pockets) —
+// one instance per universe, tied to the game's tilemap. Updates arrive
+// through the tilemap's UpdateMap callback (terraform runs on the logic
+// thread; the overlay is thread-safe).
+static VoxCavityOverlay g_voxCavityOverlay;
+
+#include "VoxPerf.h"
 #include "ClusterFind.h"
 #include "Squad.h"
 #include "IronPort.h"
@@ -171,6 +181,8 @@ terUniverse::~terUniverse()
 
 	delete activeRegionDispatcher_;
 
+	// The cavity overlay listens to the tilemap — detach it first.
+	g_voxCavityOverlay.shutdown();
 	if (terMapPoint) {
 		terMapPoint->Release(); 
 		terMapPoint = nullptr;
@@ -1054,6 +1066,12 @@ bool terUniverse::universalLoad(MissionDescription& missionToLoad, SavePrm& data
     if (!terMapPoint) {
         terMapPoint = terScene->CreateMap(GreateTerraInterface(),
                                           universe()->Players.size());
+        // Overlay for transparent voxel cavities (islands, pockets): the
+        // tilemap's full-map UpdateMap from SetBuffer fired before we could
+        // register — init() rebuilds everything once.
+        voxperf::log("universe: CreateMap done, overlay init START");
+        g_voxCavityOverlay.init(terScene, terMapPoint);
+        voxperf::log("universe: overlay init END");
     }
 
     PlayerVect::iterator pi;

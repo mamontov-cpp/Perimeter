@@ -18,7 +18,8 @@ bool VoxColLayers::lookup(uint32_t cellOffset, int height, uint32_t* rgb,
                           uint8_t* flags) const
 {
 	*flags = 0;
-	if (height < 0 || height > 0xFFFF) {
+	if (height < 0 || height > 0xFFFF ||
+	    !mightHaveColumn(cellOffset)) {
 		return false;
 	}
 	// Бинарный поиск колонки.
@@ -99,6 +100,9 @@ bool VoxColLayers::lookupSolidBelow(uint32_t cellOffset, int height,
 
 int VoxColLayers::findColumn(uint32_t cellOffset) const
 {
+	if (!mightHaveColumn(cellOffset)) {
+		return -1;
+	}
 	int lo = 0;
 	int hi = static_cast<int>(col_.size()) - 1;
 	while (lo <= hi) {
@@ -140,6 +144,7 @@ bool VoxColLayers::sameColor(const VoxLayerRange& a, uint8_t r, uint8_t g,
 void VoxColLayers::setColumn(uint32_t cellOffset, const VoxLayerRange* ranges,
                              int count)
 {
+	++version;
 	if (count < 0) {
 		count = 0;
 	}
@@ -150,6 +155,14 @@ void VoxColLayers::setColumn(uint32_t cellOffset, const VoxLayerRange* ranges,
 	// the begin_ shift (4-byte ints), unavoidable with a flat pool.
 	const int idx = findColumn(cellOffset);
 	if (idx >= 0) {
+		if (count == 0) {
+			// Удаление колонки — блок освобождается.
+			const size_t blk =
+				static_cast<size_t>(cellOffset) >> kBlockShift;
+			if (blk < blockCount_.size() && blockCount_[blk] > 0) {
+				--blockCount_[blk];
+			}
+		}
 		const uint32_t b = begin_[static_cast<size_t>(idx)];
 		const uint32_t e =
 			idx + 1 < static_cast<int>(begin_.size())
@@ -179,7 +192,10 @@ void VoxColLayers::setColumn(uint32_t cellOffset, const VoxLayerRange* ranges,
 	if (count == 0) {
 		return;
 	}
-	// Вставка новой колонки с сохранением сортировки: пул сращивается
+	// Вставка новой колонки: индекс блока учитывает её.
+	growBlockIndex(cellOffset);
+	++blockCount_[static_cast<size_t>(cellOffset) >> kBlockShift];
+	// Вставка с сохранением сортировки: пул сращивается
 	// в позиции poolPos — между диапазонами колонок pos-1 и pos.
 	size_t pos = 0;
 	{
@@ -317,4 +333,52 @@ void VoxColLayers::clear()
 	col_.clear();
 	begin_.clear();
 	ranges_.clear();
+	blockCount_.clear();
+}
+
+void VoxColLayers::buildBlockIndex()
+{
+	blockCount_.clear();
+	if (col_.empty()) {
+		return;
+	}
+	const size_t blocks =
+		(static_cast<size_t>(col_.back()) >> kBlockShift) + 1;
+	blockCount_.assign(blocks, 0u);
+	for (uint32_t off : col_) {
+		++blockCount_[static_cast<size_t>(off) >> kBlockShift];
+	}
+}
+
+void VoxColLayers::growBlockIndex(uint32_t cellOffset)
+{
+	const size_t b = static_cast<size_t>(cellOffset) >> kBlockShift;
+	if (b >= blockCount_.size()) {
+		blockCount_.resize(b + 1, 0u);
+	}
+}
+
+std::pair<int, int> VoxColLayers::columnIndexRange(uint32_t offBeg,
+                                                   uint32_t offEnd) const
+{
+	const auto lo = std::lower_bound(col_.begin(), col_.end(), offBeg);
+	const auto hi = std::upper_bound(col_.begin(), col_.end(), offEnd);
+	return {static_cast<int>(lo - col_.begin()),
+	        static_cast<int>(hi - col_.begin())};
+}
+
+bool VoxColLayers::columnHasTransparent(uint32_t cellOffset) const
+{
+	const int idx = findColumn(cellOffset);
+	if (idx < 0) {
+		return false;
+	}
+	int count = 0;
+	const VoxLayerRange* ranges = columnRanges(idx, &count);
+	for (int i = 0; i < count; ++i) {
+		if (ranges[i].flags & VOX_LAYER_TRANSPARENT) {
+			return true;
+		}
+	}
+	return false;
 }

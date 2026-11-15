@@ -30,6 +30,7 @@
 #include <vector>
 
 #include "BuildingModels.h"
+#include "../../Render/tilemap/VoxCavityOverlay.h"
 
 class cInterfaceRenderDevice;
 class cVisGeneric;
@@ -210,6 +211,11 @@ private:
 
     /// Placed-building model instances + the scene light.
     BuildingModels buildingModels_;
+
+    /// Transparent-voxel cavity overlay (floating islands, exposed
+    /// pockets) — voxel-segment geometry on top of the heightfield mesh.
+    /// Lives and dies with the tilemap (UpdateMap callback registered).
+    VoxCavityOverlay cavityOverlay_;
 
     /// Icon-baking scene stack (lazy) — separate from the terrain scene so
     /// baking never disturbs the viewport state; same device.
