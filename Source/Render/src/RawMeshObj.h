@@ -40,8 +40,12 @@ private:
 	// nodes).
 	std::mutex mutex_;
 	std::shared_ptr<const std::vector<sVertexXYZDT1>> triangles_;
-	// Fixed pool of owned draw buffers (one per chunk), see Draw().
+	// Fixed pool of owned STATIC draw buffers (one per chunk), see Draw():
+	// uploaded once per mesh change, submitted per frame.
 	std::vector<std::unique_ptr<DrawBuffer>> buffers_;
+	std::shared_ptr<const std::vector<sVertexXYZDT1>> uploaded_;
+	// Copy of the uploaded mesh for per-chunk diffing on re-upload.
+	std::vector<sVertexXYZDT1> uploadedCopy_;
 };
 
 #endif // _RAW_MESH_OBJ_H_
