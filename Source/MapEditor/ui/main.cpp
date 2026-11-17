@@ -21,6 +21,15 @@
 #include "errh_wrapper.h"
 #include "shims.h"
 
+#ifndef _PERIMETER_
+#define _PERIMETER_ 1
+#endif
+#ifndef _TX3D_LIBRARY_
+#define _TX3D_LIBRARY_ 1
+#endif
+#include "terra.h"
+#include "VoxLayers.h"
+
 // Lifecycle tracing (no-op unless MAP_EDITOR_TRACE is set).
 #include "EditorTrace.h"
 
@@ -222,6 +231,88 @@ int main(int argc, char *argv[])
             };
             QTimer::singleShot(13000, &window, [capture] { capture("01_topdown"); });
             // Minimap shots + viewRect logging (GPU minimap repro).
+            // Island repro: locate a transparent cavity in the loaded
+            // world, aim the 3D camera at it from three azimuths and
+            // capture — offline diagnosis of missing overlay faces.
+            const QString islandTest = qEnvironmentVariable("MAP_EDITOR_ISLANDTEST");
+            if (!islandTest.isEmpty()) {
+                // "1" — auto-find a cavity; "x,y,rot,tilt,lift,focus" —
+                // explicit repro (MAP_EDITOR_ISLANDTEST=2430,2165,0,115,100,600).
+                QTimer::singleShot(21500, &window, [&window, islandTest] {
+                    MapEditor::ViewportWidget *vp = window.debugViewport();
+                    if (!vp) return;
+                    int ix = -1, iy = -1;
+                    double rot = 0.0, tilt = 138.0;
+                    int lift = 300, focus = 260;
+                    const QStringList parts = islandTest.split(QLatin1Char(','));
+                    if (parts.size() == 6) {
+                        ix = parts[0].toInt();
+                        iy = parts[1].toInt();
+                        rot = parts[2].toDouble();
+                        tilt = parts[3].toDouble();
+                        lift = parts[4].toInt();
+                        focus = parts[5].toInt();
+                    } else {
+                        for (int i = 0; i < vMap.voxLayers.columnCount(); ++i) {
+                            int cnt = 0;
+                            const VoxLayerRange *rr =
+                                vMap.voxLayers.columnRanges(i, &cnt);
+                            bool transparent = false;
+                            for (int q = 0; q < cnt; ++q) {
+                                if (rr[q].flags & VOX_LAYER_TRANSPARENT) {
+                                    transparent = true;
+                                    break;
+                                }
+                            }
+                            if (transparent) {
+                                const unsigned off =
+                                    vMap.voxLayers.columnOffset(i);
+                                ix = static_cast<int>(off % vMap.H_SIZE);
+                                iy = static_cast<int>(off / vMap.H_SIZE);
+                                break;
+                            }
+                        }
+                    }
+                    if (ix < 0) {
+                        MapEditor::editorTrace("islandtest: no cavity found");
+                        return;
+                    }
+                    vp->centerOnCell(QPoint(ix, iy));
+                    MapEditor::View3DCamera cam;
+                    cam.turnAngleDeg = rot;
+                    cam.leanDeg = tilt;
+                    cam.cameraDZ = lift;
+                    cam.focusC = focus;
+                    vp->setObliqueCamera(cam);
+                    vp->setViewMode(ViewMode::Oblique);
+                    MapEditor::editorTrace("islandtest: target (%d,%d) cam "
+                                           "rot%.0f tilt%.0f lift%d f%d",
+                                           ix, iy, rot, tilt, lift, focus);
+                });
+                QTimer::singleShot(23500, [capture] { capture("30_island_t0"); });
+                QTimer::singleShot(24500, [&window] {
+                    MapEditor::ViewportWidget *vp = window.debugViewport();
+                    if (!vp) return;
+                    MapEditor::View3DCamera cam;
+                    cam.turnAngleDeg = 120.0;
+                    cam.leanDeg = 138.0;
+                    cam.cameraDZ = 300;
+                    cam.focusC = 260;
+                    vp->setObliqueCamera(cam);
+                });
+                QTimer::singleShot(25500, [capture] { capture("31_island_t120"); });
+                QTimer::singleShot(26500, [&window] {
+                    MapEditor::ViewportWidget *vp = window.debugViewport();
+                    if (!vp) return;
+                    MapEditor::View3DCamera cam;
+                    cam.turnAngleDeg = 240.0;
+                    cam.leanDeg = 138.0;
+                    cam.cameraDZ = 300;
+                    cam.focusC = 260;
+                    vp->setObliqueCamera(cam);
+                });
+                QTimer::singleShot(27500, [capture] { capture("32_island_t240"); });
+            }
             const auto captureMini = [&window, shots](const char *name) {
                 MapEditor::MinimapWidget *mm = window.debugMinimap();
                 if (!mm) {

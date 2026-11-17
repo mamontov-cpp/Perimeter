@@ -15,8 +15,10 @@ const float kTopShade = 1.0f;
 const float kSideShade = 0.75f;
 const float kBottomShade = 0.55f;
 // Side-plane epsilon (fraction of a cell) against the heightfield cliff
-// triangles at plateau boundaries.
-const float kSideEps = 0.01f;
+// triangles at plateau boundaries. Must exceed the depth-buffer precision
+// at gameplay distances (near 30 / far 1e5 gives ~2 cm at 3k units) —
+// 0.01 z-fought the cliffs into blurry streaks.
+const float kSideEps = 0.1f;
 
 struct Segment
 {
@@ -89,8 +91,9 @@ std::uint32_t shade(std::uint32_t rgb, float factor, unsigned light)
 	return 0xFF000000u | (r << 16) | (g << 8) | b;
 }
 
-/// One quad in both windings. First triangle fan (a,b,c)+(a,c,d), then the
-/// reversed fan so the face is visible from both sides.
+/// One quad, single winding only. The overlay draws with culling disabled
+/// (cRawMeshObj::Draw), so the reversed fan would be pure duplication -
+/// halving the vertex count halves both the upload and the GPU vertex load.
 void quad(std::vector<VoxCavityVertex>& out,
           const VoxCavityVertex& a, const VoxCavityVertex& b,
           const VoxCavityVertex& c, const VoxCavityVertex& d)
@@ -101,12 +104,6 @@ void quad(std::vector<VoxCavityVertex>& out,
 	out.push_back(a);
 	out.push_back(c);
 	out.push_back(d);
-	out.push_back(a);
-	out.push_back(c);
-	out.push_back(b);
-	out.push_back(a);
-	out.push_back(d);
-	out.push_back(c);
 }
 
 } // namespace
@@ -277,7 +274,11 @@ void voxCavityAppendColumn(vrtMap& m, int x, int y,
 	}
 	std::vector<Segment> segments;
 	if (!solidSegments(m, static_cast<uint32_t>(off), height, segments)) {
-		return;
+		// No transparent ranges: a SOLID column — it gets a chunk when it
+		// borders a void (the overlay enumerates cavity neighbors too):
+		// its faces against emptied neighbors render the boolean-cut /
+		// cliff walls from the solid side. One solid segment.
+		segments.push_back({0, height - 1});
 	}
 	// The heightfield renders the base surface at the display height
 	// (cavityDisplayHeight) — the overlay must NOT re-emit that floor
@@ -331,56 +332,43 @@ void voxCavityAppendColumn(vrtMap& m, int x, int y,
 			b = {static_cast<float>(x + 1), static_cast<float>(y), z, col};
 			c = {static_cast<float>(x + 1), static_cast<float>(y + 1), z, col};
 			d = {static_cast<float>(x), static_cast<float>(y + 1), z, col};
-			quad(out, a, d, c, b); // reversed winding family, both emitted
+			quad(out, a, d, c, b); // south-facing underside
 		}
-		// Side faces on ALL FOUR directions, computed by SPAN SUBTRACTION:
-		// each neighbor's solid spans are built once (its height minus its
-		// transparent ranges), the visible runs are our segment minus those
-		// spans, merged by color. Per-voxel neighbor probing (a binary
-		// search per voxel per direction) made the full-map rebuild of a
-		// big cavity billions of comparisons — a hang at load.
+	}
 		const int npx = m.XCYCL(x + 1);
-		const int nmx = m.XCYCL(x - 1);
-		const int npy = m.YCYCL(y + 1);
-		const int nmy = m.YCYCL(y - 1);
+		const int npy = m.XCYCL(y + 1);
 		const int noffE = y * mapW + npx;
-		const int noffW = y * mapW + nmx;
 		const int noffN = npy * mapW + x;
-		const int noffS = nmy * mapW + x;
-		const bool westNeighborCavity =
-			m.voxLayers.columnHasTransparent(static_cast<uint32_t>(noffW));
-		const bool southNeighborCavity =
-			m.voxLayers.columnHasTransparent(static_cast<uint32_t>(noffS));
+		// Our column's ranges (colors + the voids) for the differ.
 		const VoxLayerRange* myRanges = nullptr;
 		int myRangeCount = 0;
 		{
-			const int myIdx = m.voxLayers.findColumn(
+			const int myIdx0 = m.voxLayers.findColumn(
 				static_cast<uint32_t>(off));
-			if (myIdx >= 0) {
-				myRanges = m.voxLayers.columnRanges(myIdx, &myRangeCount);
+			if (myIdx0 >= 0) {
+				myRanges =
+				    m.voxLayers.columnRanges(myIdx0, &myRangeCount);
 			}
 		}
+		// Side faces on ALL FOUR directions — the SYMMETRIC VOXEL DIFFER:
+		// the boundary plane emits wherever EXACTLY ONE side is solid
+		// (a boolean cut must show the solid material's faces bordering
+		// the void, whichever column owns the solid — the previous rules
+		// only drew the cavity column's own faces, so a cut's interior
+		// walls facing solid rock never rendered). Heights are walked once
+		// per direction with run merging: no per-voxel probing, no
+		// allocations. Ownership: EVERY plane is drawn once — by the
+		// east/north column's +x/+y walk (which runs unconditionally; a
+		// solid neighbor of a cavity is enumerated as a cavity neighbor).
+		const VoxLayerRange* ctr = myRanges;
+		const int ctrCount = myRangeCount;
 		for (int dir = 0; dir < 4; ++dir) {
-			// Ownership: a boundary plane between TWO cavity columns is
-			// drawn once — by the east/north column; against a non-cavity
-			// neighbor (lower terrain, no overlay chunks) this column
-			// draws its own west/south faces.
-			if (dir == 1 && westNeighborCavity) {
-				continue;
+			if (dir == 1 || dir == 3) {
+				continue; // the west/south neighbor draws this plane (+x/+y rule)
 			}
-			if (dir == 3 && southNeighborCavity) {
-				continue;
-			}
-			const int noff = dir == 0 ? noffE : dir == 1 ? noffW
-			                    : dir == 2 ? noffN : noffS;
+			const int noff = dir == 0 ? noffE : noffN;
 			const int nh =
 				m.VxDBuf[noff] != 0 ? m.VxDBuf[noff] : m.VxGBuf[noff];
-			// The neighbor is EMPTY exactly in its transparent ranges and
-			// above its top — those (clamped to our segment) are the only
-			// heights where a side face is needed. (The previous walk
-			// emitted the neighbor's SOLID stretches instead and skipped
-			// the empty ones — every column emitted full side spans and
-			// the mesh ballooned to millions of vertices.)
 			const VoxLayerRange* ntr = nullptr;
 			int ntrCount = 0;
 			{
@@ -390,38 +378,86 @@ void voxCavityAppendColumn(vrtMap& m, int x, int y,
 					ntr = m.voxLayers.columnRanges(nidx, &ntrCount);
 				}
 			}
-			int ci = 0; // linear color cursor into myRanges
-			auto emitMerged = [&](int zBeg, int zEnd) {
-				// Emit [zBeg..zEnd] split at voxel color changes.
-				int z = zBeg;
-				while (z <= zEnd) {
-					const std::uint32_t rgb0 =
-						voxelRgbHinted(myRanges, myRangeCount, &ci, z,
-						               fallback);
-					int ze = z;
-					while (ze + 1 <= zEnd &&
-					       voxelRgbHinted(myRanges, myRangeCount, &ci,
-					                      ze + 1, fallback) == rgb0) {
-						++ze;
-					}
-					emitSide(out, dir, x, y, z, ze + 1,
-					         shade(rgb0, kSideShade, light));
-					z = ze + 1;
+			int ci = 0;  // color cursor into myRanges
+			int ni = 0;  // cursor into the neighbor's ranges
+			int ti = 0;  // cursor into our transparent ranges
+			int tj = 0;  // cursor into the neighbor's transparent ranges
+			auto nTransparentAt = [&](int z) {
+				while (tj < ntrCount &&
+				       (!(ntr[tj].flags & VOX_LAYER_TRANSPARENT) ||
+				        ntr[tj].z1 < z)) {
+					++tj;
 				}
+				return tj < ntrCount && ntr[tj].z0 <= z;
 			};
-			for (int q = 0; q < ntrCount; ++q) {
-				if (!(ntr[q].flags & VOX_LAYER_TRANSPARENT)) {
+			auto neighborRgb = [&](int z) {
+				while (ni < ntrCount && ntr[ni].z1 < z) {
+					++ni;
+				}
+				if (ni < ntrCount && ntr[ni].z0 <= z &&
+				    !(ntr[ni].flags & VOX_LAYER_TRANSPARENT)) {
+					return (static_cast<std::uint32_t>(ntr[ni].r) << 16) |
+					       (static_cast<std::uint32_t>(ntr[ni].g) << 8) |
+					       ntr[ni].b;
+				}
+				return m.defaultColumnRgb(noff);
+			};
+			// Walk the plane up to the TALLER of the two columns: a
+			// short column next to a tall one must emit the stretch of
+			// wall above its own top (bounded by `height` alone, the
+			// plane was walked only to the shorter side's height and
+			// the band above stayed a see-through hole). Above both
+			// tops the differ is void==void — nothing is emitted, so
+			// no z-fighting with the heightfield cliffs.
+			const int walkMax = height > nh ? height : nh;
+			int z = 0;
+			while (z < walkMax) {
+				while (ti < ctrCount &&
+				       (!(ctr[ti].flags & VOX_LAYER_TRANSPARENT) ||
+				        ctr[ti].z1 < z)) {
+					++ti;
+				}
+				const bool cSolid =
+				    z < height && !(ti < ctrCount && ctr[ti].z0 <= z);
+				const bool nSolid = z < nh && !nTransparentAt(z);
+				if (cSolid == nSolid) {
+					++z;
 					continue;
 				}
-				const int b = ntr[q].z0 > s.z0 ? ntr[q].z0 : s.z0;
-				const int e = ntr[q].z1 < s.z1 ? ntr[q].z1 : s.z1;
-				if (b <= e) {
-					emitMerged(b, e);
+				const bool cSide = cSolid;
+				const std::uint32_t rgb0 =
+				    cSide ? voxelRgbHinted(myRanges, myRangeCount, &ci,
+				                           z, fallback)
+				          : neighborRgb(z);
+				int ze = z;
+				while (ze + 1 < walkMax) {
+					const int zn = ze + 1;
+					while (ti < ctrCount &&
+					       (!(ctr[ti].flags & VOX_LAYER_TRANSPARENT) ||
+					        ctr[ti].z1 < zn)) {
+						++ti;
+					}
+					const bool cSolidN =
+					    zn < height &&
+					    !(ti < ctrCount && ctr[ti].z0 <= zn);
+					const bool nSolidN =
+					    zn < nh && !nTransparentAt(zn);
+					if (cSolidN == nSolidN || cSolidN != cSolid) {
+						break;
+					}
+					const std::uint32_t rgbN =
+					    cSolidN ? voxelRgbHinted(myRanges, myRangeCount,
+					                             &ci, zn, fallback)
+					            : neighborRgb(zn);
+					if (rgbN != rgb0) {
+						break;
+					}
+					ze = zn;
 				}
-			}
-			if (nh <= s.z1) {
-				emitMerged(nh > s.z0 ? nh : s.z0, s.z1);
+
+				emitSide(out, dir, x, y, z, ze + 1,
+				         shade(rgb0, kSideShade, light));
+				z = ze + 1;
 			}
 		}
-	}
 }

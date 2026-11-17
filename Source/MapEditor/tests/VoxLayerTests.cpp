@@ -678,22 +678,53 @@ bool runVoxCavityMesherTests()
                      v.diffuse);
     }
     // The ring neighbors are LOWER (height 100) and carry no transparent
-    // ranges — the column must draw ALL FOUR side walls by itself; the
-    // west/south planes sit a small epsilon inside the neighbor cell.
+    // ranges. Ownership: every plane is drawn once, by the west/south
+    // column's +x/+y walk - so our column emits its east/north walls (a
+    // small epsilon inside the neighbor cell), while the west/south walls
+    // come from the ring neighbors' meshes (epsilon inside OUR cell) and
+    // run up to max(own, neighbor) height = 500.
     {
-        bool hasWest = false, hasSouth = false;
+        bool hasEast = false, hasNorth = false;
         for (const VoxCavityVertex& v : tris) {
-            if (v.x > kPx - 0.02f && v.x < kPx - 0.005f) {
+            if (v.x > kPx + 1.05f && v.x < kPx + 1.25f) {
+                hasEast = true;
+            }
+            if (v.y > kPy + 1.05f && v.y < kPy + 1.25f) {
+                hasNorth = true;
+            }
+        }
+        TEST_REQUIRE(hasEast,
+                     "the east face against lower terrain must be emitted "
+                     "by the tall column itself.");
+        TEST_REQUIRE(hasNorth,
+                     "the north face against lower terrain must be emitted "
+                     "by the tall column itself.");
+        std::vector<VoxCavityVertex> westTris, southTris;
+        voxCavityAppendColumn(vMap, kPx - 1, kPy, westTris);
+        voxCavityAppendColumn(vMap, kPx, kPy - 1, southTris);
+        bool hasWest = false, hasSouth = false, westTall = false;
+        for (const VoxCavityVertex& v : westTris) {
+            if (v.x > kPx + 0.05f && v.x < kPx + 0.25f) {
                 hasWest = true;
             }
-            if (v.y > kPy - 0.02f && v.y < kPy - 0.005f) {
+            if (v.z > 400.f) {
+                westTall = true;
+            }
+        }
+        for (const VoxCavityVertex& v : southTris) {
+            if (v.y > kPy + 0.05f && v.y < kPy + 0.25f) {
                 hasSouth = true;
             }
         }
         TEST_REQUIRE(hasWest,
-                     "the west face against lower terrain must be emitted.");
+                     "the west face against lower terrain must be emitted "
+                     "by the west ring neighbor.");
         TEST_REQUIRE(hasSouth,
-                     "the south face against lower terrain must be emitted.");
+                     "the south face against lower terrain must be emitted "
+                     "by the south ring neighbor.");
+        TEST_REQUIRE(westTall,
+                     "the west wall must run to the taller column's height "
+                     "(max(own, neighbor) walk bound).");
     }
     std::printf("[PASS] the cavity mesher emits floor/ceiling with colors.\n");
 
@@ -801,16 +832,22 @@ bool runVoxCavityFloorColorTests()
     }
     std::printf("[PASS] painting under the island colors the cavity floor.\n");
 
-    // Ring-0 undersides: the island is fully interior (same-height
-    // ring), so the per-column mesher emits nothing — the visible parts
-    // are the merged row cap (above) and the heightfield floor.
+    // The island is fully interior (same-height solid ring), but the
+    // transparent band [253..300] borders solid rock on every side - the
+    // symmetric differ emits the band's INTERIOR walls (visible through
+    // the slit). Everything emitted must live inside the band: no caps
+    // (merged per row), no floor (heightfield), no exterior walls.
     std::vector<VoxCavityVertex> tris;
     voxCavityAppendColumn(vMap, kPx, kPy, tris);
-    TEST_REQUIRE(tris.empty(),
-                 "a fully interior island column emits no per-column "
-                 "geometry with ring-0 undersides.");
-    std::printf("[PASS] the overlay follows the repainted cavity bottom.\n");
-
+    TEST_REQUIRE(!tris.empty(),
+                 "the transparent band against solid rock must emit the "
+                 "interior pocket walls.");
+    for (const VoxCavityVertex& v : tris) {
+        TEST_REQUIRE(v.z >= 253.f && v.z <= 301.f,
+                     "interior pocket geometry must stay inside the "
+                     "transparent band (z=%.0f).",
+                     v.z);
+    }
     session.unloadWorld();
     return true;
 }

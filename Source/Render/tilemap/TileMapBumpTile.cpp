@@ -17,6 +17,10 @@ float sBumpTile::SetVertexZ(TerraInterface* terra,int x,int y)
     return zi;
 }
 
+namespace {
+inline int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
+}
+
 sBumpTile::sBumpTile(cTileMap* tilemap, cTilemapTexturePool* pool, int lod, int xpos, int ypos)
 {
     this->tilemap = tilemap;
@@ -415,9 +419,19 @@ void sBumpTile::CalcPoint()
     int yFinish = yStart + js;
 
     float ux_step=uStep/static_cast<float>(1 << bumpGeoScale[LOD]);
-    float ux_base=uStart-xStart*ux_step;
     float vy_step=vStep/static_cast<float>(1 << bumpGeoScale[LOD]);
-    float vy_base=vStart-yStart*vy_step;
+
+    // UVs are quantized to the center of the texel of the cell the vertex stands on.
+    // Vertices at integer cell coordinates land exactly on texel boundaries, and the
+    // steep slope quads of cliffs interpolate across whole rows of neighboring texels,
+    // stretching diagonal bands of unrelated cells' colors down the wall faces.
+    const int tex_scale = bumpTexScale[LOD];
+    const float u_tex = ux_step * static_cast<float>(1 << tex_scale);
+    const float v_tex = vy_step * static_cast<float>(1 << tex_scale);
+    const int u_tex_min = -cTilemapTexturePool::TEXTURE_BORDER;
+    const int u_tex_max = (is >> tex_scale) + cTilemapTexturePool::TEXTURE_BORDER - 1;
+    const int v_tex_min = -cTilemapTexturePool::TEXTURE_BORDER;
+    const int v_tex_max = (js >> tex_scale) + cTilemapTexturePool::TEXTURE_BORDER - 1;
 
 
     BUMP_VTXTYPE* vb = reinterpret_cast<BUMP_VTXTYPE*>(LockVB());
@@ -435,8 +449,8 @@ void sBumpTile::CalcPoint()
             vb->y = yy;
             vb->z = SetVertexZ(terra, IUCLAMP(xx, xMap), IUCLAMP(yy, yMap)); //terra->GetHZeroPlast();
 
-            vb->u1() = xx * ux_step + ux_base;
-            vb->v1() = yy * vy_step + vy_base;
+            vb->u1() = uStart + (clampi((xx - xStart) >> tex_scale, u_tex_min, u_tex_max) + 0.5f) * u_tex;
+            vb->v1() = vStart + (clampi((yy - yStart) >> tex_scale, v_tex_min, v_tex_max) + 0.5f) * v_tex;
             vb++;
         }
     }

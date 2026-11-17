@@ -507,6 +507,7 @@ public:
 			// перестраивается только по реальным изменениям террейна —
 			// игровые обновления видимости юнитов высот не трогают).
 			++vMap.terraVersion;
+			vMap.terraVersionLastOff = offB;
 			if (!vMap.voxLayers.empty()) {
 				vMap.normalizeTransparentColumn(offB, oldD);
 			}

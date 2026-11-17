@@ -12,6 +12,7 @@
 #include <cctype>
 #include <climits>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -318,6 +319,7 @@ bool EditorSession::loadWorld(size_t worldIndex)
     editorTrace("EditorSession: WorldRender start");
     vMap.WorldRender();
     editorTrace("EditorSession: WorldRender done");
+
 
     clearUndoHistory();
     clearDiffState(); // difference data belongs to the previous world

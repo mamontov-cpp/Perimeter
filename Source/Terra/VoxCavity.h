@@ -53,6 +53,12 @@ struct VoxCavityVertex
 	std::uint32_t diffuse = 0xFF000000u; // ARGB
 	float u = 0.f;
 	float v = 0.f;
+
+	bool operator==(const VoxCavityVertex& o) const
+	{
+		return x == o.x && y == o.y && z == o.z && diffuse == o.diffuse;
+	}
+	bool operator!=(const VoxCavityVertex& o) const { return !(*this == o); }
 };
 
 /// Appends the cavity geometry of one map column (cell x, y) to `out`

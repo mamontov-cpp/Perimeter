@@ -21,6 +21,13 @@ class DrawBuffer;
 class cRawMeshObj : public cUnkObj
 {
 public:
+	// Vertices per Draw() chunk: bounds the 16-bit index space and sets
+	// the frustum-culling granularity. AABBs (setTriangles) and the draw
+	// submission MUST use the same value or the culling misaligns.
+	// A multiple of 6 (the mesher's quad fan size): chunks must not cut a
+	// triangle, and the sokol submit asserts indices % 3 == 0.
+	static constexpr size_t kChunkVerts = 60000;
+
 	cRawMeshObj();
 	~cRawMeshObj() override;
 
@@ -46,6 +53,11 @@ private:
 	std::shared_ptr<const std::vector<sVertexXYZDT1>> uploaded_;
 	// Copy of the uploaded mesh for per-chunk diffing on re-upload.
 	std::vector<sVertexXYZDT1> uploadedCopy_;
+	// Per-chunk bounding boxes, parallel to the 60000-vertex chunks Draw()
+	// submits: the mesh spans the whole map, so frustum-culling off-screen
+	// chunks skips most of the GPU vertex load per frame.
+	std::vector<Vect3f> chunkMins_;
+	std::vector<Vect3f> chunkMaxs_;
 };
 
 #endif // _RAW_MESH_OBJ_H_

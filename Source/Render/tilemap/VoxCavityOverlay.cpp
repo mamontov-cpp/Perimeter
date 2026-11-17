@@ -17,12 +17,58 @@
 #include "VoxPerf.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
+#include <cstdio>
+#include <string>
+#include <algorithm>
 
 namespace {
 
 /// The overlay's scene node: drains the pending update rects (once per
 /// frame at most) before the base class decides visibility.
+/// FNV-1a over every terrain input voxCavityAppendColumn reads for the
+/// column (own + XCYCL 4-neighborhood): surface height, light byte,
+/// default color and the layer ranges (the differ walks them for colors
+/// and transparency). Same inputs -> same mesh, so a matching hash lets
+/// the rebuild skip the ~35-50 us mesher walk entirely.
+std::uint64_t columnInputHash(int x, int y)
+{
+	const int mapW = static_cast<int>(vMap.H_SIZE);
+	const int mapH = static_cast<int>(vMap.V_SIZE);
+	std::uint64_t h = 1469598103934665603ULL;
+	auto mix = [&h](std::uint64_t v) {
+		h ^= v;
+		h *= 1099511628211ULL;
+	};
+	for (int d = -1; d < 4; ++d) {
+		const int nx = d < 0 ? x : vMap.XCYCL(x + (d == 0 ? 1 : d == 1 ? -1 : 0));
+		const int ny = d < 0 ? y : vMap.YCYCL(y + (d == 2 ? 1 : d == 3 ? -1 : 0));
+		if (nx < 0 || ny < 0 || nx >= mapW || ny >= mapH) {
+			continue;
+		}
+		const int off = ny * mapW + nx;
+		const int surf = vMap.VxDBuf[off] != 0 ? vMap.VxDBuf[off]
+		                                       : vMap.VxGBuf[off];
+		mix(static_cast<std::uint64_t>(surf));
+		mix(static_cast<std::uint64_t>(vMap.RnrBuf[off] & 0x7F));
+		mix(static_cast<std::uint64_t>(vMap.defaultColumnRgb(off)));
+		const int idx = vMap.voxLayers.findColumn(
+		    static_cast<std::uint32_t>(off));
+		int count = 0;
+		const VoxLayerRange* ranges =
+		    idx >= 0 ? vMap.voxLayers.columnRanges(idx, &count) : nullptr;
+		mix(static_cast<std::uint64_t>(count));
+		for (int i = 0; i < count; ++i) {
+			mix(static_cast<std::uint64_t>(
+			    (ranges[i].z0 << 16) ^ (ranges[i].z1 << 4) ^
+			    (ranges[i].flags << 28) ^ ranges[i].r ^ (ranges[i].g << 8) ^
+			    (static_cast<std::uint32_t>(ranges[i].b) << 16)));
+		}
+	}
+	return h;
+}
+
 class CavityOverlayNode : public cRawMeshObj
 {
 public:
@@ -54,6 +100,9 @@ void VoxCavityOverlay::init(cScene* scene, cTileMap* tilemap)
 		return;
 	}
 	node_ = new CavityOverlayNode(this);
+	if (std::getenv("VOX_NO_OVERLAY")) {
+		node_->SetAttr(ATTRUNKOBJ_IGNORE); // A/B diagnosis
+	}
 	scene_->AttachObj(node_);
 	tilemap_->RegisterUpdateMap(&VoxCavityOverlay::onUpdateMap, this);
 	voxperf::log("overlay init: full rebuild START");
@@ -140,6 +189,16 @@ void VoxCavityOverlay::drainPending()
 		}
 		return;
 	}
+	voxperf::log(
+	    "drain: terraVersion +%llu (last off %d), layersVersion +%llu (last "
+	    "off %u)",
+	    static_cast<unsigned long long>(vMap.terraVersion - lastTerraVersion_),
+	    vMap.terraVersionLastOff,
+	    static_cast<unsigned long long>(vMap.voxLayers.version -
+	                                   lastLayersVersion_),
+	    vMap.voxLayers.lastMutationOff);
+	lastTerraVersion_ = vMap.terraVersion;
+	lastLayersVersion_ = vMap.voxLayers.version;
 	lastSeenVersion_ = seen;
 	lastRebuild_ = std::chrono::steady_clock::now();
 	const double tDrain = voxperf::nowMs();
@@ -171,29 +230,11 @@ void VoxCavityOverlay::drainPending()
 		merged.push_back(r);
 	}
 	rects.swap(merged);
-	// Union-bbox degenerate case: a genuinely map-wide change (world
-	// load) rebuilds everything at once. Anything smaller drains rect by
-	// rect — the cheap reject skips the vast majority of game updates
-	// (moving units etc. touch no cavity), and a flood of small rects
-	// never degenerates into a multi-second full rebuild.
-	int x0 = rects.front().first.x, y0 = rects.front().first.y;
-	int x1 = rects.front().second.x, y1 = rects.front().second.y;
-	for (const auto& r : rects) {
-		x0 = std::min(x0, r.first.x);
-		y0 = std::min(y0, r.first.y);
-		x1 = std::max(x1, r.second.x);
-		y1 = std::max(y1, r.second.y);
-	}
-	const long long area =
-	    static_cast<long long>(x1 - x0 + 1) * (y1 - y0 + 1);
-	const long long mapArea =
-	    static_cast<long long>(vMap.H_SIZE) * vMap.V_SIZE;
-	if (area > mapArea / 4) {
-		voxperf::log("drainPending: %zu rects unioned to FULL map rebuild",
-		             rects.size());
-		rebuildAll();
-		return;
-	}
+	// Drain rect by rect — the near-merge above already collapses a burst
+	// covering one neighborhood, and a genuinely map-wide change (world
+	// load) arrives as a single map-wide rect, which rebuilds fully on its
+	// own. NEVER union distant rects into a full-map rebuild: two far-
+	// apart edits used to trigger a multi-second whole-world rebuild.
 	for (const auto& r : rects) {
 		rebuildRect(r.first.x, r.first.y, r.second.x, r.second.y);
 	}
@@ -203,10 +244,6 @@ void VoxCavityOverlay::drainPending()
 
 void VoxCavityOverlay::rebuildAll()
 {
-	if (static_cast<int>(vMap.H_SIZE) <= 0 ||
-	    static_cast<int>(vMap.V_SIZE) <= 0) {
-		return;
-	}
 	rebuildRect(0, 0, static_cast<int>(vMap.H_SIZE) - 1,
 	            static_cast<int>(vMap.V_SIZE) - 1);
 }
@@ -254,11 +291,14 @@ void VoxCavityOverlay::rebuildRect(int x0, int y0, int x1, int y1)
 	voxperf::log("rebuildRect: REBUILD (%d,%d)-(%d,%d) chunksBefore=%zu", x0, y0, x1, y1, chunks_.size());
 	const double tReb = voxperf::nowMs();
 
-	// Segmented rebuild: erase only the chunks inside the rect, regenerate
-	// only the live cavity columns of the rect (re-inserted in offset
-	// order). The flat render buffer is republished only when something
-	// actually changed — untouched regions are never copied.
+	// Segmented rebuild: regenerate only the live cavity columns of the
+	// rect and diff against the previous chunks - the flat render buffer
+	// is republished ONLY when bytes actually changed. Game terraforming
+	// re-fires the same neighborhood constantly; regenerating identical
+	// chunks used to flip `changed` unconditionally and republish +
+	// re-upload the whole mesh every time.
 	bool changed = false;
+	std::vector<Chunk> old;
 	std::vector<Chunk> next;
 	next.reserve(chunks_.size());
 	const auto winLo = std::lower_bound(
@@ -266,23 +306,29 @@ void VoxCavityOverlay::rebuildRect(int x0, int y0, int x1, int y1)
 		[](const Chunk& c, std::uint32_t off) { return c.off < off; });
 	const auto winHi = std::upper_bound(winLo, chunks_.end(), offEnd,
 	                                    [](std::uint32_t off, const Chunk& c) {
-		                                    return off < c.off;
+	                                    return off < c.off;
 	                                    });
 	next.insert(next.end(), std::make_move_iterator(chunks_.begin()),
 	            std::make_move_iterator(winLo));
+	old.reserve(std::distance(winLo, winHi));
 	for (auto it = winLo; it != winHi; ++it) {
 		const bool inRect =
 			static_cast<int>(it->off % mapW) >= x0 &&
 			static_cast<int>(it->off % mapW) <= x1;
 		if (inRect) {
-			changed = true; // dropped — re-added below if still a cavity
-			continue;
+			old.push_back(std::move(*it)); // candidate for re-add
+		} else {
+			next.push_back(std::move(*it));
 		}
-		next.push_back(std::move(*it));
 	}
 	next.insert(next.end(), std::make_move_iterator(winHi),
 	            std::make_move_iterator(chunks_.end()));
+	// Rebuild the cavity columns in the rect AND their 4-neighbors: a
+	// solid column bordering a void renders that void's walls from the
+	// solid side (boolean-cut/cliff faces), so it needs a chunk too.
+	std::vector<std::uint32_t> colOffs;
 	const auto colRange = vMap.voxLayers.columnIndexRange(offBeg, offEnd);
+	const int mapH = static_cast<int>(vMap.V_SIZE);
 	for (int i = colRange.first; i < colRange.second; ++i) {
 		const std::uint32_t off = vMap.voxLayers.columnOffset(i);
 		// Skip columns outside the rect's x span on the intermediate
@@ -292,39 +338,129 @@ void VoxCavityOverlay::rebuildRect(int x0, int y0, int x1, int y1)
 			continue;
 		}
 		const int cy = static_cast<int>(off / mapW);
-		Chunk ch;
-		ch.off = off;
-		voxCavityAppendColumn(vMap, cx, cy, ch.verts);
-		if (!ch.verts.empty()) {
-			// Insert keeping the offset order.
-			auto pos = std::lower_bound(
-				next.begin(), next.end(), off,
-				[](const Chunk& c, std::uint32_t o) { return c.off < o; });
-			next.insert(pos, std::move(ch));
-			changed = true;
+		colOffs.push_back(off);
+		const int dxs[4] = {1, -1, 0, 0};
+		const int dys[4] = {0, 0, 1, -1};
+		for (int d = 0; d < 4; ++d) {
+			const int nx2 = cx + dxs[d];
+			const int ny2 = cy + dys[d];
+			if (nx2 < 0 || ny2 < 0 || nx2 >= mapW || ny2 >= mapH) {
+				continue;
+			}
+			const std::uint32_t noff =
+				static_cast<std::uint32_t>(ny2) * mapW + nx2;
+			if (!vMap.voxLayers.columnHasTransparent(noff)) {
+				colOffs.push_back(noff); // solid neighbor — maybe faces
+			}
 		}
 	}
-	// Caps: regenerate every row the rect spans (full row width — runs
-	// merge beyond the rect).
+	std::sort(colOffs.begin(), colOffs.end());
+	colOffs.erase(std::unique(colOffs.begin(), colOffs.end()),
+	              colOffs.end());
+	// Regenerate each candidate column into a sorted side list; reuse the
+	// previous chunk byte-for-byte when nothing changed (same heights/
+	// ranges/colors -> same mesh), so an unchanged neighborhood never
+	// republishes. The two sorted lists are MERGED at the end - inserting
+	// each chunk into the 60k-entry vector directly is O(N) memmove per
+	// chunk, which turned dense terraform zones into multi-second drains.
+	std::vector<Chunk> additions;
+	additions.reserve(colOffs.size());
+	for (const std::uint32_t off : colOffs) {
+		const int cx = static_cast<int>(off % mapW);
+		const int cy = static_cast<int>(off / mapW);
+		auto oldIt = std::lower_bound(
+			old.begin(), old.end(), off,
+			[](const Chunk& c, std::uint32_t o) { return c.off < o; });
+		const bool hadOld = oldIt != old.end() && oldIt->off == off;
+		const std::uint64_t hash = columnInputHash(cx, cy);
+		if (hadOld && oldIt->hash == hash) {
+			// Inputs unchanged - keep the chunk, skip the mesher.
+			additions.push_back(std::move(*oldIt));
+			old.erase(oldIt);
+			continue;
+		}
+		Chunk ch;
+		ch.off = off;
+		ch.hash = hash;
+		voxCavityAppendColumn(vMap, cx, cy, ch.verts);
+		if (ch.verts.empty()) {
+			if (hadOld) {
+				old.erase(oldIt); // no longer generates - dropped
+				changed = true;
+			}
+			continue;
+		}
+		if (hadOld && oldIt->verts == ch.verts) {
+			old.erase(oldIt); // identical - no change
+		} else {
+			if (hadOld) {
+				old.erase(oldIt);
+			}
+			changed = true;
+		}
+		additions.push_back(std::move(ch));
+	}
+	if (!old.empty()) {
+		// Chunks inside the rect that were not regenerated at all (the
+		// column is no longer cavity-adjacent) left the mesh.
+		changed = true;
+	}
+	if (!additions.empty()) {
+		std::vector<Chunk> merged;
+		merged.reserve(next.size() + additions.size());
+		std::merge(std::make_move_iterator(next.begin()),
+		           std::make_move_iterator(next.end()),
+		           std::make_move_iterator(additions.begin()),
+		           std::make_move_iterator(additions.end()),
+		           std::back_inserter(merged),
+		           [](const Chunk& a, const Chunk& b) { return a.off < b.off; });
+		next.swap(merged);
+	}
+	// Caps: regenerate the rows the rect spans (full row width -
+	// runs merge beyond the rect). Per-row cheap reject: a row with no
+	// cavity column in the rect span and no existing caps is skipped
+	// with one binary search; during game terraforming most rows in a
+	// rect have no cavities at all (a full 4096-wide row walk per row
+	// dominated the rebuild time).
+	const int capX0 = std::max(0, x0 - 1);
+	const int capX1 = std::min(mapW - 1, x1 + 1);
 	for (int y = y0; y <= y1; ++y) {
 		auto oldRow = capRows_.find(y);
 		const bool hadRow = oldRow != capRows_.end();
-		if (hadRow) {
-			capRows_.erase(oldRow);
-			changed = true;
+		const std::uint32_t rowBeg =
+		    static_cast<std::uint32_t>(y) * mapW +
+		    static_cast<std::uint32_t>(capX0);
+		const std::uint32_t rowEnd =
+		    static_cast<std::uint32_t>(y) * mapW +
+		    static_cast<std::uint32_t>(capX1);
+		const auto rowRange =
+		    vMap.voxLayers.columnIndexRange(rowBeg, rowEnd);
+		if (rowRange.first == rowRange.second && !hadRow) {
+			continue;
 		}
 		std::vector<VoxCavityVertex> caps;
 		voxCavityAppendRowCaps(vMap, y, 0,
 		                       static_cast<int>(vMap.H_SIZE) - 1, caps);
-		if (!caps.empty()) {
-			capRows_.emplace(y, std::move(caps));
+		const bool same = hadRow && oldRow->second == caps;
+		if (hadRow) {
+			capRows_.erase(oldRow);
+		}
+		if (!same) {
 			changed = true;
 		}
+		if (!caps.empty()) {
+			capRows_.emplace(y, std::move(caps));
+		}
 	}
+	// ALWAYS install `next`: the window chunks were MOVED into old/next,
+	// so an unchanged rebuild that returned early here would leave chunks_
+	// full of moved-from (emptied) entries - the stored mesh was silently
+	// gutted rect by rect and the next real change published the wreck
+	// (425k verts collapsing to the last rebuild's additions only).
+	chunks_.swap(next);
 	if (!changed) {
 		return;
 	}
-	chunks_.swap(next);
 	dirty_ = true;
 	voxperf::log("rebuildRect: rebuild took %.2f ms, chunksAfter=%zu", voxperf::nowMs() - tReb, chunks_.size());
 	if (node_) {
@@ -345,6 +481,7 @@ void VoxCavityOverlay::rebuildRect(int x0, int y0, int x1, int y1)
 		const double tFlat = voxperf::nowMs();
 		sVertexXYZDT1* dst = flat.data();
 		for (const Chunk& ch : chunks_) {
+
 			memcpy(dst, ch.verts.data(),
 			       ch.verts.size() * sizeof(sVertexXYZDT1));
 			dst += ch.verts.size();

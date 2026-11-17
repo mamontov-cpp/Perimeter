@@ -145,6 +145,7 @@ void VoxColLayers::setColumn(uint32_t cellOffset, const VoxLayerRange* ranges,
                              int count)
 {
 	++version;
+	lastMutationOff = cellOffset;
 	if (count < 0) {
 		count = 0;
 	}

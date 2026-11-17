@@ -66,6 +66,20 @@ private:
 	/// Rebuild the cavity columns whose offset lies in the inclusive cell
 	/// rect (already expanded by the caller for the neighbor side faces).
 	void rebuildRect(int x0, int y0, int x1, int y1);
+
+	/// Total overlay vertex count (chunks + cap rows) - test/diagnostic
+	/// support; cheap, reads the stored mesh only.
+	size_t debugVertexCount() const
+	{
+		size_t total = 0;
+		for (const Chunk& ch : chunks_) {
+			total += ch.verts.size();
+		}
+		for (const auto& row : capRows_) {
+			total += row.second.size();
+		}
+		return total;
+	}
 	void rebuildAll();
 
 	/// Pending update rects from the tilemap callback (logic thread in the
@@ -78,6 +92,8 @@ private:
 	// Combined heights+layers version at the last drain: pure color/vision
 	// updates (moving units) bump neither — their rects are dropped whole.
 	std::uint64_t lastSeenVersion_ = 0;
+	std::uint64_t lastTerraVersion_ = 0;
+	std::uint64_t lastLayersVersion_ = 0;
 
 
 	cScene* scene_ = nullptr;
@@ -92,6 +108,12 @@ private:
 	{
 		std::uint32_t off;
 		std::vector<VoxCavityVertex> verts;
+		// Hash of every terrain input the mesher reads for this column
+		// (own + 4-neighbor heights, light, default colors and layer
+		// ranges) - a rebuild skips regenerating the chunk while the
+		// hash is unchanged (game terraform rects re-fire constantly,
+		// but only a handful of columns actually change).
+		std::uint64_t hash = 0;
 	};
 	std::mutex mutex_;
 	std::vector<Chunk> chunks_; // sorted by off

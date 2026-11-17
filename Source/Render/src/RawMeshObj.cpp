@@ -21,6 +21,29 @@ void cRawMeshObj::setTriangles(const std::vector<sVertexXYZDT1>& triangles)
 {
 	std::lock_guard<std::mutex> lock(mutex_);
 	triangles_ = std::make_shared<const std::vector<sVertexXYZDT1>>(triangles);
+	// Bounding boxes per Draw() chunk (kChunk vertices each) for the
+	// frustum culling in Draw().
+	const size_t kChunk = kChunkVerts;
+	const size_t chunks = (triangles.size() + kChunk - 1) / kChunk;
+	chunkMins_.resize(chunks);
+	chunkMaxs_.resize(chunks);
+	for (size_t c = 0; c < chunks; ++c) {
+		const size_t beg = c * kChunk;
+		const size_t end = std::min(beg + kChunk, triangles.size());
+		Vect3f mn(1e30f, 1e30f, 1e30f);
+		Vect3f mx(-1e30f, -1e30f, -1e30f);
+		for (size_t i = beg; i < end; ++i) {
+			const sVertexXYZDT1& v = triangles[i];
+			mn.x = std::min(mn.x, v.x);
+			mn.y = std::min(mn.y, v.y);
+			mn.z = std::min(mn.z, v.z);
+			mx.x = std::max(mx.x, v.x);
+			mx.y = std::max(mx.y, v.y);
+			mx.z = std::max(mx.z, v.z);
+		}
+		chunkMins_[c] = mn;
+		chunkMaxs_[c] = mx;
+	}
 }
 
 void cRawMeshObj::clear()
@@ -58,6 +81,10 @@ void cRawMeshObj::Draw(cCamera* camera)
 
 	gb_RenderDevice->SetNoMaterial(ALPHA_NONE, 0, GetTexture());
 	gb_RenderDevice->SetWorldMatXf(GetGlobalMatrix());
+	// The cavity mesh is single-wound (quad() emits one fan) - faces must
+	// show from both sides, so culling goes off for this draw.
+	const uint32_t cullBackup = gb_RenderDevice->GetRenderState(RS_CULLMODE);
+	gb_RenderDevice->SetRenderState(RS_CULLMODE, CULL_NONE);
 
 	// The mesh is chunked under the 16-bit index cap and drawn through a
 	// FIXED POOL of owned STATIC DrawBuffers. Static = uploaded to the GPU
@@ -65,7 +92,7 @@ void cRawMeshObj::Draw(cCamera* camera)
 	// the existing GPU data. The previous dynamic re-uploaded the whole
 	// mesh every frame (~20 ms for a big cavity map — a constant per-frame
 	// tax that grew with the mesh for the entire session).
-	const size_t kChunk = 60000;
+	const size_t kChunk = kChunkVerts;
 	const size_t chunks = (mesh.size() + kChunk - 1) / kChunk;
 	if (buffers_.size() != chunks) {
 		buffers_.clear();
@@ -126,9 +153,25 @@ void cRawMeshObj::Draw(cCamera* camera)
 		uploaded_ = local;
 		uploadedCopy_.assign(mesh.begin(), mesh.end());
 	}
+	// Some passes draw with no camera (shadow/reflection helpers) - those
+	// get the full mesh, never a null-camera crash.
+	const bool cull = camera != nullptr;
 	for (size_t c = 0; c < chunks; ++c) {
+		if (cull && c < chunkMins_.size()) {
+			// The mesh spans the whole map; skip chunks outside the
+			// current camera frustum - the GPU vertex load dominated
+			// the frame (~15 ms for ~500k verts every frame).
+			const Vect3f& mn = chunkMins_[c];
+			const Vect3f& mx = chunkMaxs_[c];
+			const Vect3f center = (mn + mx) * 0.5f;
+			const float radius = (mx - mn).norm() * 0.5f;
+			if (camera->TestVisible(center, radius) == VISIBLE_OUTSIDE) {
+				continue;
+			}
+		}
 		buffers_[c]->Draw();
 	}
+	gb_RenderDevice->SetRenderState(RS_CULLMODE, cullBackup);
 	const double drawMs = voxperf::nowMs() - tDraw0;
 	if (drawMs > 4.0) {
 		voxperf::log("RawMeshObj::Draw: %.2f ms verts=%zu chunks=%zu%s",
