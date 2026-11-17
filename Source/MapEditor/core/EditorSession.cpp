@@ -321,6 +321,8 @@ bool EditorSession::loadWorld(size_t worldIndex)
     editorTrace("EditorSession: WorldRender done");
 
 
+
+
     clearUndoHistory();
     clearDiffState(); // difference data belongs to the previous world
     currentWorldIndex_ = static_cast<int32_t>(worldIndex);

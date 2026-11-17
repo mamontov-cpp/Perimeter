@@ -1,4 +1,5 @@
 #include "stdafxTr.h"
+#include <filesystem>
 
 #include <fstream>
 #include <cstdio>
@@ -279,8 +280,21 @@ static bool worldHasExtendedHeights(const vrtMap& m) {
 static bool loadHeights16Sidecar(vrtMap& m) {
 	XStream fstream;
 	fstream.ErrHUsed = false;
-	if (!fstream.open(GetTargetName(vrtMap::worldHeights16File), XS_IN)) {
+	const std::string heightsPath = GetTargetName(vrtMap::worldHeights16File);
+	if (!fstream.open(heightsPath, XS_IN)) {
+		voxperf::log("heights16: FAILED to open '%s' (cwd='%s')",
+		             heightsPath.c_str(), std::filesystem::current_path().string().c_str());
 		return false;
+	}
+	{
+		std::error_code ec;
+		const std::filesystem::path abs =
+		    std::filesystem::absolute(heightsPath, ec);
+		voxperf::log("heights16: loaded '%s' abs='%s' size=%lld cwd='%s'",
+		             heightsPath.c_str(),
+		             ec ? "(error)" : abs.string().c_str(),
+		             static_cast<long long>(fstream.size()),
+		             std::filesystem::current_path().string().c_str());
 	}
 	const int64_t cells = static_cast<int64_t>(m.XS_Buf) * m.YS_Buf;
 	const int64_t need = static_cast<int64_t>(sizeof(sHeights16Header)) +
