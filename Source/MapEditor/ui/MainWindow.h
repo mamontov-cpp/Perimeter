@@ -89,6 +89,7 @@ public:
     /// The Place Spawn mode action for the autotest harness.
     QAction *debugPlaceSpawnAction() const { return actModePlaceSpawn_; }
 
+    void toggleAlwaysDiscardWorldChanges();
 private slots:
     void onActionSelectGameDir();
     void onActionScanWorlds();
@@ -392,4 +393,7 @@ private:
     QAction *actDiffMode_ = nullptr;
     QAction *actSaveDiff_ = nullptr;
     QAction *actLoadDiff_ = nullptr;
+
+
+    bool alwaysDiscardWorldChanges = false;
 };

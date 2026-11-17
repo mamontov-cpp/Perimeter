@@ -1938,6 +1938,11 @@ void MainWindow::onActionRegenerateImages()
         5000);
 }
 
+void MainWindow::toggleAlwaysDiscardWorldChanges()
+{
+    alwaysDiscardWorldChanges = true;
+}
+
 // ---------------------------------------------------------------------------
 // Help
 // ---------------------------------------------------------------------------
@@ -2079,6 +2084,9 @@ void MainWindow::onActionClearUndoHistory()
 bool MainWindow::confirmDiscardUnsavedChanges()
 {
     if (session_ == nullptr) {
+        return true;
+    }
+    if (alwaysDiscardWorldChanges) {
         return true;
     }
     if (session_->hasUnsavedChanges()) {

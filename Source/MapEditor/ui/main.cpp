@@ -70,6 +70,9 @@ int main(int argc, char *argv[])
     // grabFramebuffer() PNGs into <dir> for offline diagnosis of the
     // viewport-switch rendering.
     if (qEnvironmentVariable("MAP_EDITOR_AUTOTEST") == QLatin1String("1")) {
+        // Disable displaying confirm world changes
+        window.toggleAlwaysDiscardWorldChanges();
+
         const QString gameDir = qEnvironmentVariable("MAP_EDITOR_GAMEDIR");
         const QString world = qEnvironmentVariable("MAP_EDITOR_WORLD");
         const QString shots = qEnvironmentVariable("MAP_EDITOR_SHOTS");
