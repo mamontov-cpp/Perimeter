@@ -16,6 +16,7 @@
 #include <QImage>
 #include <QMouseEvent>
 #include <QTimer>
+#include <cstdio>
 
 // MapEditorSupport — shims and content root initialization.
 #include "errh_wrapper.h"

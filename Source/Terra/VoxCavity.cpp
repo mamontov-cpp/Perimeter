@@ -239,6 +239,16 @@ void voxCavityAppendRowCaps(vrtMap& m, int y, int x0, int x1,
 			flush(cx - 1);
 			continue;
 		}
+		// Only REAL cavities get a cap. A column with mere color layers
+		// (no transparent ranges) renders its top through the heightfield
+		// at the same z — emitting a cap there z-fights the surface into
+		// striped circles in the exact shape of the depth paint. Likewise
+		// a column whose display height already equals the top.
+		const int capDisp = m.cavityDisplayHeight(off);
+		if (capDisp < 0 || capDisp >= h) {
+			flush(cx - 1);
+			continue;
+		}
 		// Top voxel color: the solid layer at h-1, else the default.
 		const std::uint32_t rgb = [&]() {
 			std::uint32_t rgb2 = 0;
