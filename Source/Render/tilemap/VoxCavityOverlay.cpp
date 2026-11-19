@@ -32,6 +32,10 @@ namespace {
 /// the rebuild skip the ~35-50 us mesher walk entirely.
 std::uint64_t columnInputHash(int x, int y)
 {
+	// Сырые указатели columnRanges ниже живут вне вызова — лок на всё
+	// тело: логический поток игры может параллельно править слои
+	// (solidify при терраформинге).
+	std::lock_guard<std::recursive_mutex> lock(vMap.voxLayers.accessMtx);
 	const int mapW = static_cast<int>(vMap.H_SIZE);
 	const int mapH = static_cast<int>(vMap.V_SIZE);
 	std::uint64_t h = 1469598103934665603ULL;
@@ -140,31 +144,29 @@ void VoxCavityOverlay::onUpdateMap(const Vect2i& pos1, const Vect2i& pos2,
 	if (!self->node_) {
 		return;
 	}
-	// Queue + time-coalesced synchronous drain: game terraforming fires
-	// many updates per second and rebuilding on each one re-triangulates
-	// the world. The callback runs on the caller's thread (the game frame
-	// loop quant — the same thread that writes the terrain), so draining
-	// here is race-free; drainPending() (render thread, once per frame)
-	// only flushes leftovers after a burst ends.
-	const auto now = std::chrono::steady_clock::now();
-	{
-		std::lock_guard<std::mutex> lock(self->pendingMutex_);
-		// Expand by one cell: side faces depend on the neighbors.
-		Vect2i lo(std::max(0, pos1.x - 1), std::max(0, pos1.y - 1));
-		Vect2i hi(std::min(static_cast<int>(vMap.H_SIZE) - 1, pos2.x + 1),
-		          std::min(static_cast<int>(vMap.V_SIZE) - 1, pos2.y + 1));
-		self->pending_.emplace_back(lo, hi);
-		const bool due =
-			(now - self->lastRebuild_) > std::chrono::milliseconds(150);
-		if (!due) {
-			return;
-		}
-	}
-	self->drainPending();
+	// Только постановка в очередь: сама перестройка — на графическом
+	// потоке (CavityOverlayNode::PreDraw -> drainPending). Раньше drain
+	// исполнялся ещё и здесь, синхронно на потоке логики (колбэк дёргается
+	// из renderQuant вселенной) — секундные rebuildRect вставали на
+	// логическом тике, и игра замедлялась в разы (см. voxperf.log:
+	// "rebuild took 2767 ms" между квантами логики).
+	std::lock_guard<std::mutex> lock(self->pendingMutex_);
+	// Expand by one cell: side faces depend on the neighbors.
+	Vect2i lo(std::max(0, pos1.x - 1), std::max(0, pos1.y - 1));
+	Vect2i hi(std::min(static_cast<int>(vMap.H_SIZE) - 1, pos2.x + 1),
+	          std::min(static_cast<int>(vMap.V_SIZE) - 1, pos2.y + 1));
+	self->pending_.emplace_back(lo, hi);
 }
 
 void VoxCavityOverlay::drainPending()
 {
+	// Троттлинг окном: при непрерывном терраформинге очередь пополняется
+	// каждый квант — без окна drainPending (раз в кадр на рендере)
+	// перестраивал бы меш каждый кадр.
+	if (std::chrono::steady_clock::now() - lastRebuild_ <
+	    std::chrono::milliseconds(300)) {
+		return;
+	}
 	std::vector<std::pair<Vect2i, Vect2i>> rects;
 	{
 		std::lock_guard<std::mutex> lock(pendingMutex_);
@@ -361,44 +363,48 @@ void VoxCavityOverlay::rebuildRect(int x0, int y0, int x1, int y1)
 	// republishes. The two sorted lists are MERGED at the end - inserting
 	// each chunk into the 60k-entry vector directly is O(N) memmove per
 	// chunk, which turned dense terraform zones into multi-second drains.
+	// Список old и кандидаты ОБА отсортированы по off — идём двумя
+	// курсорами (merge-walk). Раньше каждый consume делал old.erase() —
+	// memmove хвоста вектора на каждую колонку, O(N²) на весь проход:
+	// с накопленными чанками (110k+) перестройка вырастала до секунд и
+	// всё сильнее деградировала по ходу сессии (см. voxperf.log:
+	// "rebuild took 480-1700 ms", chunksAfter растёт от сессии).
 	std::vector<Chunk> additions;
 	additions.reserve(colOffs.size());
+	size_t oldPos = 0;
 	for (const std::uint32_t off : colOffs) {
 		const int cx = static_cast<int>(off % mapW);
 		const int cy = static_cast<int>(off / mapW);
-		auto oldIt = std::lower_bound(
-			old.begin(), old.end(), off,
-			[](const Chunk& c, std::uint32_t o) { return c.off < o; });
-		const bool hadOld = oldIt != old.end() && oldIt->off == off;
+		while (oldPos < old.size() && old[oldPos].off < off) {
+			++oldPos; // вне списка кандидатов — chunk покидает меш
+		}
+		const bool hadOld = oldPos < old.size() && old[oldPos].off == off;
 		const std::uint64_t hash = columnInputHash(cx, cy);
-		if (hadOld && oldIt->hash == hash) {
+		if (hadOld && old[oldPos].hash == hash) {
 			// Inputs unchanged - keep the chunk, skip the mesher.
-			additions.push_back(std::move(*oldIt));
-			old.erase(oldIt);
+			additions.push_back(std::move(old[oldPos]));
+			++oldPos;
 			continue;
 		}
 		Chunk ch;
 		ch.off = off;
 		ch.hash = hash;
 		voxCavityAppendColumn(vMap, cx, cy, ch.verts);
-		if (ch.verts.empty()) {
-			if (hadOld) {
-				old.erase(oldIt); // no longer generates - dropped
+		if (hadOld) {
+			if (ch.verts.empty() || old[oldPos].verts != ch.verts) {
 				changed = true;
 			}
+			++oldPos; // consumed (moved-from)
+		}
+		if (ch.verts.empty()) {
 			continue;
 		}
-		if (hadOld && oldIt->verts == ch.verts) {
-			old.erase(oldIt); // identical - no change
-		} else {
-			if (hadOld) {
-				old.erase(oldIt);
-			}
+		if (!hadOld) {
 			changed = true;
 		}
 		additions.push_back(std::move(ch));
 	}
-	if (!old.empty()) {
+	if (oldPos < old.size()) {
 		// Chunks inside the rect that were not regenerated at all (the
 		// column is no longer cavity-adjacent) left the mesh.
 		changed = true;

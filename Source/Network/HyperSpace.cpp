@@ -164,6 +164,12 @@ terHyperSpace::terHyperSpace(PNetCenter* net_client, MissionDescription& mission
 
 	vMap.selectUsedWorld(mission.worldID());
 	vMap.fullLoad(IniManager("Perimeter.ini").getInt("TD","FastLoad"));
+	// Игровая гигиена слоёв: normalizeTransparentColumn будет вырезать
+	// диапазоны, оказавшиеся целиком над поверхностью (срезанный под слои
+	// террейн). Без этого «висячие» слои держат колонку в cavity-множестве
+	// оверлея полостей навсегда (см. voxperf.log: рост чанков и
+	// перестроек по ходу сессии). Редактор флаг не включает.
+	vMap.pruneVoxRangesAboveSurface = true;
 }
 
 void getMissionDescriptionInThePlayReelFile(const char* fname, MissionDescription& md)

@@ -8,6 +8,9 @@
 
 #include "VMAP.h"
 
+#include <algorithm>
+#include <vector>
+
 namespace {
 
 // Face shading factors — the cavity interior must read as 3D.
@@ -26,55 +29,118 @@ struct Segment
 	int z1;
 };
 
-/// Solid segments of the dam column [0..H) split by transparent ranges.
-/// Returns false when the column has no transparent ranges at all.
-bool solidSegments(vrtMap& m, uint32_t off, int height,
-                   std::vector<Segment>& out)
+// One constant-color run of solid voxels [z0..z1].
+struct SolidRun
 {
+	int z0;
+	int z1;
+	std::uint32_t color;
+};
+
+// Копия диапазонов колонки под коротким локом: мешер НЕ держит accessMtx
+// на весь проход (иначе логический поток игры, правящий слои при
+// терраформинге, встаёт на сотни миллисекунд за время перестройки).
+struct RangeCopy
+{
+	static const int kStack = 32;
+	VoxLayerRange stack[kStack];
+	std::vector<VoxLayerRange> heap;
+	const VoxLayerRange* data = stack;
+	int count = 0;
+};
+
+void copyRanges(vrtMap& m, std::uint32_t off, RangeCopy& out)
+{
+	std::lock_guard<std::recursive_mutex> lock(m.voxLayers.accessMtx);
 	const int idx = m.voxLayers.findColumn(off);
 	if (idx < 0) {
-		return false;
+		out.count = 0;
+		return;
 	}
 	int count = 0;
-	const VoxLayerRange* ranges = m.voxLayers.columnRanges(idx, &count);
-	std::vector<std::pair<int, int>> transparent;
-	for (int i = 0; i < count; ++i) {
-		if (ranges[i].flags & VOX_LAYER_TRANSPARENT) {
-			const int t0 = ranges[i].z0;
-			const int t1 = static_cast<int>(ranges[i].z1);
-			if (t0 < height) {
-				transparent.emplace_back(
-					t0, t1 < height - 1 ? t1 : height - 1);
-			}
-		}
+	const VoxLayerRange* r = m.voxLayers.columnRanges(idx, &count);
+	if (count <= RangeCopy::kStack) {
+		std::copy_n(r, count, out.stack);
+		out.data = out.stack;
+	} else {
+		out.heap.assign(r, r + count);
+		out.data = out.heap.data();
 	}
-	if (transparent.empty()) {
-		return false;
-	}
-	int z = 0;
-	for (size_t i = 0; i < transparent.size(); ++i) {
-		if (transparent[i].first > z) {
-			out.push_back({z, transparent[i].first - 1});
-		}
-		z = transparent[i].second + 1;
-	}
-	if (z < height) {
-		out.push_back({z, height - 1});
-	}
-	return true;
+	out.count = count;
 }
 
-/// Raw RGB of the solid voxel z: its layer color, else the column default.
-std::uint32_t voxelRgb(vrtMap& m, uint32_t off, int z,
-                       std::uint32_t fallback)
+// Solid segments of the dam column [0..H) split by transparent ranges —
+// color-agnostic maximal spans of solid voxel material.
+void segmentsOfRanges(const VoxLayerRange* ranges, int count, int height,
+                      std::vector<Segment>& out)
 {
-	std::uint32_t rgb = 0;
-	uint8_t flags = 0;
-	if (m.voxLayers.lookup(off, z, &rgb, &flags) &&
-	    !(flags & VOX_LAYER_TRANSPARENT)) {
-		return rgb;
+	int z = 0;
+	int ti = 0;
+	while (z < height) {
+		while (ti < count &&
+		       (!(ranges[ti].flags & VOX_LAYER_TRANSPARENT) ||
+		        ranges[ti].z1 < z)) {
+			++ti;
+		}
+		if (ti < count && ranges[ti].z0 <= z) {
+			z = static_cast<int>(ranges[ti].z1) + 1; // прозрачный пропуск
+			continue;
+		}
+		const int s0 = z;
+		if (ti < count) {
+			z = ranges[ti].z0; // до следующего (прозрачного) диапазона
+		} else {
+			z = height;
+		}
+		out.push_back({s0, z - 1});
 	}
-	return fallback;
+}
+
+// Constant-color solid runs of the column [0..height): the solid segments
+// split at layer-color boundaries; gaps and un-painted voxels take the
+// column default color. O(count) — runs, not voxels.
+void runsOfRanges(const VoxLayerRange* ranges, int count, int height,
+                  std::uint32_t fallback, std::vector<SolidRun>& out)
+{
+	std::vector<Segment> spans;
+	segmentsOfRanges(ranges, count, height, spans);
+	for (const Segment& s : spans) {
+		int c = s.z0;
+		int ri = 0;
+		while (ri < count && static_cast<int>(ranges[ri].z1) < c) {
+			++ri;
+		}
+		while (c <= s.z1) {
+			if (ri < count && static_cast<int>(ranges[ri].z0) <= c &&
+			    !(ranges[ri].flags & VOX_LAYER_TRANSPARENT)) {
+				const int e = std::min(static_cast<int>(ranges[ri].z1), s.z1);
+				const std::uint32_t col =
+				    (static_cast<std::uint32_t>(ranges[ri].r) << 16) |
+				    (static_cast<std::uint32_t>(ranges[ri].g) << 8) |
+				    ranges[ri].b;
+				if (!out.empty() && out.back().z1 + 1 == c &&
+				    out.back().color == col) {
+					out.back().z1 = e;
+				} else {
+					out.push_back({c, e, col});
+				}
+				c = e + 1;
+				++ri;
+				continue;
+			}
+			int e = s.z1;
+			if (ri < count && static_cast<int>(ranges[ri].z0) > c) {
+				e = std::min(static_cast<int>(ranges[ri].z0) - 1, s.z1);
+			}
+			if (!out.empty() && out.back().z1 + 1 == c &&
+			    out.back().color == fallback) {
+				out.back().z1 = e;
+			} else {
+				out.push_back({c, e, fallback});
+			}
+			c = e + 1;
+		}
+	}
 }
 
 std::uint32_t shade(std::uint32_t rgb, float factor, unsigned light)
@@ -136,29 +202,6 @@ bool columnExposed(vrtMap& m, int x, int y, int height)
 
 } // namespace
 
-/// Linear-walk color of the voxel z (hint advances monotonically): the
-/// layer range containing z, else the column fallback. Transparent ranges
-/// yield the fallback too (they have no render color).
-std::uint32_t voxelRgbHinted(const VoxLayerRange* ranges, int count, int* hint,
-                             int z, std::uint32_t fallback)
-{
-	if (!ranges) {
-		return fallback;
-	}
-	int i = *hint;
-	while (i < count && ranges[i].z1 < z) {
-		++i;
-	}
-	*hint = i;
-	if (i < count && ranges[i].z0 <= z &&
-	    !(ranges[i].flags & VOX_LAYER_TRANSPARENT)) {
-		return (static_cast<std::uint32_t>(ranges[i].r) << 16) |
-		       (static_cast<std::uint32_t>(ranges[i].g) << 8) |
-		       ranges[i].b;
-	}
-	return fallback;
-}
-
 /// One side quad (both windings) for the voxel run [z0..z1) on direction
 /// 0:+x 1:-x 2:+y 3:-y, pushed a small epsilon into the empty neighbor cell.
 void emitSide(std::vector<VoxCavityVertex>& out, int dir, int x, int y,
@@ -195,18 +238,69 @@ void emitSide(std::vector<VoxCavityVertex>& out, int dir, int x, int y,
 	quad(out, a, b, c, d);
 }
 
-/// Island caps for one map row, merged: consecutive cavity columns in
-/// [x0..x1] whose top sits at the SAME height with the SAME top-voxel color
-/// become ONE quad (the cap is a flat surface — per-column quads multiplied
-/// the mesh by the cavity area and dominated the whole frame budget).
+/// Boundary plane between this column and the +x/+y neighbor: emit the
+/// stretches where EXACTLY ONE side is solid at that voxel (a boolean cut
+/// shows the solid material's faces bordering the void, whichever column
+/// owns the solid). Event-driven over the two color-run lists — O(runs),
+/// not O(column height): the voxel-by-voxel walk cost seconds per rebuild
+/// on 500-voxel columns.
+void emitSideDiffer(std::vector<VoxCavityVertex>& out, int dir,
+                    int x, int y, int walkMax, unsigned light,
+                    const std::vector<SolidRun>& mine,
+                    const std::vector<SolidRun>& neighbor)
+{
+	// События — все границы ранов обеих колонок + walkMax.
+	std::vector<int> bounds;
+	bounds.reserve(2 + 2 * (mine.size() + neighbor.size()) + 2);
+	bounds.push_back(0);
+	bounds.push_back(walkMax);
+	for (const SolidRun& r : mine) {
+		bounds.push_back(r.z0);
+		if (r.z1 + 1 < walkMax) bounds.push_back(r.z1 + 1);
+	}
+	for (const SolidRun& r : neighbor) {
+		bounds.push_back(r.z0);
+		if (r.z1 + 1 < walkMax) bounds.push_back(r.z1 + 1);
+	}
+	std::sort(bounds.begin(), bounds.end());
+	bounds.erase(std::unique(bounds.begin(), bounds.end()), bounds.end());
+	auto solidAt = [](const std::vector<SolidRun>& runs, int z,
+	                  std::uint32_t* col) {
+		for (const SolidRun& r : runs) {
+			if (z < r.z0) break;
+			if (z <= r.z1) {
+				*col = r.color;
+				return true;
+			}
+		}
+		return false;
+	};
+	for (size_t k = 0; k + 1 < bounds.size(); ++k) {
+		const int z0 = bounds[k];
+		const int z1 = bounds[k + 1];
+		if (z0 >= walkMax || z0 >= z1) {
+			continue;
+		}
+		std::uint32_t colA = 0;
+		std::uint32_t colB = 0;
+		const bool aSolid = solidAt(mine, z0, &colA);
+		const bool bSolid = solidAt(neighbor, z0, &colB);
+		if (aSolid == bSolid) {
+			continue; // void==void или solid==solid — грань не нужна
+		}
+		emitSide(out, dir, x, y, z0, z1,
+		         shade(aSolid ? colA : colB, kSideShade, light));
+	}
+}
+
 void voxCavityAppendRowCaps(vrtMap& m, int y, int x0, int x1,
                             std::vector<VoxCavityVertex>& out)
 {
 	const int mapW = static_cast<int>(m.H_SIZE);
 	const std::uint32_t rowBeg =
-		static_cast<std::uint32_t>(y) * mapW + static_cast<std::uint32_t>(x0);
+	    static_cast<std::uint32_t>(y) * mapW + static_cast<std::uint32_t>(x0);
 	const std::uint32_t rowEnd =
-		static_cast<std::uint32_t>(y) * mapW + static_cast<std::uint32_t>(x1);
+	    static_cast<std::uint32_t>(y) * mapW + static_cast<std::uint32_t>(x1);
 	const auto range = m.voxLayers.columnIndexRange(rowBeg, rowEnd);
 	int runStart = -1;
 	int runEndXCached = -1;
@@ -282,8 +376,24 @@ void voxCavityAppendColumn(vrtMap& m, int x, int y,
 	if (height <= 0) {
 		return; // no dam — transparent ranges live in the dam span only
 	}
+
+	// Снимаем диапазоны своей колонки и соседей (+x/+y) под коротким
+	// локом и дальше работаем с копиями: лок НЕ держим на весь проход
+	// мешера (иначе логический поток игры, правящий слои при
+	// терраформинге, встаёт на время перестройки — см. voxperf.log).
+	RangeCopy myCopy;
+	copyRanges(m, static_cast<std::uint32_t>(off), myCopy);
+	bool hasTransparent = false;
+	for (int i = 0; i < myCopy.count; ++i) {
+		if (myCopy.data[i].flags & VOX_LAYER_TRANSPARENT) {
+			hasTransparent = true;
+			break;
+		}
+	}
+
 	std::vector<Segment> segments;
-	if (!solidSegments(m, static_cast<uint32_t>(off), height, segments)) {
+	segmentsOfRanges(myCopy.data, myCopy.count, height, segments);
+	if (!hasTransparent) {
 		// No transparent ranges: a SOLID column — it gets a chunk when it
 		// borders a void (the overlay enumerates cavity neighbors too):
 		// its faces against emptied neighbors render the boolean-cut /
@@ -309,6 +419,28 @@ void voxCavityAppendColumn(vrtMap& m, int x, int y,
 	// vertices).
 	const bool exposed = columnExposed(m, x, y, height);
 
+	auto colorAt = [&](int z) {
+		for (int i = 0; i < myCopy.count; ++i) {
+			if (z < myCopy.data[i].z0) break;
+			if (z <= myCopy.data[i].z1 &&
+			    !(myCopy.data[i].flags & VOX_LAYER_TRANSPARENT)) {
+				return (static_cast<std::uint32_t>(myCopy.data[i].r) << 16) |
+				       (static_cast<std::uint32_t>(myCopy.data[i].g) << 8) |
+				       myCopy.data[i].b;
+			}
+		}
+		return fallback;
+	};
+	auto transparentAt = [&](int z) {
+		for (int i = 0; i < myCopy.count; ++i) {
+			if (z < myCopy.data[i].z0) break;
+			if (z <= myCopy.data[i].z1) {
+				return (myCopy.data[i].flags & VOX_LAYER_TRANSPARENT) != 0;
+			}
+		}
+		return false;
+	};
+
 	for (const Segment& s : segments) {
 		// Top face: emitted for every EXCEPT the display-height floor
 		// (the heightfield renders the cavity floor) — but NOT for the
@@ -322,7 +454,7 @@ void voxCavityAppendColumn(vrtMap& m, int x, int y,
 		if (!isDisplayFloor && !isTopmost) {
 			const float z = static_cast<float>(s.z1 + 1);
 			const std::uint32_t col = shade(
-				voxelRgb(m, off, s.z1, fallback), kTopShade, light);
+				colorAt(s.z1), kTopShade, light);
 			VoxCavityVertex a, b, c, d;
 			a = {static_cast<float>(x), static_cast<float>(y), z, col};
 			b = {static_cast<float>(x + 1), static_cast<float>(y), z, col};
@@ -332,11 +464,9 @@ void voxCavityAppendColumn(vrtMap& m, int x, int y,
 		}
 		// Bottom face (a cavity below the slab) — only where the cavity
 		// can be seen (this column or a neighbor borders on emptiness).
-		if (exposed && s.z0 > 0 &&
-		    m.voxLayers.isTransparent(static_cast<uint32_t>(off), s.z0 - 1)) {
+		if (exposed && s.z0 > 0 && transparentAt(s.z0 - 1)) {
 			const float z = static_cast<float>(s.z0);
-			const std::uint32_t col = shade(voxelRgb(m, off, s.z0, fallback),
-			                                kBottomShade, light);
+			const std::uint32_t col = shade(colorAt(s.z0), kBottomShade, light);
 			VoxCavityVertex a, b, c, d;
 			a = {static_cast<float>(x), static_cast<float>(y), z, col};
 			b = {static_cast<float>(x + 1), static_cast<float>(y), z, col};
@@ -345,129 +475,40 @@ void voxCavityAppendColumn(vrtMap& m, int x, int y,
 			quad(out, a, d, c, b); // south-facing underside
 		}
 	}
-		const int npx = m.XCYCL(x + 1);
-		const int npy = m.XCYCL(y + 1);
-		const int noffE = y * mapW + npx;
-		const int noffN = npy * mapW + x;
-		// Our column's ranges (colors + the voids) for the differ.
-		const VoxLayerRange* myRanges = nullptr;
-		int myRangeCount = 0;
-		{
-			const int myIdx0 = m.voxLayers.findColumn(
-				static_cast<uint32_t>(off));
-			if (myIdx0 >= 0) {
-				myRanges =
-				    m.voxLayers.columnRanges(myIdx0, &myRangeCount);
-			}
+	// Side faces on the +x/+y boundary planes — the SYMMETRIC VOXEL DIFFER,
+	// event-driven over constant-color solid runs (O(runs) вместо
+	// O(height) у поклеточного прохода — на колонках в 500 вокселей
+	// разница в десятки раз). Ownership: EVERY plane is drawn once — by
+	// the east/north column's +x/+y walk (which runs unconditionally; a
+	// solid neighbor of a cavity is enumerated as a cavity neighbor).
+	const std::vector<SolidRun> myRuns = [&]() {
+		std::vector<SolidRun> r;
+		r.reserve(8);
+		runsOfRanges(myCopy.data, myCopy.count, height, fallback, r);
+		return r;
+	}();
+	const int npx = m.XCYCL(x + 1);
+	const int npy = m.XCYCL(y + 1);
+	const int noffE = y * mapW + npx;
+	const int noffN = npy * mapW + x;
+	for (int dir = 0; dir < 4; ++dir) {
+		if (dir == 1 || dir == 3) {
+			continue; // the west/south neighbor draws this plane (+x/+y rule)
 		}
-		// Side faces on ALL FOUR directions — the SYMMETRIC VOXEL DIFFER:
-		// the boundary plane emits wherever EXACTLY ONE side is solid
-		// (a boolean cut must show the solid material's faces bordering
-		// the void, whichever column owns the solid — the previous rules
-		// only drew the cavity column's own faces, so a cut's interior
-		// walls facing solid rock never rendered). Heights are walked once
-		// per direction with run merging: no per-voxel probing, no
-		// allocations. Ownership: EVERY plane is drawn once — by the
-		// east/north column's +x/+y walk (which runs unconditionally; a
-		// solid neighbor of a cavity is enumerated as a cavity neighbor).
-		const VoxLayerRange* ctr = myRanges;
-		const int ctrCount = myRangeCount;
-		for (int dir = 0; dir < 4; ++dir) {
-			if (dir == 1 || dir == 3) {
-				continue; // the west/south neighbor draws this plane (+x/+y rule)
-			}
-			const int noff = dir == 0 ? noffE : noffN;
-			const int nh =
-				m.VxDBuf[noff] != 0 ? m.VxDBuf[noff] : m.VxGBuf[noff];
-			const VoxLayerRange* ntr = nullptr;
-			int ntrCount = 0;
-			{
-				const int nidx = m.voxLayers.findColumn(
-					static_cast<uint32_t>(noff));
-				if (nidx >= 0) {
-					ntr = m.voxLayers.columnRanges(nidx, &ntrCount);
-				}
-			}
-			int ci = 0;  // color cursor into myRanges
-			int ni = 0;  // cursor into the neighbor's ranges
-			int ti = 0;  // cursor into our transparent ranges
-			int tj = 0;  // cursor into the neighbor's transparent ranges
-			auto nTransparentAt = [&](int z) {
-				while (tj < ntrCount &&
-				       (!(ntr[tj].flags & VOX_LAYER_TRANSPARENT) ||
-				        ntr[tj].z1 < z)) {
-					++tj;
-				}
-				return tj < ntrCount && ntr[tj].z0 <= z;
-			};
-			auto neighborRgb = [&](int z) {
-				while (ni < ntrCount && ntr[ni].z1 < z) {
-					++ni;
-				}
-				if (ni < ntrCount && ntr[ni].z0 <= z &&
-				    !(ntr[ni].flags & VOX_LAYER_TRANSPARENT)) {
-					return (static_cast<std::uint32_t>(ntr[ni].r) << 16) |
-					       (static_cast<std::uint32_t>(ntr[ni].g) << 8) |
-					       ntr[ni].b;
-				}
-				return m.defaultColumnRgb(noff);
-			};
-			// Walk the plane up to the TALLER of the two columns: a
-			// short column next to a tall one must emit the stretch of
-			// wall above its own top (bounded by `height` alone, the
-			// plane was walked only to the shorter side's height and
-			// the band above stayed a see-through hole). Above both
-			// tops the differ is void==void — nothing is emitted, so
-			// no z-fighting with the heightfield cliffs.
-			const int walkMax = height > nh ? height : nh;
-			int z = 0;
-			while (z < walkMax) {
-				while (ti < ctrCount &&
-				       (!(ctr[ti].flags & VOX_LAYER_TRANSPARENT) ||
-				        ctr[ti].z1 < z)) {
-					++ti;
-				}
-				const bool cSolid =
-				    z < height && !(ti < ctrCount && ctr[ti].z0 <= z);
-				const bool nSolid = z < nh && !nTransparentAt(z);
-				if (cSolid == nSolid) {
-					++z;
-					continue;
-				}
-				const bool cSide = cSolid;
-				const std::uint32_t rgb0 =
-				    cSide ? voxelRgbHinted(myRanges, myRangeCount, &ci,
-				                           z, fallback)
-				          : neighborRgb(z);
-				int ze = z;
-				while (ze + 1 < walkMax) {
-					const int zn = ze + 1;
-					while (ti < ctrCount &&
-					       (!(ctr[ti].flags & VOX_LAYER_TRANSPARENT) ||
-					        ctr[ti].z1 < zn)) {
-						++ti;
-					}
-					const bool cSolidN =
-					    zn < height &&
-					    !(ti < ctrCount && ctr[ti].z0 <= zn);
-					const bool nSolidN =
-					    zn < nh && !nTransparentAt(zn);
-					if (cSolidN == nSolidN || cSolidN != cSolid) {
-						break;
-					}
-					const std::uint32_t rgbN =
-					    cSolidN ? voxelRgbHinted(myRanges, myRangeCount,
-					                             &ci, zn, fallback)
-					            : neighborRgb(zn);
-					if (rgbN != rgb0) {
-						break;
-					}
-					ze = zn;
-				}
-
-				emitSide(out, dir, x, y, z, ze + 1,
-				         shade(rgb0, kSideShade, light));
-				z = ze + 1;
-			}
-		}
+		const int noff = dir == 0 ? noffE : noffN;
+		const int nh =
+			m.VxDBuf[noff] != 0 ? m.VxDBuf[noff] : m.VxGBuf[noff];
+		RangeCopy nCopy;
+		copyRanges(m, static_cast<std::uint32_t>(noff), nCopy);
+		const std::uint32_t nfallback = m.defaultColumnRgb(noff);
+		std::vector<SolidRun> nRuns;
+		nRuns.reserve(8);
+		runsOfRanges(nCopy.data, nCopy.count, nh, nfallback, nRuns);
+		// Walk the plane up to the TALLER of the two columns: a short
+		// column next to a tall one must emit the stretch of wall above
+		// its own top. Above both tops the differ is void==void — nothing
+		// is emitted, so no z-fighting with the heightfield cliffs.
+		const int walkMax = height > nh ? height : nh;
+		emitSideDiffer(out, dir, x, y, walkMax, light, myRuns, nRuns);
+	}
 }

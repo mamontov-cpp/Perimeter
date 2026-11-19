@@ -180,6 +180,9 @@ unsigned int vrtMap::defaultColumnRgb(int off) const
 
 int vrtMap::cavityDisplayHeight(int off) const
 {
+	// Указатель columnRanges живёт вне вызова — лок на всё тело: логика
+	// игры может параллельно править слои (solidify при терраформинге).
+	std::lock_guard<std::recursive_mutex> lock(voxLayers.accessMtx);
 	const int height = VxDBuf[off];
 	if (height <= 0 ||
 	    !voxLayers.mightHaveColumn(static_cast<uint32_t>(off))) {
@@ -241,11 +244,8 @@ void vrtMap::normalizeTransparentColumn(int off, int oldHeight)
 	// Инвариант: верхний воксель непрозрачный. Прозрачные воксели сверху
 	// уничтожаются (как невидимые), высота пересчитывается до ближайшего
 	// сплошного вокселя; если в дамбе остались одни прозрачные — высота 0.
-	int h = newHeight;
-	while (h > 0 &&
-	       voxLayers.isTransparent(static_cast<uint32_t>(off), h - 1)) {
-		--h;
-	}
+	const int solid = voxLayers.topSolidVoxel(off, newHeight);
+	const int h = (solid < 0) ? 0 : solid + 1;
 	if (h != newHeight) {
 		VxDBuf[off] = static_cast<VxWholeHeight>(h);
 		if (h == 0) {
@@ -253,6 +253,14 @@ void vrtMap::normalizeTransparentColumn(int off, int oldHeight)
 			AtrBuf[off] = static_cast<unsigned char>(
 				AtrBuf[off] & ~VX_FRACTION_MASK);
 		}
+	}
+	// Игра: слои, целиком оказавшиеся над поверхностью (срезали террейн
+	// под них), больше не нужны — поверхность ниже них не вернётся, а
+	// «висячие» записи держат колонку в cavity-множестве оверлея и в
+	// горячем пути нормализации. Редактор флаг не включает: слои над
+	// поверхностью там — редактируемые данные (undo, срезы, перекраска).
+	if (pruneVoxRangesAboveSurface) {
+		voxLayers.pruneAbove(static_cast<uint32_t>(off), VxDBuf[off]);
 	}
 }
 

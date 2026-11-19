@@ -17,6 +17,7 @@ bool VoxColLayers::lookup(uint32_t cellOffset, int height, uint32_t* rgb) const
 bool VoxColLayers::lookup(uint32_t cellOffset, int height, uint32_t* rgb,
                           uint8_t* flags) const
 {
+	std::lock_guard<std::recursive_mutex> lock(accessMtx);
 	*flags = 0;
 	if (height < 0 || height > 0xFFFF ||
 	    !mightHaveColumn(cellOffset)) {
@@ -60,15 +61,49 @@ bool VoxColLayers::lookup(uint32_t cellOffset, int height, uint32_t* rgb,
 
 bool VoxColLayers::isTransparent(uint32_t cellOffset, int height) const
 {
+	std::lock_guard<std::recursive_mutex> lock(accessMtx);
 	uint32_t rgb = 0;
 	uint8_t flags = 0;
 	return lookup(cellOffset, height, &rgb, &flags) &&
 	       (flags & VOX_LAYER_TRANSPARENT) != 0;
 }
 
+int VoxColLayers::topSolidVoxel(uint32_t cellOffset, int height) const
+{
+	std::lock_guard<std::recursive_mutex> lock(accessMtx);
+	if (height <= 0) {
+		return -1;
+	}
+	const int idx = findColumn(cellOffset);
+	if (idx < 0) {
+		return height - 1; // слоёв нет — порода сплошная
+	}
+	int count = 0;
+	const VoxLayerRange* r = columnRanges(idx, &count);
+	int h = height - 1;
+	for (int i = count; i-- > 0;) {
+		if (r[i].z0 > h) {
+			continue; // диапазон выше текущего запроса
+		}
+		if (r[i].z1 < h) {
+			return h; // зазор — безымянный сплошной воксель
+		}
+		if (r[i].flags & VOX_LAYER_TRANSPARENT) {
+			h = static_cast<int>(r[i].z0) - 1; // проваливаемся сквозь пустоту
+			if (h < 0) {
+				return -1;
+			}
+			continue;
+		}
+		return h; // h внутри сплошного диапазона
+	}
+	return h; // ниже всех диапазонов — сплошная порода
+}
+
 bool VoxColLayers::lookupSolidBelow(uint32_t cellOffset, int height,
                                     uint32_t* rgb) const
 {
+	std::lock_guard<std::recursive_mutex> lock(accessMtx);
 	if (height < 0 || height > 0xFFFF) {
 		return false;
 	}
@@ -100,6 +135,7 @@ bool VoxColLayers::lookupSolidBelow(uint32_t cellOffset, int height,
 
 int VoxColLayers::findColumn(uint32_t cellOffset) const
 {
+	std::lock_guard<std::recursive_mutex> lock(accessMtx);
 	if (!mightHaveColumn(cellOffset)) {
 		return -1;
 	}
@@ -120,6 +156,7 @@ int VoxColLayers::findColumn(uint32_t cellOffset) const
 
 const VoxLayerRange* VoxColLayers::columnRanges(int colIdx, int* count) const
 {
+	std::lock_guard<std::recursive_mutex> lock(accessMtx);
 	if (colIdx < 0 || colIdx >= static_cast<int>(col_.size())) {
 		*count = 0;
 		return nullptr;
@@ -144,6 +181,7 @@ bool VoxColLayers::sameColor(const VoxLayerRange& a, uint8_t r, uint8_t g,
 void VoxColLayers::setColumn(uint32_t cellOffset, const VoxLayerRange* ranges,
                              int count)
 {
+	std::lock_guard<std::recursive_mutex> lock(accessMtx);
 	++version;
 	lastMutationOff = cellOffset;
 	if (count < 0) {
@@ -224,6 +262,7 @@ void VoxColLayers::setColumn(uint32_t cellOffset, const VoxLayerRange* ranges,
 void VoxColLayers::paint(uint32_t cellOffset, int z0, int z1,
                          uint8_t r, uint8_t g, uint8_t b, bool transparent)
 {
+	std::lock_guard<std::recursive_mutex> lock(accessMtx);
 	if (z1 < z0 || z0 < 0) {
 		return;
 	}
@@ -288,6 +327,7 @@ void VoxColLayers::paint(uint32_t cellOffset, int z0, int z1,
 void VoxColLayers::solidify(uint32_t cellOffset, int z0, int z1,
                             uint8_t r, uint8_t g, uint8_t b)
 {
+	std::lock_guard<std::recursive_mutex> lock(accessMtx);
 	if (z1 < z0 || z0 < 0) {
 		return;
 	}
@@ -329,8 +369,30 @@ void VoxColLayers::solidify(uint32_t cellOffset, int z0, int z1,
 	setColumn(cellOffset, next.data(), static_cast<int>(next.size()));
 }
 
+void VoxColLayers::pruneAbove(uint32_t cellOffset, int height)
+{
+	std::lock_guard<std::recursive_mutex> lock(accessMtx);
+	const int idx = findColumn(cellOffset);
+	if (idx < 0) {
+		return;
+	}
+	int count = 0;
+	const VoxLayerRange* r = columnRanges(idx, &count);
+	// Диапазоны отсортированы по z0: всё от первого с z0 >= height — над
+	// поверхностью.
+	int kept = 0;
+	while (kept < count && r[kept].z0 < height) {
+		++kept;
+	}
+	if (kept == count) {
+		return;
+	}
+	setColumn(cellOffset, r, kept);
+}
+
 void VoxColLayers::clear()
 {
+	std::lock_guard<std::recursive_mutex> lock(accessMtx);
 	col_.clear();
 	begin_.clear();
 	ranges_.clear();
@@ -339,6 +401,7 @@ void VoxColLayers::clear()
 
 void VoxColLayers::buildBlockIndex()
 {
+	std::lock_guard<std::recursive_mutex> lock(accessMtx);
 	blockCount_.clear();
 	if (col_.empty()) {
 		return;
@@ -362,6 +425,7 @@ void VoxColLayers::growBlockIndex(uint32_t cellOffset)
 std::pair<int, int> VoxColLayers::columnIndexRange(uint32_t offBeg,
                                                    uint32_t offEnd) const
 {
+	std::lock_guard<std::recursive_mutex> lock(accessMtx);
 	const auto lo = std::lower_bound(col_.begin(), col_.end(), offBeg);
 	const auto hi = std::upper_bound(col_.begin(), col_.end(), offEnd);
 	return {static_cast<int>(lo - col_.begin()),
@@ -370,6 +434,7 @@ std::pair<int, int> VoxColLayers::columnIndexRange(uint32_t offBeg,
 
 bool VoxColLayers::columnHasTransparent(uint32_t cellOffset) const
 {
+	std::lock_guard<std::recursive_mutex> lock(accessMtx);
 	const int idx = findColumn(cellOffset);
 	if (idx < 0) {
 		return false;

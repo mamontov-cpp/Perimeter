@@ -500,7 +500,7 @@ public:
 		// оказавшиеся сверху. Один перехват на всю игру и редактор: все
 		// тулзеры идут через tVoxSetAll. Проверка дешёвая (миры без слоёв
 		// не платят ничего).
-		const unsigned char oldD = vMap.VxDBuf[offB];
+		const auto oldD = vMap.VxDBuf[offB];
 		const int r = tVoxSetAllBody(offB, dV);
 		if (r && oldD != vMap.VxDBuf[offB]) {
 			// Высота изменилась: бамп версии (оверлей полостей
@@ -581,7 +581,7 @@ private:
 						vMap.AtrBuf[offB]=v&VX_FRACTION_MASK;
 						//vMap.AtrBuf[offB]=(v&VX_FRACTION_MASK) | (vMap.AtrBuf[offB]& (~(VX_FRACTION_MASK|At_NOTPURESURFACE)));
 					}
-//					return dV;
+					return dV;
 				}
 			}
 			else {
@@ -602,7 +602,7 @@ private:
 						vMap.AtrBuf[offB]=v&VX_FRACTION_MASK;
 						//vMap.AtrBuf[offB]=(v&VX_FRACTION_MASK) | (vMap.AtrBuf[offB]& (~(VX_FRACTION_MASK|At_NOTPURESURFACE)));
 					}
-//					return dV;
+					return dV;
 				}
 			}
 			if(v == hAppr) vMap.AtrBuf[offB]=(vMap.AtrBuf[offB]&(~At_ZPMASK))|At_LEVELED;

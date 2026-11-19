@@ -73,7 +73,9 @@ ADD_EXECUTABLE(map_editor_tests
         TilemapVisPolyTests.cpp
         SceneTraceTests.cpp
         VoxLayerTests.cpp
-        ExtdemoSliceTests.cpp)
+        ExtdemoSliceTests.cpp
+        TerraformIslandTests.cpp
+        VoxLayersThreadTests.cpp)
 
 SET_TARGET_PROPERTIES(map_editor_tests PROPERTIES
         WIN32_EXECUTABLE OFF
