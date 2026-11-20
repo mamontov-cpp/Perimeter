@@ -508,7 +508,12 @@ public:
 			// игровые обновления видимости юнитов высот не трогают).
 			++vMap.terraVersion;
 			vMap.terraVersionLastOff = offB;
-			if (!vMap.voxLayers.empty()) {
+			// Гейт по КОЛОНКЕ, не по глобальному empty(): иначе каждое
+			// копание (даже голого грунта) зовёт normalize — счётчик
+			// вызовов растёт всю игру (см. voxperf.log). Колонка, срезанная
+			// под слои, prune'ится в томбстоун — hasLiveColumn false,
+			// повторных вызовов нет («level once — not needed to check more»).
+			if (vMap.voxLayers.hasLiveColumn(offB)) {
 				vMap.normalizeTransparentColumn(offB, oldD);
 			}
 		}

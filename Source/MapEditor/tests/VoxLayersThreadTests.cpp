@@ -33,26 +33,27 @@ namespace {
 
 bool checkInvariants(const VoxColLayers& l)
 {
-    // col_ strictly ascending, begin_ parallel and non-decreasing, pool
-    // bounds inside ranges_.
+    // col_ strictly ascending; begin_/end_ parallel; per-column spans
+    // within the pool; ranges sorted by z0. (Пул с дырками: begin_ не
+    // обязан быть неубывающим, begin_[0] не обязан быть 0.)
+    uint64_t liveSum = 0;
     for (size_t i = 1; i < l.col_.size(); ++i) {
         if (l.col_[i] <= l.col_[i - 1]) {
             return false;
         }
     }
-    if (l.begin_.size() != l.col_.size()) {
+    if (l.begin_.size() != l.col_.size() || l.end_.size() != l.col_.size()) {
         return false;
     }
-    if (!l.begin_.empty() && l.begin_[0] != 0) {
-        return false;
-    }
-    for (size_t i = 1; i < l.begin_.size(); ++i) {
-        if (l.begin_[i] < l.begin_[i - 1]) {
+    for (size_t i = 0; i < l.col_.size(); ++i) {
+        const uint32_t b = l.begin_[i];
+        const uint32_t e = l.end_[i];
+        if (b > e || e > l.ranges_.size()) {
             return false;
         }
+        liveSum += e - b;
     }
-    if (!l.begin_.empty() &&
-        l.begin_.back() > l.ranges_.size()) {
+    if (liveSum != l.liveRanges_) {
         return false;
     }
     // Ranges of each column sorted by z0.

@@ -151,7 +151,22 @@ void cRawMeshObj::Draw(cCamera* camera)
 			db->Unlock();
 		}
 		uploaded_ = local;
-		uploadedCopy_.assign(mesh.begin(), mesh.end());
+		if (uploadedCopy_.size() != mesh.size()) {
+			uploadedCopy_.resize(mesh.size());
+		}
+		// Зеркалим ТОЛЬКО поменявшиеся чанки (полный assign — 17 MB копия
+		// на каждый паблиш, при локальном терраформе меняются 1-2 чанка).
+		for (size_t c = 0; c < chunks; ++c) {
+			const size_t base = c * kChunk;
+			const size_t n = std::min(kChunk, mesh.size() - base);
+			if (uploadedChunks == chunks &&
+			    std::memcmp(uploadedCopy_.data() + base, mesh.data() + base,
+			                n * sizeof(sVertexXYZDT1)) == 0) {
+				continue;
+			}
+			std::memcpy(uploadedCopy_.data() + base, mesh.data() + base,
+			            n * sizeof(sVertexXYZDT1));
+		}
 	}
 	// Some passes draw with no camera (shadow/reflection helpers) - those
 	// get the full mesh, never a null-camera crash.

@@ -233,7 +233,7 @@ bool runVoxLayerTests()
         // wiped together with it — the snapshot restores the pre-stamp
         // "no layers" state).
         TEST_REQUIRE(session.undo(), "undo 4 failed.");
-        TEST_REQUIRE(vMap.voxLayers.col_.empty(),
+        TEST_REQUIRE(vMap.voxLayers.empty(),
                      "layers must be empty after the undo.");
         std::printf("[PASS] paint depth and replace semantics.\n");
     }

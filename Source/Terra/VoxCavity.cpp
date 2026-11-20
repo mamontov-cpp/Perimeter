@@ -37,6 +37,21 @@ struct SolidRun
 	std::uint32_t color;
 };
 
+// One constant-color wall run of the column's side face [z0..z1), color
+// already shaded with the owner column's light.
+struct SideRun
+{
+	int z0;
+	int z1;
+	std::uint32_t color;
+
+	bool operator==(const SideRun& o) const
+	{
+		return z0 == o.z0 && z1 == o.z1 && color == o.color;
+	}
+	bool operator!=(const SideRun& o) const { return !(*this == o); }
+};
+
 // Копия диапазонов колонки под коротким локом: мешер НЕ держит accessMtx
 // на весь проход (иначе логический поток игры, правящий слои при
 // терраформинге, встаёт на сотни миллисекунд за время перестройки).
@@ -238,18 +253,43 @@ void emitSide(std::vector<VoxCavityVertex>& out, int dir, int x, int y,
 	quad(out, a, b, c, d);
 }
 
-/// Boundary plane between this column and the +x/+y neighbor: emit the
-/// stretches where EXACTLY ONE side is solid at that voxel (a boolean cut
-/// shows the solid material's faces bordering the void, whichever column
-/// owns the solid). Event-driven over the two color-run lists — O(runs),
-/// not O(column height): the voxel-by-voxel walk cost seconds per rebuild
-/// on 500-voxel columns.
-void emitSideDiffer(std::vector<VoxCavityVertex>& out, int dir,
-                    int x, int y, int walkMax, unsigned light,
-                    const std::vector<SolidRun>& mine,
-                    const std::vector<SolidRun>& neighbor)
+/// Boundary plane between this column and the +x/+y neighbor: the runs
+/// where EXACTLY ONE side is solid at that voxel (a boolean cut shows
+/// the solid material's faces bordering the void, whichever column owns
+/// the solid). Event-driven over the two color-run lists — O(runs), not
+/// O(column height). Colors come out SHADED with the owner column's
+/// light — merging coplanar runs compares shaded values, so different
+/// light never merges. Returns false when the column has no dam (no
+/// walls possible).
+bool sideRunsFor(vrtMap& m, int x, int y, bool dirY,
+                 std::vector<SideRun>& out)
 {
+	out.clear();
+	const int mapW = static_cast<int>(m.H_SIZE);
+	const int off = y * mapW + x;
+	const int height = m.VxDBuf[off];
+	if (height <= 0) {
+		return false;
+	}
+	const int noff =
+	    dirY ? (m.YCYCL(y + 1) * mapW + x) : (y * mapW + m.XCYCL(x + 1));
+	const int nh =
+		m.VxDBuf[noff] != 0 ? m.VxDBuf[noff] : m.VxGBuf[noff];
+	const unsigned light = m.RnrBuf[off] & 0x7F;
+	RangeCopy myCopy;
+	copyRanges(m, static_cast<std::uint32_t>(off), myCopy);
+	RangeCopy nCopy;
+	copyRanges(m, static_cast<std::uint32_t>(noff), nCopy);
+	std::vector<SolidRun> mine;
+	mine.reserve(8);
+	runsOfRanges(myCopy.data, myCopy.count, height, m.defaultColumnRgb(off),
+	             mine);
+	std::vector<SolidRun> neighbor;
+	neighbor.reserve(8);
+	runsOfRanges(nCopy.data, nCopy.count, nh, m.defaultColumnRgb(noff),
+	             neighbor);
 	// События — все границы ранов обеих колонок + walkMax.
+	const int walkMax = height > nh ? height : nh;
 	std::vector<int> bounds;
 	bounds.reserve(2 + 2 * (mine.size() + neighbor.size()) + 2);
 	bounds.push_back(0);
@@ -288,9 +328,103 @@ void emitSideDiffer(std::vector<VoxCavityVertex>& out, int dir,
 		if (aSolid == bSolid) {
 			continue; // void==void или solid==solid — грань не нужна
 		}
-		emitSide(out, dir, x, y, z0, z1,
-		         shade(aSolid ? colA : colB, kSideShade, light));
+		out.push_back(
+		    {z0, z1, shade(aSolid ? colA : colB, kSideShade, light)});
 	}
+	return true;
+}
+
+namespace {
+
+// Merged wall walker core: iterates a sorted list of candidate cell
+// offsets on one line (row y for dirY, column x otherwise), computes
+// each cell's side runs and coalesces runs of CONSECUTIVE cells with
+// identical run lists (same spans, same shaded colors) into ONE long
+// quad. A cell without walls (or a gap between candidates) breaks the
+// run. Это схлопывает стены полостей с ~100 квадов на колонку до
+// единиц квадов на серию — меш оверлея падает на порядки (иначе
+// ~700k вершин рисуются КАЖДЫЙ КАДР, см. voxperf.log RawMeshObj::Draw
+// 20+ ms). Кандидаты — кавити-колонки ректа И их 4-соседи: владельцем
+// стены может быть и «просто solid» клетка (обрыв к полости), в col_
+// её нет, поэтому список передаётся явно.
+template <bool dirY>
+void appendMergedWalls(vrtMap& m, int line, const std::uint32_t* offs,
+                       size_t n, std::vector<VoxCavityVertex>& out)
+{
+	const int mapW = static_cast<int>(m.H_SIZE);
+	std::vector<SideRun> accRuns;
+	std::vector<SideRun> cur;
+	bool accActive = false;
+	int accA = 0;
+	int accB = 0;
+	auto flush = [&]() {
+		if (!accActive) {
+			return;
+		}
+		for (const SideRun& r : accRuns) {
+			const float zf = static_cast<float>(r.z0);
+			const float zf1 = static_cast<float>(r.z1);
+			VoxCavityVertex a, b, c, d;
+			if (dirY) {
+				const float ye =
+				    static_cast<float>(line + 1) + kSideEps;
+				a = {static_cast<float>(accA), ye, zf, r.color};
+				b = {static_cast<float>(accB), ye, zf, r.color};
+				c = {static_cast<float>(accB), ye, zf1, r.color};
+				d = {static_cast<float>(accA), ye, zf1, r.color};
+			} else {
+				const float xe =
+				    static_cast<float>(line + 1) + kSideEps;
+				a = {xe, static_cast<float>(accA), zf, r.color};
+				b = {xe, static_cast<float>(accB), zf, r.color};
+				c = {xe, static_cast<float>(accB), zf1, r.color};
+				d = {xe, static_cast<float>(accA), zf1, r.color};
+			}
+			quad(out, a, b, c, d);
+		}
+		accActive = false;
+	};
+	int prev = -10;
+	for (size_t i = 0; i < n; ++i) {
+		const std::uint32_t off = offs[i];
+		const int t = dirY ? static_cast<int>(off % mapW)
+		                   : static_cast<int>(off / mapW);
+		const int x = dirY ? t : line;
+		const int y = dirY ? line : t;
+		if (!sideRunsFor(m, x, y, dirY, cur)) {
+			flush(); // дамбы нет — стен нет, серия рвётся
+			prev = -10;
+			continue;
+		}
+		if (accActive && t == prev + 1 && cur == accRuns) {
+			accB = t + 1;
+			prev = t;
+			continue;
+		}
+		flush();
+		if (!cur.empty()) {
+			accActive = true;
+			accA = t;
+			accB = t + 1;
+			accRuns = cur;
+		}
+		prev = t;
+	}
+	flush();
+}
+
+} // namespace
+
+void voxCavityAppendRowWallY(vrtMap& m, int y, const std::uint32_t* offs,
+                             size_t n, std::vector<VoxCavityVertex>& out)
+{
+	appendMergedWalls<true>(m, y, offs, n, out);
+}
+
+void voxCavityAppendColWallX(vrtMap& m, int x, const std::uint32_t* offs,
+                             size_t n, std::vector<VoxCavityVertex>& out)
+{
+	appendMergedWalls<false>(m, x, offs, n, out);
 }
 
 void voxCavityAppendRowCaps(vrtMap& m, int y, int x0, int x1,
@@ -368,7 +502,7 @@ void voxCavityAppendRowCaps(vrtMap& m, int y, int x0, int x1,
 }
 
 void voxCavityAppendColumn(vrtMap& m, int x, int y,
-                           std::vector<VoxCavityVertex>& out)
+                           std::vector<VoxCavityVertex>& out, bool emitSides)
 {
 	const int mapW = static_cast<int>(m.H_SIZE);
 	const int off = y * mapW + x;
@@ -475,40 +609,22 @@ void voxCavityAppendColumn(vrtMap& m, int x, int y,
 			quad(out, a, d, c, b); // south-facing underside
 		}
 	}
-	// Side faces on the +x/+y boundary planes — the SYMMETRIC VOXEL DIFFER,
-	// event-driven over constant-color solid runs (O(runs) вместо
-	// O(height) у поклеточного прохода — на колонках в 500 вокселей
-	// разница в десятки раз). Ownership: EVERY plane is drawn once — by
-	// the east/north column's +x/+y walk (which runs unconditionally; a
-	// solid neighbor of a cavity is enumerated as a cavity neighbor).
-	const std::vector<SolidRun> myRuns = [&]() {
-		std::vector<SolidRun> r;
-		r.reserve(8);
-		runsOfRanges(myCopy.data, myCopy.count, height, fallback, r);
-		return r;
-	}();
-	const int npx = m.XCYCL(x + 1);
-	const int npy = m.XCYCL(y + 1);
-	const int noffE = y * mapW + npx;
-	const int noffN = npy * mapW + x;
-	for (int dir = 0; dir < 4; ++dir) {
-		if (dir == 1 || dir == 3) {
-			continue; // the west/south neighbor draws this plane (+x/+y rule)
+	// Side faces on the +x/+y boundary planes — the SYMMETRIC VOXEL DIFFER
+	// (event-driven over constant-color solid runs). Овнерство: каждая
+	// грань рисуется один раз — восточной/северной колонкой (+x/+y walk).
+	// Оверлей ПО УМОЛЧАНИЮ пропускает стены здесь и мержит их поперёк
+	// колонок отдельно (voxCavityAppendRowWallY/AppendColWallX) — иначе
+	// меш ~700k вершин рисуется каждый кадр.
+	if (emitSides) {
+		std::vector<SideRun> runs;
+		for (int dir = 0; dir < 4; ++dir) {
+			if (dir == 1 || dir == 3) {
+				continue; // the west/south neighbor draws this plane
+			}
+			sideRunsFor(m, x, y, dir == 2, runs);
+			for (const SideRun& r : runs) {
+				emitSide(out, dir, x, y, r.z0, r.z1, r.color);
+			}
 		}
-		const int noff = dir == 0 ? noffE : noffN;
-		const int nh =
-			m.VxDBuf[noff] != 0 ? m.VxDBuf[noff] : m.VxGBuf[noff];
-		RangeCopy nCopy;
-		copyRanges(m, static_cast<std::uint32_t>(noff), nCopy);
-		const std::uint32_t nfallback = m.defaultColumnRgb(noff);
-		std::vector<SolidRun> nRuns;
-		nRuns.reserve(8);
-		runsOfRanges(nCopy.data, nCopy.count, nh, nfallback, nRuns);
-		// Walk the plane up to the TALLER of the two columns: a short
-		// column next to a tall one must emit the stretch of wall above
-		// its own top. Above both tops the differ is void==void — nothing
-		// is emitted, so no z-fighting with the heightfield cliffs.
-		const int walkMax = height > nh ? height : nh;
-		emitSideDiffer(out, dir, x, y, walkMax, light, myRuns, nRuns);
 	}
 }

@@ -67,8 +67,8 @@ private:
 	/// rect (already expanded by the caller for the neighbor side faces).
 	void rebuildRect(int x0, int y0, int x1, int y1);
 
-	/// Total overlay vertex count (chunks + cap rows) - test/diagnostic
-	/// support; cheap, reads the stored mesh only.
+	/// Total overlay vertex count (chunks + cap rows + merged walls) -
+	/// test/diagnostic support; cheap, reads the stored mesh only.
 	size_t debugVertexCount() const
 	{
 		size_t total = 0;
@@ -77,6 +77,12 @@ private:
 		}
 		for (const auto& row : capRows_) {
 			total += row.second.size();
+		}
+		for (const auto& row : wallRows_) {
+			total += row.second.size();
+		}
+		for (const auto& col : wallCols_) {
+			total += col.second.size();
 		}
 		return total;
 	}
@@ -121,6 +127,13 @@ private:
 	// made the mesh ~1M vertices). Regenerated for every row the dirty
 	// rect spans, across the FULL row width (runs merge beyond the rect).
 	std::map<int, std::vector<VoxCavityVertex>> capRows_;
+	// Side walls, merged along the row/column like the caps: +y walls
+	// owned by row y, +x walls owned by column x (each plane drawn once).
+	// Пер-колоночные стены давали ~700k вершин КАЖДЫЙ КАДР
+	// (RawMeshObj::Draw 20+ ms) — мерж схлопывает серии одинаковых
+	// колонок в один квад.
+	std::map<int, std::vector<VoxCavityVertex>> wallRows_;
+	std::map<int, std::vector<VoxCavityVertex>> wallCols_;
 	bool dirty_ = false;
 };
 

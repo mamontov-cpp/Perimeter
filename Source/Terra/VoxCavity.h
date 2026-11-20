@@ -63,9 +63,30 @@ struct VoxCavityVertex
 
 /// Appends the cavity geometry of one map column (cell x, y) to `out`
 /// (3 vertices per triangle, both windings per face). No-op when the
-/// column has no transparent voxel ranges.
+/// column has no transparent voxel ranges. `emitSides=false` skips the
+/// side (wall) faces — the overlay merges walls across columns per
+/// row/column (voxCavityAppendRowWallY/voxCavityAppendColWallX), keeping
+/// the per-column chunks small; tests and one-off probes keep `true`.
 void voxCavityAppendColumn(vrtMap& m, int x, int y,
-                           std::vector<VoxCavityVertex>& out);
+                           std::vector<VoxCavityVertex>& out,
+                           bool emitSides = true);
+
+/// SIDE WALLS, merged across consecutive cells (the per-column chunks
+/// emit up to ~100 quads per cavity column once trucks level the ground
+/// around/through an island — 700k+ vertices drawn every frame. Walls
+/// are constant-color runs; merging coplanar neighbours collapses a run
+/// of N identical cells into ONE quad, like the caps).
+///   * Row form: the +y boundary walls owned by cells of row y; `offs`
+///     is the sorted candidate list for that row (cavity columns AND
+///     their solid neighbours — a plain solid cell can own a cliff wall
+///     into a cavity and is not in the layer store's column list).
+///     Every y-facing plane is drawn exactly once (south column's walk).
+///   * Column form: the +x boundary walls owned by cells of column x;
+///     `offs` sorted by y. Every x-facing plane exactly once.
+void voxCavityAppendRowWallY(vrtMap& m, int y, const std::uint32_t* offs,
+                             size_t n, std::vector<VoxCavityVertex>& out);
+void voxCavityAppendColWallX(vrtMap& m, int x, const std::uint32_t* offs,
+                             size_t n, std::vector<VoxCavityVertex>& out);
 
 /// Island caps for one map row, merged: consecutive cavity columns in
 /// [x0..x1] whose top sits at the SAME height with the SAME top-voxel

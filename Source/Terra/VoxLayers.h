@@ -60,8 +60,14 @@ public:
 			std::lock_guard<std::recursive_mutex> dstLock(accessMtx);
 			col_ = o.col_;
 			begin_ = o.begin_;
+			end_ = o.end_;
 			ranges_ = o.ranges_;
 			blockCount_ = o.blockCount_;
+			blockLive_ = o.blockLive_;
+			blockBegin_ = o.blockBegin_;
+			blockBeginDirty_ = o.blockBeginDirty_;
+			liveRanges_ = o.liveRanges_;
+			tombstones_ = o.tombstones_;
 			version = o.version;
 			lastMutationOff = o.lastMutationOff;
 		}
@@ -123,14 +129,33 @@ public:
 		return col_[static_cast<size_t>(colIdx)];
 	}
 
-	// Открытое хранилище: инвариант — col_ отсортирован, begin_[i] —
-	// начало диапазонов колонки i в ranges_, диапазоны колонки отсортированы
-	// по z0 и не пересекаются. Прямой доступ нужен сериализации sidecar
-	// (VMAP.cpp) и снапшотам undo/diff редактора; менять через paint().
+	// Открытое хранилище: инвариант — col_ отсортирован; колонка i живёт в
+	// ranges_[begin_[i], end_[i]) (begin_/end_ параллельны col_). Диапазоны
+	// колонки отсортированы по z0 и не пересекаются. Между слотами и после
+	// «хвоста» пула возможны ДЫРКИ (старые слоты после перезаписи колонки
+	// в конец пула), а колонка с begin_==end_ — ТОМБСТОУН (удалённая: запись
+	// остаётся, чтобы не делать memmove col_). Дырки и томбстоуны
+	// упаковываются лениво compact() при превышении доли. Прямой доступ
+	// нужен сериализации sidecar (VMAP.cpp) и снапшотам undo/diff редактора;
+	// менять через paint()/setColumn().
 	std::vector<uint32_t> col_;    // cell offsets, ascending
-	std::vector<uint32_t> begin_;  // begin into ranges_; end = next begin
-	std::vector<VoxLayerRange> ranges_; // per column sorted by z0
-	std::vector<uint32_t> blockCount_;  // mightHaveColumn index, see above
+	std::vector<uint32_t> begin_;  // begin into ranges_ (parallel to col_)
+	std::vector<uint32_t> end_;    // end into ranges_ (parallel to col_)
+	std::vector<VoxLayerRange> ranges_; // per column sorted by z0, has gaps
+	std::vector<uint32_t> blockCount_;  // mightHaveColumn: RECORDS per block
+	std::vector<uint32_t> blockLive_;   // hasLiveColumn: live columns per block
+	// Кэш «первая колонка блока»: blockBegin_[b] — индекс в col_ первой
+	// колонки с offset >= b<<kBlockShift (+sentinel на конце). findColumn
+	// ищет ВНУТРИ блока (единицы записей, горячий кэш) вместо бинарника по
+	// всему col_ (192k записей, 768 KB, промахи кэша на каждом шаге).
+	// Инвалидируется вставкой колонки (сдвиг индексов) и compact();
+	// пересобирается лениво в findColumn под локом.
+	mutable std::vector<uint32_t> blockBegin_;
+	mutable bool blockBeginDirty_ = false;
+	// Число живых диапазонов (сумма end_[i]-begin_[i]) и удалённых колонок —
+	// триггеры ленивой упаковки в compact().
+	uint64_t liveRanges_ = 0;
+	uint64_t tombstones_ = 0;
 	// Монотонный счётчик мутаций (setColumn): потребители (оверлей
 	// полостей) скипают перестройки, пока слои и высоты не менялись —
 	// игровые обновления видимости юнитов не трогают ни того, ни другого.
@@ -153,11 +178,20 @@ public:
 	mutable std::recursive_mutex accessMtx;
 
 	// Заменить данные колонки целиком (undo/diff). Пересоздаёт запись;
-	// ranges == nullptr или count == 0 — удалить колонку.
+	// ranges == nullptr или count == 0 — удалить колонку (томбстоун).
 	void setColumn(uint32_t cellOffset, const VoxLayerRange* ranges,
 	               int count);
 
-	bool empty() const { return col_.empty(); }
+	// Упаковка пула: выбросить дырки и томбстоуны, пересобрать blockCount_.
+	// O(N), вызывать редко — перед сохранением sidecar (игровой процесс
+	// мир не пересохраняет; дырки/томбстоуны в рантайме дёшевы).
+	void compact();
+
+	bool empty() const
+	{
+		std::lock_guard<std::recursive_mutex> lock(accessMtx);
+		return liveRanges_ == 0;
+	}
 	void clear();
 
 	// Индексный диапазон колонок с offsets в [offBeg..offEnd] (sorted col_ —
@@ -180,6 +214,16 @@ public:
 		const size_t b = static_cast<size_t>(cellOffset) >> kBlockShift;
 		return b < blockCount_.size() && blockCount_[b] != 0;
 	}
+	// Игровой гейт обёртки tVoxSetAll: «у колонки ЕСТЬ живые слои».
+	// blockCount_ считает ЗАПИСИ (томбстоуны тоже — иначе findColumn по
+	// томбстоуну промахнётся и paint вставит дубликат), а здесь — только
+	// живые колонки: срезанная под ноль колонка перестаёт звать normalize.
+	bool hasLiveColumn(uint32_t cellOffset) const
+	{
+		std::lock_guard<std::recursive_mutex> lock(accessMtx);
+		const size_t b = static_cast<size_t>(cellOffset) >> kBlockShift;
+		return b < blockLive_.size() && blockLive_[b] != 0;
+	}
 	// Построить индекс заново (загрузка sidecar пишет col_ напрямую).
 	void buildBlockIndex();
 
@@ -188,6 +232,8 @@ private:
 	                      uint8_t b, bool transparent);
 	// Докинуть размер индекса блоков под offset (вставка колонки).
 	void growBlockIndex(uint32_t cellOffset);
+	// Ленивая пересборка blockBegin_ (вызывать под локом).
+	void ensureBlockBegin() const;
 };
 
 #endif // VOX_LAYERS_H

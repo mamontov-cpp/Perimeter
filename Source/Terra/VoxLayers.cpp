@@ -34,10 +34,7 @@ bool VoxColLayers::lookup(uint32_t cellOffset, int height, uint32_t* rgb,
 			hi = mid - 1;
 		} else {
 			const uint32_t b = begin_[static_cast<size_t>(mid)];
-			const uint32_t e =
-				mid + 1 < static_cast<int>(begin_.size())
-					? begin_[static_cast<size_t>(mid) + 1]
-					: static_cast<uint32_t>(ranges_.size());
+			const uint32_t e = end_[static_cast<size_t>(mid)];
 			const uint16_t h = static_cast<uint16_t>(height);
 			// Диапазонов в колонке обычно единицы — линейный проход; при
 			// больших списках выигрыш бинарного поиска нивелируется кэшем.
@@ -114,10 +111,7 @@ bool VoxColLayers::lookupSolidBelow(uint32_t cellOffset, int height,
 	// Обратный проход от верхнего диапазона с z1 <= height: первый
 	// непрозрачный — самый высокий сплошной воксель не выше запроса.
 	const uint32_t b = begin_[static_cast<size_t>(colIdx)];
-	const uint32_t e =
-		colIdx + 1 < static_cast<int>(begin_.size())
-			? begin_[static_cast<size_t>(colIdx) + 1]
-			: static_cast<uint32_t>(ranges_.size());
+	const uint32_t e = end_[static_cast<size_t>(colIdx)];
 	const uint16_t h = static_cast<uint16_t>(height);
 	for (uint32_t i = e; i-- > b;) {
 		const VoxLayerRange& r = ranges_[i];
@@ -139,19 +133,45 @@ int VoxColLayers::findColumn(uint32_t cellOffset) const
 	if (!mightHaveColumn(cellOffset)) {
 		return -1;
 	}
-	int lo = 0;
-	int hi = static_cast<int>(col_.size()) - 1;
-	while (lo <= hi) {
+	ensureBlockBegin();
+	const size_t blk = static_cast<size_t>(cellOffset) >> kBlockShift;
+	int lo = static_cast<int>(blockBegin_[blk]);
+	int hi = static_cast<int>(blockBegin_[blk + 1]);
+	while (lo < hi) {
 		const int mid = (lo + hi) / 2;
 		if (col_[static_cast<size_t>(mid)] < cellOffset) {
 			lo = mid + 1;
 		} else if (col_[static_cast<size_t>(mid)] > cellOffset) {
-			hi = mid - 1;
+			hi = mid;
 		} else {
 			return mid;
 		}
 	}
 	return -1;
+}
+
+void VoxColLayers::ensureBlockBegin() const
+{
+	if (!blockBeginDirty_) {
+		return;
+	}
+	blockBeginDirty_ = false;
+	if (col_.empty()) {
+		blockBegin_.clear();
+		return;
+	}
+	const size_t blocks =
+	    (static_cast<size_t>(col_.back()) >> kBlockShift) + 1;
+	blockBegin_.assign(blocks + 1, 0);
+	size_t idx = 0;
+	for (size_t b = 0; b < blocks; ++b) {
+		const uint32_t beg = static_cast<uint32_t>(b) << kBlockShift;
+		while (idx < col_.size() && col_[idx] < beg) {
+			++idx;
+		}
+		blockBegin_[b] = static_cast<uint32_t>(idx);
+	}
+	blockBegin_[blocks] = static_cast<uint32_t>(col_.size());
 }
 
 const VoxLayerRange* VoxColLayers::columnRanges(int colIdx, int* count) const
@@ -162,10 +182,7 @@ const VoxLayerRange* VoxColLayers::columnRanges(int colIdx, int* count) const
 		return nullptr;
 	}
 	const uint32_t b = begin_[static_cast<size_t>(colIdx)];
-	const uint32_t e =
-		colIdx + 1 < static_cast<int>(begin_.size())
-			? begin_[static_cast<size_t>(colIdx) + 1]
-			: static_cast<uint32_t>(ranges_.size());
+	const uint32_t e = end_[static_cast<size_t>(colIdx)];
 	*count = static_cast<int>(e - b);
 	return ranges_.data() + b;
 }
@@ -187,55 +204,66 @@ void VoxColLayers::setColumn(uint32_t cellOffset, const VoxLayerRange* ranges,
 	if (count < 0) {
 		count = 0;
 	}
-	// In-place splice. The previous version rebuilt all three vectors for
-	// every call — O(n) allocations + full copies per painted column, which
-	// made a stamp over k cells O(k·n) and visibly slow. All element types
-	// are PODs, so insert/erase are plain memmoves; the only O(n) part is
-	// the begin_ shift (4-byte ints), unavoidable with a flat pool.
+	// Мутации O(диапазоны колонки), не O(пул): слот колонки задаётся парой
+	// begin_/end_ (границы развязаны — в пуле есть дырки), удалённая
+	// колонка остаётся ТОМБСТОУНОМ (begin_==end_) — без memmove col_.
+	// Дырки и томбстоуны упаковывает лениво compact() (перед сохранением).
 	const int idx = findColumn(cellOffset);
 	if (idx >= 0) {
+		const uint32_t b = begin_[static_cast<size_t>(idx)];
+		const uint32_t e = end_[static_cast<size_t>(idx)];
+		liveRanges_ -= e - b;
 		if (count == 0) {
-			// Удаление колонки — блок освобождается.
+			if (e > b) {
+				// live -> tombstone: живых слоев больше нет — игровой гейт
+				// hasLiveColumn перестаёт звать normalize для этой колонки.
+				const size_t blk =
+				    static_cast<size_t>(cellOffset) >> kBlockShift;
+				if (blk < blockLive_.size() && blockLive_[blk] > 0) {
+					--blockLive_[blk];
+				}
+				++tombstones_;
+			}
+			end_[static_cast<size_t>(idx)] = b;
+			return;
+		}
+		liveRanges_ += count;
+		if (e == b) {
+			// Воскрешение томбстоуна.
 			const size_t blk =
-				static_cast<size_t>(cellOffset) >> kBlockShift;
-			if (blk < blockCount_.size() && blockCount_[blk] > 0) {
-				--blockCount_[blk];
+			    static_cast<size_t>(cellOffset) >> kBlockShift;
+			growBlockIndex(cellOffset);
+			++blockLive_[blk];
+			if (tombstones_ > 0) {
+				--tombstones_;
 			}
 		}
-		const uint32_t b = begin_[static_cast<size_t>(idx)];
-		const uint32_t e =
-			idx + 1 < static_cast<int>(begin_.size())
-				? begin_[static_cast<size_t>(idx) + 1]
-				: static_cast<uint32_t>(ranges_.size());
-		const uint32_t oldCount = e - b;
-		if (static_cast<uint32_t>(count) == oldCount) {
+		if (static_cast<uint32_t>(count) == e - b) {
 			// Same shape: copy the ranges in place (the common repaint).
 			std::copy(ranges, ranges + count, ranges_.begin() + b);
 			return;
 		}
-		ranges_.erase(ranges_.begin() + b, ranges_.begin() + e);
-		if (count > 0) {
-			ranges_.insert(ranges_.begin() + b, ranges, ranges + count);
+		if (static_cast<uint32_t>(count) < e - b) {
+			// Ужать на месте; хвост старого слота — дырка в пуле.
+			std::copy(ranges, ranges + count, ranges_.begin() + b);
+			end_[static_cast<size_t>(idx)] = b + count;
+			return;
 		}
-		const int delta = count - static_cast<int>(oldCount);
-		for (size_t j = static_cast<size_t>(idx) + 1; j < begin_.size(); ++j) {
-			begin_[j] = static_cast<uint32_t>(static_cast<int>(begin_[j]) +
-			                                 delta);
-		}
-		if (count == 0) {
-			col_.erase(col_.begin() + idx);
-			begin_.erase(begin_.begin() + idx);
-		}
+		// Рост: новый слот в конец пула (amortized), старый — дырка.
+		const uint32_t nb = static_cast<uint32_t>(ranges_.size());
+		ranges_.insert(ranges_.end(), ranges, ranges + count);
+		begin_[static_cast<size_t>(idx)] = nb;
+		end_[static_cast<size_t>(idx)] = nb + count;
 		return;
 	}
 	if (count == 0) {
 		return;
 	}
-	// Вставка новой колонки: индекс блока учитывает её.
-	growBlockIndex(cellOffset);
-	++blockCount_[static_cast<size_t>(cellOffset) >> kBlockShift];
-	// Вставка с сохранением сортировки: пул сращивается
-	// в позиции poolPos — между диапазонами колонок pos-1 и pos.
+	// Вставка новой колонки: слот — в конец пула (не в середину, без
+	// memmove пула; порядок пула != порядок col_ — допустимо, границы
+	// колонок заданы begin_/end_).
+	const uint32_t nb = static_cast<uint32_t>(ranges_.size());
+	ranges_.insert(ranges_.end(), ranges, ranges + count);
 	size_t pos = 0;
 	{
 		size_t lo = 0, hi = col_.size();
@@ -249,14 +277,49 @@ void VoxColLayers::setColumn(uint32_t cellOffset, const VoxLayerRange* ranges,
 		}
 		pos = lo;
 	}
-	const uint32_t poolPos =
-		pos < begin_.size() ? begin_[pos] : static_cast<uint32_t>(ranges_.size());
 	col_.insert(col_.begin() + static_cast<ptrdiff_t>(pos), cellOffset);
-	begin_.insert(begin_.begin() + static_cast<ptrdiff_t>(pos), poolPos);
-	ranges_.insert(ranges_.begin() + poolPos, ranges, ranges + count);
-	for (size_t j = pos + 1; j < begin_.size(); ++j) {
-		begin_[j] = static_cast<uint32_t>(static_cast<int>(begin_[j]) + count);
+	begin_.insert(begin_.begin() + static_cast<ptrdiff_t>(pos), nb);
+	end_.insert(end_.begin() + static_cast<ptrdiff_t>(pos),
+	            nb + static_cast<uint32_t>(count));
+	liveRanges_ += count;
+	growBlockIndex(cellOffset);
+	++blockCount_[static_cast<size_t>(cellOffset) >> kBlockShift];
+	++blockLive_[static_cast<size_t>(cellOffset) >> kBlockShift];
+	// Вставка сдвинула индексы колонок после pos — кэш первых колонок
+	// блоков протух.
+	blockBeginDirty_ = true;
+}
+
+void VoxColLayers::compact()
+{
+	std::lock_guard<std::recursive_mutex> lock(accessMtx);
+	std::vector<uint32_t> ncol;
+	std::vector<uint32_t> nbegin;
+	std::vector<uint32_t> nend;
+	std::vector<VoxLayerRange> nranges;
+	ncol.reserve(col_.size());
+	nbegin.reserve(col_.size());
+	nend.reserve(col_.size());
+	nranges.reserve(static_cast<size_t>(liveRanges_));
+	for (size_t i = 0; i < col_.size(); ++i) {
+		const uint32_t c =
+		    end_[i] - begin_[i];
+		if (!c) {
+			continue; // tombstone
+		}
+		nbegin.push_back(static_cast<uint32_t>(nranges.size()));
+		nranges.insert(nranges.end(), ranges_.begin() + begin_[i],
+		               ranges_.begin() + end_[i]);
+		nend.push_back(static_cast<uint32_t>(nranges.size()));
+		ncol.push_back(col_[i]);
 	}
+	col_.swap(ncol);
+	begin_.swap(nbegin);
+	end_.swap(nend);
+	ranges_.swap(nranges);
+	tombstones_ = 0;
+	buildBlockIndex();
+	++version;
 }
 
 void VoxColLayers::paint(uint32_t cellOffset, int z0, int z1,
@@ -395,22 +458,46 @@ void VoxColLayers::clear()
 	std::lock_guard<std::recursive_mutex> lock(accessMtx);
 	col_.clear();
 	begin_.clear();
+	end_.clear();
 	ranges_.clear();
 	blockCount_.clear();
+	blockLive_.clear();
+	blockBegin_.clear();
+	blockBeginDirty_ = false;
+	liveRanges_ = 0;
+	tombstones_ = 0;
 }
 
 void VoxColLayers::buildBlockIndex()
 {
 	std::lock_guard<std::recursive_mutex> lock(accessMtx);
 	blockCount_.clear();
+	blockLive_.clear();
+	blockBegin_.clear();
+	blockBeginDirty_ = false;
 	if (col_.empty()) {
 		return;
 	}
 	const size_t blocks =
 		(static_cast<size_t>(col_.back()) >> kBlockShift) + 1;
 	blockCount_.assign(blocks, 0u);
-	for (uint32_t off : col_) {
-		++blockCount_[static_cast<size_t>(off) >> kBlockShift];
+	blockLive_.assign(blocks, 0u);
+	blockBegin_.assign(blocks + 1, 0u);
+	size_t idx = 0;
+	for (size_t b = 0; b < blocks; ++b) {
+		const uint32_t beg = static_cast<uint32_t>(b) << kBlockShift;
+		while (idx < col_.size() && col_[idx] < beg) {
+			++idx;
+		}
+		blockBegin_[b] = static_cast<uint32_t>(idx);
+	}
+	blockBegin_[blocks] = static_cast<uint32_t>(col_.size());
+	for (size_t i = 0; i < col_.size(); ++i) {
+		const size_t blk = static_cast<size_t>(col_[i]) >> kBlockShift;
+		++blockCount_[blk];
+		if (end_[i] > begin_[i]) {
+			++blockLive_[blk];
+		}
 	}
 }
 
@@ -419,6 +506,9 @@ void VoxColLayers::growBlockIndex(uint32_t cellOffset)
 	const size_t b = static_cast<size_t>(cellOffset) >> kBlockShift;
 	if (b >= blockCount_.size()) {
 		blockCount_.resize(b + 1, 0u);
+	}
+	if (b >= blockLive_.size()) {
+		blockLive_.resize(b + 1, 0u);
 	}
 }
 

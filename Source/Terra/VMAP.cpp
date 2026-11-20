@@ -366,6 +366,16 @@ static bool loadHeights16Sidecar(vrtMap& m) {
 		if (totalRanges) {
 			fstream.read(m.voxLayers.ranges_.data(), poolBytes);
 		}
+		// Файл хранит только НАЧАЛА слотов (старый формат: пул упакован,
+		// конец колонки = начало следующей); в рантайме границы развязаны
+		// (begin_/end_) — концы выводим здесь.
+		m.voxLayers.end_.resize(nColumns);
+		for (uint32_t i = 0; i < nColumns; ++i) {
+			m.voxLayers.end_[i] =
+			    i + 1 < nColumns ? m.voxLayers.begin_[i + 1] : totalRanges;
+		}
+		m.voxLayers.liveRanges_ = totalRanges;
+		m.voxLayers.tombstones_ = 0;
 		// col_ заполнен напрямую (не через setColumn) — индекс блоков
 		// строим здесь.
 		m.voxLayers.buildBlockIndex();
@@ -377,9 +387,7 @@ static bool loadHeights16Sidecar(vrtMap& m) {
 		bool layersOk = true;
 		for (uint32_t i = 0; layersOk && i < nColumns; ++i) {
 			const uint32_t b = m.voxLayers.begin_[i];
-			const uint32_t e = i + 1 < nColumns
-				? m.voxLayers.begin_[i + 1]
-				: totalRanges;
+			const uint32_t e = m.voxLayers.end_[i];
 			if (b > totalRanges || e > totalRanges || e < b) {
 				layersOk = false;
 			}
@@ -443,6 +451,10 @@ static void saveHeights16Sidecar(vrtMap& m) {
 		fmap.write(m.SurColBuf, sizeof(uint32_t) * cells);
 	}
 	if (flags & HEIGHTS16_FLAG_LAYERS) {
+		// Пул в рантайме содержит дырки/томбстоуны — перед записью
+		// упаковываем (O(N), сохранение редкое). Формат файла прежний:
+		// col_/begin_ + общий размер пула.
+		m.voxLayers.compact();
 		const uint32_t nColumns = static_cast<uint32_t>(m.voxLayers.col_.size());
 		const uint32_t totalRanges =
 			static_cast<uint32_t>(m.voxLayers.ranges_.size());

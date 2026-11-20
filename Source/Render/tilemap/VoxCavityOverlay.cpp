@@ -389,7 +389,7 @@ void VoxCavityOverlay::rebuildRect(int x0, int y0, int x1, int y1)
 		Chunk ch;
 		ch.off = off;
 		ch.hash = hash;
-		voxCavityAppendColumn(vMap, cx, cy, ch.verts);
+		voxCavityAppendColumn(vMap, cx, cy, ch.verts, /*emitSides=*/false);
 		if (hadOld) {
 			if (ch.verts.empty() || old[oldPos].verts != ch.verts) {
 				changed = true;
@@ -456,6 +456,70 @@ void VoxCavityOverlay::rebuildRect(int x0, int y0, int x1, int y1)
 			capRows_.emplace(y, std::move(caps));
 		}
 	}
+	// Walls: merged side faces, stored per row (+y owners) and per column
+	// (+x owners) like the caps. Candidate cells (cavity columns + solid
+	// neighbours, colOffs) are bucketed by owner row/column; a row/column
+	// with no candidates and no stored entry is skipped.
+	{
+		std::vector<std::vector<std::uint32_t>> rowCells(
+		    static_cast<size_t>(y1) + 2);
+		std::map<int, std::vector<std::uint32_t>> colCells;
+		for (const std::uint32_t off : colOffs) {
+			const int cx = static_cast<int>(off % mapW);
+			const int cy = static_cast<int>(off / mapW);
+			if (cy >= y0 - 1 && cy <= y1) {
+				rowCells[static_cast<size_t>(cy)].push_back(off);
+			}
+			if (cx >= x0 - 1 && cx <= x1) {
+				colCells[cx].push_back(off);
+			}
+		}
+		for (int y = std::max(0, y0 - 1); y <= y1; ++y) {
+			auto oldRow = wallRows_.find(y);
+			const bool hadRow = oldRow != wallRows_.end();
+			const auto& cells = rowCells[static_cast<size_t>(y)];
+			if (cells.empty() && !hadRow) {
+				continue;
+			}
+			std::vector<VoxCavityVertex> w;
+			voxCavityAppendRowWallY(vMap, y, cells.data(), cells.size(), w);
+			const bool same = hadRow && oldRow->second == w;
+			if (hadRow) {
+				wallRows_.erase(oldRow);
+			}
+			if (!same) {
+				changed = true;
+			}
+			if (!w.empty()) {
+				wallRows_.emplace(y, std::move(w));
+			}
+		}
+		for (int x = std::max(0, x0 - 1); x <= x1; ++x) {
+			auto oldCol = wallCols_.find(x);
+			const bool hadCol = oldCol != wallCols_.end();
+			const auto it = colCells.find(x);
+			const std::vector<std::uint32_t>* cells =
+			    it != colCells.end() ? &it->second : nullptr;
+			if ((!cells || cells->empty()) && !hadCol) {
+				continue;
+			}
+			std::vector<VoxCavityVertex> w;
+			if (cells) {
+				voxCavityAppendColWallX(vMap, x, cells->data(), cells->size(),
+				                        w);
+			}
+			const bool same = hadCol && oldCol->second == w;
+			if (hadCol) {
+				wallCols_.erase(oldCol);
+			}
+			if (!same) {
+				changed = true;
+			}
+			if (!w.empty()) {
+				wallCols_.emplace(x, std::move(w));
+			}
+		}
+	}
 	// ALWAYS install `next`: the window chunks were MOVED into old/next,
 	// so an unchanged rebuild that returned early here would leave chunks_
 	// full of moved-from (emptied) entries - the stored mesh was silently
@@ -481,6 +545,12 @@ void VoxCavityOverlay::rebuildRect(int x0, int y0, int x1, int y1)
 		for (const auto& row : capRows_) {
 			total += row.second.size();
 		}
+		for (const auto& row : wallRows_) {
+			total += row.second.size();
+		}
+		for (const auto& col : wallCols_) {
+			total += col.second.size();
+		}
 		flat.resize(total);
 		const double tFlat = voxperf::nowMs();
 		sVertexXYZDT1* dst = flat.data();
@@ -494,6 +564,16 @@ void VoxCavityOverlay::rebuildRect(int x0, int y0, int x1, int y1)
 			memcpy(dst, row.second.data(),
 			       row.second.size() * sizeof(sVertexXYZDT1));
 			dst += row.second.size();
+		}
+		for (const auto& row : wallRows_) {
+			memcpy(dst, row.second.data(),
+			       row.second.size() * sizeof(sVertexXYZDT1));
+			dst += row.second.size();
+		}
+		for (const auto& col : wallCols_) {
+			memcpy(dst, col.second.data(),
+			       col.second.size() * sizeof(sVertexXYZDT1));
+			dst += col.second.size();
 		}
 		voxperf::log("publish: flatten %.2f ms verts=%zu", voxperf::nowMs() - tFlat, flat.size());
 		node_->setTriangles(flat);
