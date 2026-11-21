@@ -302,6 +302,12 @@ struct vrtMap {
 	// и слоёв не меняли (игровые UpdateMap от движущихся юнитов — чистая
 	// перекраска видимости).
 	uint64_t terraVersion = 0;
+	// Монотонный счётчик изменений поверхностной декали (SurColBuf):
+	// кепки полостей красятся декалью поверх слоёв, поэтому чисто
+	// декальная перекраска (цветовой штамп «наверх», putTrueColor) тоже
+	// обязана дотянуться до оверлея — иначе краска «наверх» по cavity-
+	// колонке нигде не видна (слои её не трогают, хайтфилд рисует срез).
+	uint64_t surVersion = 0;
 	// Отладка: offset последней клетки с изменённой высотой дамбы.
 	int terraVersionLastOff = 0;
 	// Игровая гигиена слоёв: normalizeTransparentColumn вырезает диапазоны,
@@ -685,6 +691,7 @@ struct vrtMap {
 		//слоя на высоте. Прозрачный воксель «не существует»: показываем
 		//верхний сплошной воксель ниже него (срез проваливается сквозь
 		//пустоту), иначе — обычный цвет поверхности.
+		bool surfaceIsCutVoid = false;
 		if(!voxLayers.empty()){
 			// Цвет считаем для той поверхности, которую РЕНДЕРИТ heightfield:
 			// у колонки с прозрачными вокселями это display height (основание
@@ -702,9 +709,13 @@ struct vrtMap {
 			if((flags&VOX_LAYER_TRANSPARENT) &&
 			   voxLayers.lookupSolidBelow(static_cast<uint32_t>(off),h,&rgb))
 				return trueColor16(0xFF000000u|rgb, RnrBuf[off]&0x7F);
+			// Поверхность — срез полости, а под ней БЕЗЫМЯННАЯ порода:
+			// декаль топа сюда не протекает (краска «наверх» по верхнему
+			// параллелепипеду не должна перекрашивать и пол, см. репорт).
+			surfaceIsCutVoid = (flags&VOX_LAYER_TRANSPARENT) != 0;
 		}
 		//True-color: прямой RGB с освещением вместо палитры SurBuf.
-		if(SurColBuf){
+		if(SurColBuf && !surfaceIsCutVoid){
 			const unsigned int c=SurColBuf[off];
 			if(c&0xFF000000) return trueColor16(c, RnrBuf[off]&0x7F);
 		}
@@ -743,6 +754,7 @@ struct vrtMap {
 		//слоя на высоте. Прозрачный воксель «не существует»: показываем
 		//верхний сплошной воксель ниже него (срез проваливается сквозь
 		//пустоту), иначе — обычный цвет поверхности.
+		bool surfaceIsCutVoid = false;
 		if(!voxLayers.empty()){
 			// Цвет считаем для той поверхности, которую РЕНДЕРИТ heightfield:
 			// у колонки с прозрачными вокселями это display height (основание
@@ -760,9 +772,13 @@ struct vrtMap {
 			if((flags&VOX_LAYER_TRANSPARENT) &&
 			   voxLayers.lookupSolidBelow(static_cast<uint32_t>(off),h,&rgb))
 				return trueColor32(0xFF000000u|rgb, RnrBuf[off]&0x7F);
+			// Поверхность — срез полости, а под ней БЕЗЫМЯННАЯ порода:
+			// декаль топа сюда не протекает (краска «наверх» по верхнему
+			// параллелепипеду не должна перекрашивать и пол, см. репорт).
+			surfaceIsCutVoid = (flags&VOX_LAYER_TRANSPARENT) != 0;
 		}
 		//True-color: прямой RGB с освещением вместо палитры SurBuf.
-		if(SurColBuf){
+		if(SurColBuf && !surfaceIsCutVoid){
 			const unsigned int c=SurColBuf[off];
 			if(c&0xFF000000) return trueColor32(c, RnrBuf[off]&0x7F);
 		}
@@ -883,12 +899,19 @@ struct vrtMap {
 	void ensureSurColBuf(void);
 	// Клетка снова рендерится через палитру по SurBuf.
 	void clearTrueColor(int offset) {
-		if (SurColBuf) SurColBuf[offset] = 0;
+		if (SurColBuf && SurColBuf[offset] != 0) {
+			SurColBuf[offset] = 0;
+			++surVersion;
+		}
 	}
 	void putTrueColor(int offset, unsigned char r, unsigned char g, unsigned char b) {
 		ensureSurColBuf();
-		SurColBuf[offset] = 0xFF000000u | (static_cast<unsigned int>(r) << 16) |
-		                    (static_cast<unsigned int>(g) << 8) | b;
+		const unsigned int v = 0xFF000000u | (static_cast<unsigned int>(r) << 16) |
+		                       (static_cast<unsigned int>(g) << 8) | b;
+		if (SurColBuf[offset] != v) {
+			SurColBuf[offset] = v;
+			++surVersion;
+		}
 	}
 	// Записан ли на клетке собственный цвет (AA != 0).
 	bool cellHasTrueColor(int offset) const {

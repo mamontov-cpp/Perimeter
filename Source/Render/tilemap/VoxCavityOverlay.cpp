@@ -117,7 +117,8 @@ void VoxCavityOverlay::init(cScene* scene, cTileMap* tilemap)
 	voxperf::log("overlay init: full rebuild START");
 	rebuildAll();
 	voxperf::log("overlay init: full rebuild END (chunks=%zu)", chunks_.size());
-	lastSeenVersion_ = vMap.terraVersion + vMap.voxLayers.version;
+	lastSeenVersion_ = vMap.terraVersion + vMap.voxLayers.version +
+	                   vMap.surVersion;
 }
 
 void VoxCavityOverlay::shutdown()
@@ -188,10 +189,11 @@ void VoxCavityOverlay::drainPending()
 		}
 		rects.swap(pending_);
 	}
-	// Nothing the mesh depends on (heights, layers) changed since the last
-	// drain — the queued rects are pure color/vision updates (moving
-	// units, zeroplast re-marking). Drop them wholesale.
-	const std::uint64_t seen = vMap.terraVersion + vMap.voxLayers.version;
+	// Nothing the mesh depends on (heights, layers, surface decals)
+	// changed since the last drain — the queued rects are pure color/vision
+	// updates (moving units, zeroplast re-marking). Drop them wholesale.
+	const std::uint64_t seen = vMap.terraVersion + vMap.voxLayers.version +
+	                           vMap.surVersion;
 	if (seen == lastSeenVersion_) {
 		static unsigned skippedVision = 0;
 		skippedVision += static_cast<unsigned>(rects.size());
@@ -278,38 +280,45 @@ void VoxCavityOverlay::drainPending()
 	    std::move(rects));
 }
 
-void VoxCavityOverlay::meshRectFull(int x0, int y0, int x1, int y1,
-                                    RectMeshes& out) const
+void VoxCavityOverlay::rebuildAll(int bandsRequested)
 {
+	std::lock_guard<std::mutex> lock(mutex_);
 	const int mapW = static_cast<int>(vMap.H_SIZE);
-	const std::uint32_t offBeg =
-	    static_cast<std::uint32_t>(y0) * mapW + static_cast<std::uint32_t>(x0);
-	const std::uint32_t offEnd =
-	    static_cast<std::uint32_t>(y1) * mapW + static_cast<std::uint32_t>(x1);
-	// Кандидаты: кавити-колонки ректа + их 4-соседи (владельцами стен
-	// могут быть «просто solid» клетки). Полосы rebuildAll перекрываются
-	// кольцом ±1 — дубликаты чанков схлопываем по off при мерже.
-	std::vector<std::uint32_t> colOffs;
-	const auto colRange = vMap.voxLayers.columnIndexRange(offBeg, offEnd);
 	const int mapH = static_cast<int>(vMap.V_SIZE);
-	for (int i = colRange.first; i < colRange.second; ++i) {
+	const unsigned hc = std::thread::hardware_concurrency();
+	const int bands = bandsRequested > 0
+	    ? bandsRequested
+	    : std::min(16, std::max(1, hc ? static_cast<int>(hc) : 1));
+	voxperf::log("rebuildAll: full rebuild START bands=%d", bands);
+	const double tAll = voxperf::nowMs();
+
+	// ФАЗА 1 (один поток): ГЛОБАЛЬНЫЙ список кандидатов — все кавити-
+	// колонки мира + их твёрдые 4-соседи (владельцы стен обрывов к
+	// полостям). Раньше каждая полоса собирала СВОЙ список с кольцом ±1:
+	// на границах полос мерж серий разрезался (меш зависел от числа ядер!)
+	// и терялись клетки-«спонсоры» с другой стороны границы (дырки в
+	// стенах на ряд ровно по границе полосы).
+	const std::uint32_t offLast =
+	    static_cast<std::uint32_t>(mapH) * mapW - 1;
+	const auto allRange = vMap.voxLayers.columnIndexRange(0, offLast);
+	std::vector<std::uint32_t> colOffs;
+	colOffs.reserve(
+	    static_cast<size_t>(allRange.second - allRange.first) * 2);
+	for (int i = allRange.first; i < allRange.second; ++i) {
 		const std::uint32_t off = vMap.voxLayers.columnOffset(i);
-		const int cx = static_cast<int>(off % mapW);
-		if (cx < x0 || cx > x1) {
-			continue;
-		}
 		colOffs.push_back(off);
+		const int cx = static_cast<int>(off % mapW);
 		const int cy = static_cast<int>(off / mapW);
 		const int dxs[4] = {1, -1, 0, 0};
 		const int dys[4] = {0, 0, 1, -1};
 		for (int d = 0; d < 4; ++d) {
-			const int nx2 = cx + dxs[d];
-			const int ny2 = cy + dys[d];
-			if (nx2 < 0 || ny2 < 0 || nx2 >= mapW || ny2 >= mapH) {
+			const int nx = cx + dxs[d];
+			const int ny = cy + dys[d];
+			if (nx < 0 || ny < 0 || nx >= mapW || ny >= mapH) {
 				continue;
 			}
 			const std::uint32_t noff =
-			    static_cast<std::uint32_t>(ny2) * mapW + nx2;
+			    static_cast<std::uint32_t>(ny) * mapW + nx;
 			if (!vMap.voxLayers.columnHasTransparent(noff)) {
 				colOffs.push_back(noff);
 			}
@@ -318,106 +327,106 @@ void VoxCavityOverlay::meshRectFull(int x0, int y0, int x1, int y1,
 	std::sort(colOffs.begin(), colOffs.end());
 	colOffs.erase(std::unique(colOffs.begin(), colOffs.end()),
 	              colOffs.end());
-	out.chunks.reserve(colOffs.size());
-	for (const std::uint32_t off : colOffs) {
-		Chunk ch;
-		ch.off = off;
-		const int cx = static_cast<int>(off % mapW);
-		const int cy = static_cast<int>(off / mapW);
-		ch.hash = columnInputHash(cx, cy);
-		voxCavityAppendColumn(vMap, cx, cy, ch.verts, /*emitSides=*/false);
-		if (!ch.verts.empty()) {
-			out.chunks.push_back(std::move(ch));
-		}
-	}
-	// Кепки: строки ректа СТРОГО [y0..y1] — в полном проходе каждая
-	// строка владеет своей +y гранью ровно один раз.
-	for (int y = y0; y <= y1; ++y) {
-		const std::uint32_t rowBeg =
-		    static_cast<std::uint32_t>(y) * mapW +
-		    static_cast<std::uint32_t>(x0);
-		const std::uint32_t rowEnd =
-		    static_cast<std::uint32_t>(y) * mapW +
-		    static_cast<std::uint32_t>(x1);
-		const auto rowRange =
-		    vMap.voxLayers.columnIndexRange(rowBeg, rowEnd);
-		if (rowRange.first == rowRange.second) {
-			continue;
-		}
-		std::vector<VoxCavityVertex> caps;
-		voxCavityAppendRowCaps(vMap, y, 0, mapW - 1, caps);
-		if (!caps.empty()) {
-			out.capRows.emplace(y, std::move(caps));
-		}
-	}
-	// Стены: +y владеют строки (строго [y0..y1]), +x — колонки (строго
-	// [x0..x1]). Ключи wallCols (x) общие между полосами — мерж конкатом.
-	{
-		std::vector<std::vector<std::uint32_t>> rowCells(
-		    static_cast<size_t>(y1) + 1);
-		std::vector<std::vector<std::uint32_t>> colCells(
-		    static_cast<size_t>(x1) + 1);
-		for (const std::uint32_t off : colOffs) {
-			const int cx = static_cast<int>(off % mapW);
-			const int cy = static_cast<int>(off / mapW);
-			if (cy >= y0 && cy <= y1) {
-				rowCells[static_cast<size_t>(cy)].push_back(off);
-			}
-			// ТОЛЬКО клетки СВОИХ строк: кольцо ±1 (y0-1/y1+1), попавшее в
-			// colCells, задублировало бы стены колонки на границе полос
-			// (соседняя полоса покрывает эти клетки сама).
-			if (cy >= y0 && cy <= y1 && cx >= x0 && cx <= x1) {
-				colCells[static_cast<size_t>(cx)].push_back(off);
-			}
-		}
-		for (int y = y0; y <= y1; ++y) {
-			const auto& cells = rowCells[static_cast<size_t>(y)];
-			if (cells.empty()) {
-				continue;
-			}
-			std::vector<VoxCavityVertex> w;
-			voxCavityAppendRowWallY(vMap, y, cells.data(), cells.size(), w);
-			if (!w.empty()) {
-				out.wallRows.emplace(y, std::move(w));
-			}
-		}
-		for (int x = x0; x <= x1; ++x) {
-			const auto& cells = colCells[static_cast<size_t>(x)];
-			if (cells.empty()) {
-				continue;
-			}
-			std::vector<VoxCavityVertex> w;
-			voxCavityAppendColWallX(vMap, x, cells.data(), cells.size(), w);
-			if (!w.empty()) {
-				out.wallCols.emplace(x, std::move(w));
-			}
-		}
-	}
-}
 
-void VoxCavityOverlay::rebuildAll()
-{
-	std::lock_guard<std::mutex> lock(mutex_);
-	const int mapW = static_cast<int>(vMap.H_SIZE);
-	const int mapH = static_cast<int>(vMap.V_SIZE);
-	// Параллелизм по горизонтальным полосам: полный меш мира (~192k
-	// колонок, 3.8 с однопоточно) режется на hardware_concurrency
-	// полос; мешер читает только vMap (внутренние локи voxLayers
-	// потокобезопасны), состояние оверлея на потоках не трогаем.
-	const unsigned hc = std::thread::hardware_concurrency();
-	const int bands =
-	    std::min(16, std::max(1, hc ? static_cast<int>(hc) : 1));
-	voxperf::log("rebuildAll: full rebuild START bands=%d", bands);
-	const double tAll = voxperf::nowMs();
+	// ФАЗА 2 (полосы): чанки — непересекающийся срез общего списка;
+	// кепки и +y стены — свой диапазон СТРОК; +x стены — свой диапазон
+	// КОЛОНОК с полным охватом по y (иначе серии разрезались бы на границах
+	// полос). Каждая строка/колонка обрабатывается ровно один раз и с
+	// ПОЛНЫМ списком кандидатов — выход идентичен однополосному прогону
+	// при любом числе полос (меш не зависит от числа ядер).
 	std::vector<RectMeshes> outs(bands);
 	{
 		std::vector<std::thread> threads;
 		threads.reserve(bands);
 		for (int b = 0; b < bands; ++b) {
-			const int y0 = b * mapH / bands;
-			const int y1 = (b + 1) * mapH / bands - 1;
-			threads.emplace_back([this, y0, y1, mapW, &outs, b] {
-				meshRectFull(0, y0, mapW - 1, y1, outs[b]);
+			threads.emplace_back(
+			    [this, &colOffs, &outs, b, bands, mapW, mapH] {
+				RectMeshes& o = outs[b];
+				// Чанки: непересекающийся срез общего (уже уникального)
+				// списка — дедуп при мерже больше не нужен.
+				const size_t lo =
+				    static_cast<size_t>(b) * colOffs.size() / bands;
+				const size_t hi =
+				    static_cast<size_t>(b + 1) * colOffs.size() / bands;
+				o.chunks.reserve(hi - lo);
+				for (size_t k = lo; k < hi; ++k) {
+					const std::uint32_t off = colOffs[k];
+					Chunk ch;
+					ch.off = off;
+					const int cx = static_cast<int>(off % mapW);
+					const int cy = static_cast<int>(off / mapW);
+					ch.hash = columnInputHash(cx, cy);
+					voxCavityAppendColumn(vMap, cx, cy, ch.verts,
+					                      /*emitSides=*/false);
+					if (!ch.verts.empty()) {
+						o.chunks.push_back(std::move(ch));
+					}
+				}
+				// Строки [y0..y1]: кепки и +y стены. Список отсортирован
+				// по off (row-major) — клетки каждой строки идут непрерывным
+				// куском.
+				const int y0 = b * mapH / bands;
+				const int y1 = (b + 1) * mapH / bands - 1;
+				const std::uint32_t rowBeg =
+				    static_cast<std::uint32_t>(y0) * mapW;
+				const std::uint32_t rowEnd =
+				    static_cast<std::uint32_t>(y1) * mapW + (mapW - 1);
+				const auto rowLo = std::lower_bound(
+				    colOffs.begin(), colOffs.end(), rowBeg);
+				const auto rowHi = std::upper_bound(
+				    colOffs.begin(), colOffs.end(), rowEnd);
+				std::vector<std::uint32_t> rowCells;
+				for (auto it = rowLo; it != rowHi;) {
+					const int cy = static_cast<int>(*it / mapW);
+					auto jt = it;
+					while (jt != rowHi &&
+					       static_cast<int>(*jt / mapW) == cy) {
+						++jt;
+					}
+					rowCells.assign(it, jt);
+					it = jt;
+					const auto cavRange = vMap.voxLayers.columnIndexRange(
+					    static_cast<std::uint32_t>(cy) * mapW,
+					    static_cast<std::uint32_t>(cy) * mapW +
+					        (mapW - 1));
+					if (cavRange.first != cavRange.second) {
+						std::vector<VoxCavityVertex> caps;
+						voxCavityAppendRowCaps(vMap, cy, 0, mapW - 1, caps);
+						if (!caps.empty()) {
+							o.capRows.emplace(cy, std::move(caps));
+						}
+					}
+					if (!rowCells.empty()) {
+						std::vector<VoxCavityVertex> w;
+						voxCavityAppendRowWallY(vMap, cy, rowCells.data(),
+						                        rowCells.size(), w);
+						if (!w.empty()) {
+							o.wallRows.emplace(cy, std::move(w));
+						}
+					}
+				}
+				// Колонки [x0..x1]: +x стены по полной высоте (серии идут
+				// вдоль y — разрезание по строкам полос рвало бы мерж).
+				const int x0 = b * mapW / bands;
+				const int x1 = (b + 1) * mapW / bands - 1;
+				std::vector<std::uint32_t> colCells;
+				for (int x = x0; x <= x1; ++x) {
+					colCells.clear();
+					for (const std::uint32_t off : colOffs) {
+						if (static_cast<int>(off % mapW) == x) {
+							colCells.push_back(off);
+						}
+					}
+					if (colCells.empty()) {
+						continue;
+					}
+					std::vector<VoxCavityVertex> w;
+					voxCavityAppendColWallX(vMap, x, colCells.data(),
+					                        colCells.size(), w);
+					if (!w.empty()) {
+						o.wallCols.emplace(x, std::move(w));
+					}
+				}
 			});
 		}
 		for (auto& t : threads) {
@@ -440,21 +449,13 @@ void VoxCavityOverlay::rebuildAll()
 			wallRows_.emplace(kv.first, std::move(kv.second));
 		}
 		for (auto& kv : o.wallCols) {
-			auto& dst = wallCols_[kv.first];
-			dst.insert(dst.end(),
-			           std::make_move_iterator(kv.second.begin()),
-			           std::make_move_iterator(kv.second.end()));
+			wallCols_.emplace(kv.first, std::move(kv.second));
 		}
 	}
-	// Кольцо ±1 полос даёт дубликаты чанков на границах — схлопываем
-	// по off (геометрия идентична: мешер детерминирован по входам).
+	// Чанки собраны из непересекающихся срезов — сортировка под бинарные
+	// поиски rebuildRect (unique не нужен: список кандидатов был уникален).
 	std::sort(chunks_.begin(), chunks_.end(),
 	          [](const Chunk& a, const Chunk& b) { return a.off < b.off; });
-	chunks_.erase(std::unique(chunks_.begin(), chunks_.end(),
-	                          [](const Chunk& a, const Chunk& b) {
-		                          return a.off == b.off;
-	                          }),
-	              chunks_.end());
 	dirty_ = true;
 	voxperf::log("rebuildAll: full rebuild END (chunks=%zu) took %.2f ms",
 	             chunks_.size(), voxperf::nowMs() - tAll);

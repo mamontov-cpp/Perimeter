@@ -89,6 +89,16 @@ unsigned int surfaceColor32(int off)
                                             h, &rgb)) {
             return vrtMap::trueColor32(0xFF000000u | rgb, vMap.RnrBuf[off] & 0x7F);
         }
+        // Поверхность — срез полости (или съеденный топ), а под ней
+        // безымянная порода: декаль топа сюда не протекает — иначе краска
+        // «наверх» по верхнему параллелепипеду зажигала и пол (см.
+        // VMAP.h getColor32 surfaceIsCutVoid — логика дублируется тут).
+        // ВАЖНО: полный байт света (с дамбовым битом) — Sur2Col по биту 7
+        // выбирает половину палитры; без него палитра Geo даёт почти
+        // чёрный цвет у дамбы (репорт «тёмный верх нижнего параллелепипеда»).
+        if (flags & VOX_LAYER_TRANSPARENT) {
+            return color32WithLighting(off, vMap.RnrBuf[off]);
+        }
     }
     if (vMap.SurColBuf && (vMap.SurColBuf[off] & 0xFF000000u)) {
         return vrtMap::trueColor32(vMap.SurColBuf[off], vMap.RnrBuf[off] & 0x7F);

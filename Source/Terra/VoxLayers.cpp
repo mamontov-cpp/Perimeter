@@ -185,12 +185,20 @@ static int topSolidFromRanges(const VoxLayerRange* r, int count, int height)
 }
 
 bool VoxColLayers::capInfo(int colIdx, int vxd, int* displayH,
-                           std::uint32_t* topRgb, std::uint8_t* topFlags) const
+                           std::uint32_t* topRgb, std::uint8_t* topFlags,
+                           std::uint32_t* topInherit,
+                           std::uint32_t inheritFallback, bool* topFound) const
 {
 	std::lock_guard<std::recursive_mutex> lock(accessMtx);
 	*displayH = -1;
 	*topRgb = 0;
 	*topFlags = 0;
+	if (topInherit) {
+		*topInherit = inheritFallback;
+	}
+	if (topFound) {
+		*topFound = false;
+	}
 	if (colIdx < 0 || colIdx >= static_cast<int>(col_.size())) {
 		return false;
 	}
@@ -217,6 +225,28 @@ bool VoxColLayers::capInfo(int colIdx, int vxd, int* displayH,
 				*topFlags = r.flags;
 				*topRgb = (static_cast<std::uint32_t>(r.r) << 16) |
 				          (static_cast<std::uint32_t>(r.g) << 8) | r.b;
+				if (topFound) {
+					*topFound = true;
+				}
+				break;
+			}
+		}
+		if (topInherit) {
+			for (uint32_t k = e; k > b; --k) {
+				const VoxLayerRange& r = ranges_[k - 1];
+				if (static_cast<int>(r.z1) >= h ||
+				    (r.flags & VOX_LAYER_TRANSPARENT) != 0) {
+					continue;
+				}
+				// Покраска пола полости (по срезу) — поверхность, не
+				// тело острова: на кепку не наследуется (репорт:
+				// краска по нижнему параллелепипеду перекрашивала и
+				// верхний).
+				if ((r.flags & VOX_LAYER_OVER_VOID) != 0) {
+					continue;
+				}
+				*topInherit = (static_cast<std::uint32_t>(r.r) << 16) |
+				              (static_cast<std::uint32_t>(r.g) << 8) | r.b;
 				break;
 			}
 		}
@@ -588,6 +618,7 @@ void VoxColLayers::paint(uint32_t cellOffset, int z0, int z1,
 	// Вычитаем [nz0..nz1] из существующих диапазонов колонки.
 	const int idx = findColumn(cellOffset);
 	std::vector<VoxLayerRange> kept;
+	bool coveredVoid = false;
 	if (idx >= 0) {
 		int count = 0;
 		const VoxLayerRange* old = columnRanges(idx, &count);
@@ -596,6 +627,14 @@ void VoxColLayers::paint(uint32_t cellOffset, int z0, int z1,
 			if (o.z1 < nz0 || o.z0 > nz1) {
 				kept.push_back(o); // не пересекается
 				continue;
+			}
+			if (((o.flags & VOX_LAYER_TRANSPARENT) != 0 ||
+			     (o.flags & VOX_LAYER_OVER_VOID) != 0) &&
+			    z1 >= o.z0 && z0 <= o.z1) {
+				// краска легла на пустоту или на уже замаркированный
+				// «пустотный» диапазон — маркер наследуется (иначе
+				// перекраска пола теряла бы его)
+				coveredVoid = true;
 			}
 			if (o.z0 < nz0) { // левый остаток
 				VoxLayerRange left = o;
@@ -610,8 +649,12 @@ void VoxColLayers::paint(uint32_t cellOffset, int z0, int z1,
 		}
 	}
 
-	// Вставка с слиянием смежных одноцветных (и того же типа прозрачности).
+	// Вставка с слиянием смежных одноцветных (и того же типа прозрачности
+	// и того же маркера OVER_VOID — иначе маркер потерялся бы в мерже).
 	VoxLayerRange ins{nz0, nz1, r, g, b, flags};
+	if (coveredVoid) {
+		ins.flags = static_cast<uint8_t>(ins.flags | VOX_LAYER_OVER_VOID);
+	}
 	std::vector<VoxLayerRange> merged;
 	size_t i = 0;
 	while (i < kept.size() && kept[i].z1 < ins.z0) {
@@ -619,14 +662,18 @@ void VoxColLayers::paint(uint32_t cellOffset, int z0, int z1,
 		++i;
 	}
 	if (i < kept.size() && kept[i].z0 == ins.z0 &&
-	    sameColor(kept[i], r, g, b, transparent)) {
+	    sameColor(kept[i], r, g, b, transparent) &&
+	    (kept[i].flags & VOX_LAYER_OVER_VOID) ==
+	        (ins.flags & VOX_LAYER_OVER_VOID)) {
 		ins.z1 = kept[i].z1; // сливаемся с одноцветным справа
 		++i;
 	}
 	merged.push_back(ins);
 	for (; i < kept.size(); ++i) {
 		if (kept[i].z0 == ins.z1 + 1 &&
-		    sameColor(kept[i], r, g, b, transparent)) {
+		    sameColor(kept[i], r, g, b, transparent) &&
+		    (kept[i].flags & VOX_LAYER_OVER_VOID) ==
+		        (ins.flags & VOX_LAYER_OVER_VOID)) {
 			merged.back().z1 = kept[i].z1; // одноцветный сосед справа
 		} else {
 			merged.push_back(kept[i]);

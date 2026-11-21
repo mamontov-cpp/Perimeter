@@ -501,11 +501,15 @@ public:
 		// тулзеры идут через tVoxSetAll. Проверка дешёвая (миры без слоёв
 		// не платят ничего).
 		const auto oldD = vMap.VxDBuf[offB];
+		const auto oldG = vMap.VxGBuf[offB];
 		const int r = tVoxSetAllBody(offB, dV);
-		if (r && oldD != vMap.VxDBuf[offB]) {
-			// Высота изменилась: бамп версии (оверлей полостей
-			// перестраивается только по реальным изменениям террейна —
-			// игровые обновления видимости юнитов высот не трогают).
+		// Изменение ЛЮБОГО слоя считается: чисто гео-копание (VxD всегда
+		// 0) иначе не бампает версию — drainPending оверлея полостей
+		// выбрасывал такие ректы как «vision-only» и верхняя часть
+		// (кепки/стены) после выравнивания грунта НЕ перестраивалась
+		// (стрипы/дырки на полостях, репорт «the upper part don't get
+		// some»).
+		if (r && (oldD != vMap.VxDBuf[offB] || oldG != vMap.VxGBuf[offB])) {
 			++vMap.terraVersion;
 			vMap.terraVersionLastOff = offB;
 			// Гейт по КОЛОНКЕ, не по глобальному empty(): иначе каждое

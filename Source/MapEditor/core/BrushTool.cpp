@@ -2459,7 +2459,13 @@ void BrushTool::applyEffectToCell(const BrushParams& params, int x, int y, unsig
         }
         if (h < 0 || h >= surface) {
             vMap.putTrueColor(off, pr, pg, pb);
-            vMap.SetTer(x, y, nearestPaletteIndexFor(isDamCell, rgb));
+            // Cavity-клетка: SurBuf обслуживает палитрный фолбэк ПОЛА по
+            // срезу — топ-краской его трогать нельзя, иначе пол вспыхивает
+            // краской топ-штамва (репорт: краска по верхнему
+            // параллелепипеду зажигала и нижний).
+            if (vMap.cavityDisplayHeight(off) < 0) {
+                vMap.SetTer(x, y, nearestPaletteIndexFor(isDamCell, rgb));
+            }
         } else {
             const int d = std::max(1, params.paintDepth);
             const int z0 = std::max(0, h - d + 1);
@@ -2510,7 +2516,9 @@ void BrushTool::applyEffectToCell(const BrushParams& params, int x, int y, unsig
             vMap.putTrueColor(off, static_cast<unsigned char>((pixel >> 16) & 0xFF),
                               static_cast<unsigned char>((pixel >> 8) & 0xFF),
                               static_cast<unsigned char>(pixel & 0xFF));
-            vMap.SetTer(x, y, decal_.indexAt(dx, dy));
+            if (vMap.cavityDisplayHeight(off) < 0) {
+                vMap.SetTer(x, y, decal_.indexAt(dx, dy));
+            }
         } else {
             const int d = std::max(1, params.paintDepth);
             const int z0 = std::max(0, h - d + 1);

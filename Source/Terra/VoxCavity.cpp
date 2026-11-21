@@ -113,6 +113,28 @@ void segmentsOfRanges(const VoxLayerRange* ranges, int count, int height,
 	}
 }
 
+// Цвет ближайшего СПЛОШНОГО окрашенного диапазона строго ниже z.
+// «Безымянная» порода (зазоры между диапазонами) наследует краску под
+// собой, а не палитру материала поверхности колонки: SurBuf исторически
+// «рваный» (покраски, следы инструментов), и крышки/стены/нижние грани
+// полостей из него рендерились полосами поверх ровного тела острова
+// (полосатая крышка цилиндра EXTDEMO — слои под ней едино жёлтые). Ниже
+// ничего окрашенного нет — классический fallback (DamPal[SurBuf]).
+std::uint32_t nearestSolidColorBelow(const VoxLayerRange* ranges, int count,
+                                     int z, std::uint32_t fallback)
+{
+	for (int i = count - 1; i >= 0; --i) {
+		if (static_cast<int>(ranges[i].z1) >= z ||
+		    (ranges[i].flags & VOX_LAYER_TRANSPARENT)) {
+			continue;
+		}
+		return (static_cast<std::uint32_t>(ranges[i].r) << 16) |
+		       (static_cast<std::uint32_t>(ranges[i].g) << 8) |
+		       static_cast<std::uint32_t>(ranges[i].b);
+	}
+	return fallback;
+}
+
 // Constant-color solid runs of the column [0..height): the solid segments
 // split at layer-color boundaries; gaps and un-painted voxels take the
 // column default color. O(count) — runs, not voxels.
@@ -152,11 +174,13 @@ void runsOfRanges(const VoxLayerRange* ranges, int count, int height,
 			if (ri < count && static_cast<int>(ranges[ri].z0) > c) {
 				e = std::min(static_cast<int>(ranges[ri].z0) - 1, s.z1);
 			}
+			const std::uint32_t col =
+			    nearestSolidColorBelow(ranges, count, c, fallback);
 			if (!out.empty() && out.back().z1 + 1 == c &&
-			    out.back().color == fallback) {
+			    out.back().color == col) {
 				out.back().z1 = e;
 			} else {
-				out.push_back({c, e, fallback});
+				out.push_back({c, e, col});
 			}
 			c = e + 1;
 		}
@@ -361,6 +385,9 @@ namespace {
 // 20+ ms). Кандидаты — кавити-колонки ректа И их 4-соседи: владельцем
 // стены может быть и «просто solid» клетка (обрыв к полости), в col_
 // её нет, поэтому список передаётся явно.
+// Свет колонки — в условии мержа наравне с ранами: рельефное затенение
+// краевой клетки (склон у края плато) иначе красит ВСЮ серию своим
+// светом — полосы на стенах/крышках (тот же дефект, что у кепок).
 template <bool dirY>
 void appendMergedWalls(vrtMap& m, int line, const std::uint32_t* offs,
                        size_t n, std::vector<VoxCavityVertex>& out)
@@ -412,7 +439,9 @@ void appendMergedWalls(vrtMap& m, int line, const std::uint32_t* offs,
 			prev = -10;
 			continue;
 		}
-		if (accActive && t == prev + 1 && cur == accRuns) {
+		const unsigned cellLight = m.RnrBuf[off] & 0x7F;
+		if (accActive && t == prev + 1 && cur == accRuns &&
+		    cellLight == accLight) {
 			accB = t + 1;
 			prev = t;
 			continue;
@@ -422,7 +451,7 @@ void appendMergedWalls(vrtMap& m, int line, const std::uint32_t* offs,
 			accActive = true;
 			accA = t;
 			accB = t + 1;
-			accLight = m.RnrBuf[off] & 0x7F;
+			accLight = cellLight;
 			accRuns = cur;
 		}
 		prev = t;
@@ -457,13 +486,12 @@ void voxCavityAppendRowCaps(vrtMap& m, int y, int x0, int x1,
 	int runEndXCached = -1;
 	int runH = -1;
 	std::uint32_t runRgb = 0;
+	unsigned runLight = 0;
 	auto flush = [&](int runEndX) {
 		if (runStart < 0) {
 			return;
 		}
-		const int off = y * mapW + runStart;
-		const unsigned light = m.RnrBuf[off] & 0x7F;
-		const std::uint32_t col = shade(runRgb, kTopShade, light);
+		const std::uint32_t col = shade(runRgb, kTopShade, runLight);
 		const float z = static_cast<float>(runH);
 		VoxCavityVertex a, b, c, d;
 		a = {static_cast<float>(runStart), static_cast<float>(y), z, col};
@@ -495,17 +523,37 @@ void voxCavityAppendRowCaps(vrtMap& m, int y, int x0, int x1,
 		int capDisp = -1;
 		std::uint32_t rgb2 = 0;
 		std::uint8_t flags = 0;
-		m.voxLayers.capInfo(i, h, &capDisp, &rgb2, &flags);
+		std::uint32_t capInherit = 0;
+		bool topFound = false;
+		m.voxLayers.capInfo(i, h, &capDisp, &rgb2, &flags, &capInherit,
+		                    m.defaultColumnRgb(static_cast<int>(off)),
+		                    &topFound);
 		if (capDisp < 0 || capDisp >= h) {
 			flush(cx - 1);
 			continue;
 		}
-		const std::uint32_t rgb =
-		    (flags != 0 && !(flags & VOX_LAYER_TRANSPARENT))
-		        ? rgb2
-		        : m.defaultColumnRgb(static_cast<int>(off));
+		// Цвет кепки по приоритету: сплошной диапазон, накрывший верхний
+		// воксель; поверхностная декаль SurColBuf (покраска «наверх» — она
+		// обязана красить и крышку cavity-острова, иначе краска с топа
+		// пропадает: слои её не трогают, хайтфилд рисует срез 253);
+		// наследие тела под верхом; в крайнем случае — палитра поверхности
+		// (capInherit с fallback'ом по умолчанию — «рваный» SurBuf больше
+		// не достаётся до сюда, пока под верхом есть окрашенное тело).
+		std::uint32_t rgb;
+		if (topFound && !(flags & VOX_LAYER_TRANSPARENT)) {
+			rgb = rgb2;
+		} else if (m.SurColBuf != nullptr &&
+		           (m.SurColBuf[off] & 0xFF000000u) != 0) {
+			rgb = m.SurColBuf[off] & 0x00FFFFFFu;
+		} else {
+			rgb = capInherit;
+		}
+		// Свет — в условие мержа: рельефное затенение краевых клеток
+		// (склон у западного края плато) иначе красит ВСЮ серию цветом
+		// её первой клетки — полосатая крышка цилиндра EXTDEMO.
+		const unsigned cellLight = m.RnrBuf[off] & 0x7F;
 		if (runStart >= 0 && cx == runEndXCached + 1 && h == runH &&
-		    rgb == runRgb) {
+		    rgb == runRgb && cellLight == runLight) {
 			runEndXCached = cx;
 			continue;
 		}
@@ -514,6 +562,7 @@ void voxCavityAppendRowCaps(vrtMap& m, int y, int x0, int x1,
 		runEndXCached = cx;
 		runH = h;
 		runRgb = rgb;
+		runLight = cellLight;
 	}
 	flush(runEndXCached);
 }
@@ -580,7 +629,10 @@ void voxCavityAppendColumn(vrtMap& m, int x, int y,
 				       myCopy.data[i].b;
 			}
 		}
-		return fallback;
+		// «Безымянная» порода наследует краску тела под собой — иначе
+		// грани плит внутри полости выходят полосатыми от «рваного» SurBuf.
+		return nearestSolidColorBelow(myCopy.data, myCopy.count, z,
+		                              fallback);
 	};
 	auto transparentAt = [&](int z) {
 		for (int i = 0; i < myCopy.count; ++i) {

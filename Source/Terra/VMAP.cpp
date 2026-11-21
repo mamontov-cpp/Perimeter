@@ -2773,6 +2773,7 @@ void vrtMap::viewV2D(int cx,int cy,int xc,int yc,int xside,int yside, unsigned s
 			// что в getColor32. Прозрачный воксель цвета не несёт: показываем
 			// верхний сплошной воксель ниже (срез проваливается сквозь пустоту).
 			bool layerColored=false;
+			bool surfaceIsCutVoid=false;
 			if (!voxLayers.empty()) {
 				int hc=lvD[u0+v0]; if(!hc) hc=lvG[u0+v0];
 				if (viewSliceHeight >= 0 && hc > viewSliceHeight)
@@ -2797,8 +2798,14 @@ void vrtMap::viewV2D(int cx,int cy,int xc,int yc,int xside,int yside, unsigned s
 					                               (c>>16)&0x7F))<<16;
 					layerColored=true;
 				}
+				else if (vflags&VOX_LAYER_TRANSPARENT) {
+					// Срез полости по безымянной породе: декаль топа сюда не
+					// протекает (краска «наверх» не красит пол) — тот же
+					// surfaceIsCutVoid, что в getColor32.
+					surfaceIsCutVoid=true;
+				}
 			}
-			if (!layerColored && SurColBuf && (SurColBuf[u0+v0]&0xFF000000)) {
+			if (!layerColored && !surfaceIsCutVoid && SurColBuf && (SurColBuf[u0+v0]&0xFF000000)) {
 				// True-color: прямой RGB угловой клетки с интерполированным
 				// светом (дамбовый бит pr на раскраску не влияет).
 				c=static_cast<int>(trueColor16(SurColBuf[u0+v0],

@@ -74,6 +74,7 @@ bool runExtdemoColorTests()
     std::uint64_t exactShading = 0;
     std::uint64_t palettePath = 0;
     std::uint64_t other = 0;
+    std::uint64_t cutFloorPalette = 0;
     for (std::uint64_t off = 0; off < cells; ++off) {
         const std::uint32_t c = vMap.SurColBuf[off];
         if ((c & 0xFF000000) == 0) {
@@ -84,6 +85,31 @@ bool runExtdemoColorTests()
         const unsigned int rendered = vMap.getColor32(static_cast<int>(off));
         if (rendered == vrtMap::trueColor32(c, light)) {
             ++exactShading;
+            continue;
+        }
+        // Покрашенная клетка, чья РЕНДЕРЯЩАЯСЯ поверхность — прозрачный
+        // воксель безымянной породы (срез полости или съеденный топ):
+        // декаль топа сюда не протекает (см. VMAP.h surfaceIsCutVoid) —
+        // палитра тут ПРАВИЛЬНЫЙ путь, а не квантование декали.
+        bool cutFloorPaletteCell = false;
+        if (!vMap.voxLayers.empty()) {
+            const int rawS = vMap.SGetAlt(static_cast<int>(off)) >>
+                             VX_FRACTION;
+            const int d = vMap.cavityDisplayHeight(static_cast<int>(off));
+            const int surf = (d >= 0 && d < rawS) ? d : rawS;
+            std::uint32_t rgb = 0;
+            std::uint8_t flags = 0;
+            if (vMap.voxLayers.lookup(static_cast<std::uint32_t>(off), surf,
+                                      &rgb, &flags) &&
+                (flags & VOX_LAYER_TRANSPARENT) != 0 &&
+                !vMap.voxLayers.lookupSolidBelow(
+                    static_cast<std::uint32_t>(off), surf, &rgb)) {
+                cutFloorPaletteCell = true;
+            }
+        }
+        if (cutFloorPaletteCell &&
+            rendered == vMap.Sur2Col32[vMap.SurBuf[off]][vMap.RnrBuf[off]]) {
+            ++cutFloorPalette;
             continue;
         }
         if (rendered == vMap.Sur2Col32[vMap.SurBuf[off]][vMap.RnrBuf[off]]) {
@@ -97,12 +123,15 @@ bool runExtdemoColorTests()
                 static_cast<unsigned long long>(painted));
     std::printf("  shaded EXACT RGB (expected): %llu\n",
                 static_cast<unsigned long long>(exactShading));
+    std::printf("  cut-floor palette (intended): %llu\n",
+                static_cast<unsigned long long>(cutFloorPalette));
     std::printf("  palette path (quantization): %llu\n",
                 static_cast<unsigned long long>(palettePath));
     std::printf("  unexplained: %llu\n",
                 static_cast<unsigned long long>(other));
     TEST_REQUIRE(painted > 0, "EXTDEMO must have painted cells.");
-    TEST_REQUIRE(exactShading + palettePath + other == painted,
+    TEST_REQUIRE(exactShading + cutFloorPalette + palettePath + other ==
+                     painted,
                  "classification must cover every painted cell.");
     // The engine must render painted cells as the shaded exact RGB. A tiny
     // palette-path residue is tolerated (0 expected; bound guards against

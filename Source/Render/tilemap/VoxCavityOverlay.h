@@ -90,12 +90,19 @@ private:
 		return total;
 	}
 public:
-	void rebuildAll();
+	/// bands <= 0 — auto (hardware_concurrency, ≤16); иначе принудительно
+	/// (тесты детерминизма мержа полос).
+	void rebuildAll(int bands = 0);
 	/// Test/diagnostic: rebuildAll оставляет состояние оверлея —
 	/// доступ из headless-тестов (node_ не нужен, publish no-op).
 	/// Копия всего текущего меша (chunks, потом caps, walls — порядок
 	/// рендер-флэттена) для анализов геометрии (z-fight проверки и т.п.).
 	void debugDumpMesh(std::vector<VoxCavityVertex>& out) const;
+	/// Test hook: инкрементальный rebuild одного ректа (как из drain).
+	void debugRebuildRect(int x0, int y0, int x1, int y1)
+	{
+		rebuildRect(x0, y0, x1, y1);
+	}
 
 
 	/// Pending update rects from the tilemap callback (logic thread in the
@@ -140,11 +147,13 @@ public:
 	};
 	mutable std::mutex mutex_; // mutable: debugVertexCount() читает под локом
 	std::vector<Chunk> chunks_; // sorted by off
-	// Полный (не инкрементальный) меш ректа в ЛОКАЛЬНЫЕ контейнеры:
-	// rebuildAll гонит горизонтальные полосы мира на потоках (входы —
-	// только vMap, состояние оверлея не трогаем), потом мержит.
-	// Строгие границы: каждый владелец строки/колонки покрывается
-	// ровно один раз (без -1 расширения инкрементального пути).
+	// Полный (не инкрементальный) меш мира в ЛОКАЛЬНЫЕ контейнеры:
+	// rebuildAll собирает ГЛОБАЛЬНЫЙ список кандидатов (кавити-колонки +
+	// твёрдые соседи), а полосы потоков делят его: чанки — срез списка,
+	// кепки/+y стены — диапазон строк, +x стены — диапазон колонок с
+	// полным охватом по y. Каждая строка/колонка обсчитывается один раз с
+	// полным списком — выход не зависит от числа полос (иначе мерж серий
+	// на границах полос делал меш зависимым от числа ядер).
 	struct RectMeshes
 	{
 		std::vector<Chunk> chunks; // sorted by off
@@ -152,8 +161,6 @@ public:
 		std::map<int, std::vector<VoxCavityVertex>> wallRows;
 		std::map<int, std::vector<VoxCavityVertex>> wallCols;
 	};
-	void meshRectFull(int x0, int y0, int x1, int y1,
-	                  RectMeshes& out) const;
 	// Flatten + setTriangles (вызывать под mutex_).
 	void publishLocked();
 

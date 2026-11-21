@@ -847,6 +847,7 @@ void swapSnapshotWithBuffers(UndoAreaSnapshot& snap)
     }
     const int H = vMap.H_SIZE;
     std::size_t cnt = 0;
+    bool colorChanged = false;
     for (int j = 0; j < snap.sy; ++j) {
         const int row = (snap.y + j) * H + snap.x;
         for (int i = 0; i < snap.sx; ++i, ++cnt) {
@@ -859,10 +860,20 @@ void swapSnapshotWithBuffers(UndoAreaSnapshot& snap)
             t = vMap.SurBuf[off]; vMap.SurBuf[off] = snap.sur[cnt]; snap.sur[cnt] = t;
             if (hasCol) {
                 const std::uint32_t t32 = vMap.SurColBuf[off];
-                vMap.SurColBuf[off] = snap.col[cnt];
+                const std::uint32_t s32 = snap.col[cnt];
+                vMap.SurColBuf[off] = s32;
                 snap.col[cnt] = t32;
+                // Прямая запись в обход putTrueColor: без бампа surVersion
+                // оверлей полостей НЕ перестроит кепки — undo краски топа
+                // снимал пол, а кепка оставалась красной (репорт).
+                if (t32 != s32) {
+                    colorChanged = true;
+                }
             }
         }
+    }
+    if (colorChanged) {
+        ++vMap.surVersion;
     }
     swapSnapshotLayers(snap);
 }
@@ -1159,6 +1170,9 @@ void EditorSession::applyDiffToBuffers()
         // База без цветов: все клетки возвращаются к палитре.
         std::memset(vMap.SurColBuf, 0, cells * sizeof(uint32_t));
     }
+    // Цвета заменены целиком (мимо putTrueColor): кепки оверлея
+    // обязаны перестроиться — иначе останутся цвета эффективного мира.
+    ++vMap.surVersion;
     const int gw = static_cast<int>(vMap.H_SIZE) >> kmGridChA;
     const int stride = static_cast<int>(vMap.H_SIZE);
     for (const auto& [area, entry] : diffAreas_) {
@@ -1286,6 +1300,9 @@ void EditorSession::runWithBaseTerrain(const std::function<void()>& fn)
             std::memcpy(vMap.SurColBuf, baseCol_.data(),
                         cells * sizeof(std::uint32_t));
         }
+        // Мировая замена декали на время прогона (и обратно ниже) —
+        // кепки оверлея перестраиваются по обе стороны.
+        ++vMap.surVersion;
     }
     // Слои целиком: база на время прогона, эффективное состояние — копия.
     VoxColLayers effLay = vMap.voxLayers;
@@ -1301,6 +1318,7 @@ void EditorSession::runWithBaseTerrain(const std::function<void()>& fn)
     std::memcpy(vMap.SurBuf, effS.data(), cells);
     if (hasCol) {
         std::memcpy(vMap.SurColBuf, effC.data(), cells * sizeof(std::uint32_t));
+        ++vMap.surVersion;
     }
     vMap.voxLayers = std::move(effLay);
     // The effective content is back: repaint everything.
