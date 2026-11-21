@@ -20,8 +20,10 @@ const float kBottomShade = 0.55f;
 // Side-plane epsilon (fraction of a cell) against the heightfield cliff
 // triangles at plateau boundaries. Must exceed the depth-buffer precision
 // at gameplay distances (near 30 / far 1e5 gives ~2 cm at 3k units) —
-// 0.01 z-fought the cliffs into blurry streaks.
-const float kSideEps = 0.1f;
+// 0.01 z-fought the cliffs into blurry streaks, 0.1 тоже дало полосы на
+// скользящих углах (репорт: полосатая крышка цилиндра-острова EXTDEMO
+// при далёкой камере) — 0.3 перекрывает запас точности буфера глубины.
+const float kSideEps = 0.3f;
 
 struct Segment
 {

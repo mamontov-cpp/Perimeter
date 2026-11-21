@@ -89,7 +89,13 @@ private:
 		}
 		return total;
 	}
+public:
 	void rebuildAll();
+	/// Test/diagnostic: rebuildAll оставляет состояние оверлея —
+	/// доступ из headless-тестов (node_ не нужен, publish no-op).
+	/// Копия всего текущего меша (chunks, потом caps, walls — порядок
+	/// рендер-флэттена) для анализов геометрии (z-fight проверки и т.п.).
+	void debugDumpMesh(std::vector<VoxCavityVertex>& out) const;
 
 
 	/// Pending update rects from the tilemap callback (logic thread in the

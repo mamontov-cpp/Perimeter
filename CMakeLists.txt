@@ -24,6 +24,13 @@ OPTION(OPTION_DISABLE_STACKTRACE "Disable stacktrace support" OFF)
 OPTION(OPTION_LINKER "Use specified linker instead of default" "")
 OPTION(OPTION_DEBUG_ASSERT "Enable debug assertions" OFF)
 OPTION(OPTION_GPERFTOOLS "Link executable with gperftools for debugging" OFF)
+# Временная инструментация voxperf (voxperf.log): по умолчанию ВЫКЛЮЧЕНА
+# — все точки voxperf::log/nowMs компилируются в no-op. Включить для
+# диагностики: -DOPTION_VOXPERF=ON.
+OPTION(OPTION_VOXPERF "Enable voxperf instrumentation (voxperf.log)" OFF)
+IF(OPTION_VOXPERF)
+    ADD_DEFINITIONS(-DVOXPERF_ENABLED)
+ENDIF()
 OPTION(OPTION_D3D9 "Enable D3D9 renderer using dxvk in *nix or DirectX in Windows" ON)
 OPTION(OPTION_LINK_LIBS "Link executables with provided libraries, placed before the rest" "")
 OPTION(OPTION_LINK_LIBS_POST "Link executables with provided libraries, placed after the rest" "")

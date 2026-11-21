@@ -75,7 +75,17 @@ ADD_EXECUTABLE(map_editor_tests
         VoxLayerTests.cpp
         ExtdemoSliceTests.cpp
         TerraformIslandTests.cpp
-        VoxLayersThreadTests.cpp)
+        VoxLayersThreadTests.cpp
+        ZfightTests.cpp
+        "${PROJECT_SOURCE_DIR}/Source/Render/tilemap/VoxCavityOverlay.cpp")
+# Headless-сборка оверлея для тестов: без сцен-ноды (cRawMeshObj тащит
+# весь граф рендера) — VOX_OVERLAY_HEADLESS вырезает её из cpp.
+set_source_files_properties(
+        "${PROJECT_SOURCE_DIR}/Source/Render/tilemap/VoxCavityOverlay.cpp"
+        PROPERTIES
+        SKIP_PRECOMPILE_HEADERS ON
+        COMPILE_OPTIONS "/Y-"
+        COMPILE_DEFINITIONS VOX_OVERLAY_HEADLESS)
 
 SET_TARGET_PROPERTIES(map_editor_tests PROPERTIES
         WIN32_EXECUTABLE OFF
@@ -83,6 +93,7 @@ SET_TARGET_PROPERTIES(map_editor_tests PROPERTIES
 
 TARGET_INCLUDE_DIRECTORIES(map_editor_tests PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}"
+
         "${CMAKE_CURRENT_SOURCE_DIR}/../core"
         "${CMAKE_CURRENT_SOURCE_DIR}/../shim"
         "${CMAKE_CURRENT_SOURCE_DIR}/../../XTool"
@@ -91,6 +102,8 @@ TARGET_INCLUDE_DIRECTORIES(map_editor_tests PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/../../Util"
         "${CMAKE_CURRENT_SOURCE_DIR}/../../Render"
         "${CMAKE_CURRENT_SOURCE_DIR}/../../Render/src"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../Render/inc"
+        "${PROJECT_SOURCE_DIR}/Source/Render/tilemap"
         "${CMAKE_CURRENT_SOURCE_DIR}/../../XTool"
 )
 

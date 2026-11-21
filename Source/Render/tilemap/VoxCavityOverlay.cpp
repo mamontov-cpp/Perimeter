@@ -72,6 +72,7 @@ std::uint64_t columnInputHash(int x, int y)
 	return h;
 }
 
+#ifndef VOX_OVERLAY_HEADLESS
 class CavityOverlayNode : public cRawMeshObj
 {
 public:
@@ -86,6 +87,7 @@ public:
 private:
 	VoxCavityOverlay* owner_;
 };
+#endif // VOX_OVERLAY_HEADLESS
 
 } // namespace
 
@@ -102,12 +104,16 @@ void VoxCavityOverlay::init(cScene* scene, cTileMap* tilemap)
 	if (!scene_ || !tilemap_) {
 		return;
 	}
+#ifndef VOX_OVERLAY_HEADLESS
 	node_ = new CavityOverlayNode(this);
+#endif
 	if (std::getenv("VOX_NO_OVERLAY")) {
 		node_->SetAttr(ATTRUNKOBJ_IGNORE); // A/B diagnosis
 	}
+#ifndef VOX_OVERLAY_HEADLESS
 	scene_->AttachObj(node_);
 	tilemap_->RegisterUpdateMap(&VoxCavityOverlay::onUpdateMap, this);
+#endif
 	voxperf::log("overlay init: full rebuild START");
 	rebuildAll();
 	voxperf::log("overlay init: full rebuild END (chunks=%zu)", chunks_.size());
@@ -120,6 +126,7 @@ void VoxCavityOverlay::shutdown()
 	if (worker_.joinable()) {
 		worker_.join();
 	}
+#ifndef VOX_OVERLAY_HEADLESS
 	if (node_) {
 		if (tilemap_) {
 			tilemap_->UnRegisterUpdateMap(&VoxCavityOverlay::onUpdateMap,
@@ -128,6 +135,7 @@ void VoxCavityOverlay::shutdown()
 		node_->Release();
 		node_ = nullptr;
 	}
+#endif
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
 		chunks_.clear();
@@ -355,7 +363,10 @@ void VoxCavityOverlay::meshRectFull(int x0, int y0, int x1, int y1,
 			if (cy >= y0 && cy <= y1) {
 				rowCells[static_cast<size_t>(cy)].push_back(off);
 			}
-			if (cx >= x0 && cx <= x1) {
+			// ТОЛЬКО клетки СВОИХ строк: кольцо ±1 (y0-1/y1+1), попавшее в
+			// colCells, задублировало бы стены колонки на границе полос
+			// (соседняя полоса покрывает эти клетки сама).
+			if (cy >= y0 && cy <= y1 && cx >= x0 && cx <= x1) {
 				colCells[static_cast<size_t>(cx)].push_back(off);
 			}
 		}
@@ -712,8 +723,39 @@ void VoxCavityOverlay::rebuildRect(int x0, int y0, int x1, int y1)
 				voxCavityAppendColWallX(vMap, x, cells.data(), cells.size(),
 				                        w);
 			}
-			const bool same = hadCol && oldCol->second == w;
+			bool same = false;
 			if (hadCol) {
+				// Новый проход покрывает y в [y0-1..y1+1] (кольцо
+				// кандидатов) — СТАРЫЕ квады вне этого диапазона
+				// сохраняем: запись общая для всей высоты колонки,
+				// замена целиком теряла стены за пределами ректа
+				// (дырки после правки рядом с полостью).
+				const std::vector<VoxCavityVertex> oldCopy = oldCol->second;
+				const int keepBelow = y0 - 1; // квады с y1 <= keepBelow
+				const int keepAbove = y1 + 2; // квады с y0 >= keepAbove
+				for (size_t i = 0; i + 6 <= oldCopy.size(); i += 6) {
+					float qy0 = oldCopy[i].y, qy1 = oldCopy[i].y;
+					for (int k = 1; k < 6; ++k) {
+						qy0 = std::min(qy0, oldCopy[i + k].y);
+						qy1 = std::max(qy1, oldCopy[i + k].y);
+					}
+					if (qy1 <= static_cast<float>(keepBelow) ||
+					    qy0 >= static_cast<float>(keepAbove)) {
+						w.insert(w.end(), oldCopy.begin() + i,
+						         oldCopy.begin() + i + 6);
+					}
+				}
+				// Детерминированный порядок: y, затем z (как у полос
+				// rebuildAll — одна клетка на y, x константа).
+				std::sort(w.begin(), w.end(),
+				          [](const VoxCavityVertex& a,
+				             const VoxCavityVertex& b) {
+					          if (a.y != b.y) return a.y < b.y;
+					          if (a.z != b.z) return a.z < b.z;
+					          if (a.x != b.x) return a.x < b.x;
+					          return a.diffuse < b.diffuse;
+				          });
+				same = oldCopy == w;
 				wallCols_.erase(oldCol);
 			}
 			if (!same) {
@@ -736,6 +778,37 @@ void VoxCavityOverlay::rebuildRect(int x0, int y0, int x1, int y1)
 	dirty_ = true;
 	voxperf::log("rebuildRect: rebuild took %.2f ms, chunksAfter=%zu", voxperf::nowMs() - tReb, chunks_.size());
 	publishLocked();
+}
+
+void VoxCavityOverlay::debugDumpMesh(std::vector<VoxCavityVertex>& out) const
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	size_t total = 0;
+	for (const Chunk& ch : chunks_) {
+		total += ch.verts.size();
+	}
+	for (const auto& row : capRows_) {
+		total += row.second.size();
+	}
+	for (const auto& row : wallRows_) {
+		total += row.second.size();
+	}
+	for (const auto& col : wallCols_) {
+		total += col.second.size();
+	}
+	out.reserve(out.size() + total);
+	for (const Chunk& ch : chunks_) {
+		out.insert(out.end(), ch.verts.begin(), ch.verts.end());
+	}
+	for (const auto& row : capRows_) {
+		out.insert(out.end(), row.second.begin(), row.second.end());
+	}
+	for (const auto& row : wallRows_) {
+		out.insert(out.end(), row.second.begin(), row.second.end());
+	}
+	for (const auto& col : wallCols_) {
+		out.insert(out.end(), col.second.begin(), col.second.end());
+	}
 }
 
 void VoxCavityOverlay::publishLocked()
@@ -786,5 +859,7 @@ void VoxCavityOverlay::publishLocked()
 		dst += col.second.size();
 	}
 	voxperf::log("publish: flatten %.2f ms verts=%zu", voxperf::nowMs() - tFlat, flat.size());
+#ifndef VOX_OVERLAY_HEADLESS
 	node_->setTriangles(flat);
+#endif
 }

@@ -686,10 +686,10 @@ bool runVoxCavityMesherTests()
     {
         bool hasEast = false, hasNorth = false;
         for (const VoxCavityVertex& v : tris) {
-            if (v.x > kPx + 1.05f && v.x < kPx + 1.25f) {
+            if (v.x > kPx + 1.2f && v.x < kPx + 1.4f) {
                 hasEast = true;
             }
-            if (v.y > kPy + 1.05f && v.y < kPy + 1.25f) {
+            if (v.y > kPy + 1.2f && v.y < kPy + 1.4f) {
                 hasNorth = true;
             }
         }
@@ -704,7 +704,7 @@ bool runVoxCavityMesherTests()
         voxCavityAppendColumn(vMap, kPx, kPy - 1, southTris);
         bool hasWest = false, hasSouth = false, westTall = false;
         for (const VoxCavityVertex& v : westTris) {
-            if (v.x > kPx + 0.05f && v.x < kPx + 0.25f) {
+            if (v.x > kPx + 0.2f && v.x < kPx + 0.4f) {
                 hasWest = true;
             }
             if (v.z > 400.f) {
@@ -712,7 +712,7 @@ bool runVoxCavityMesherTests()
             }
         }
         for (const VoxCavityVertex& v : southTris) {
-            if (v.y > kPy + 0.05f && v.y < kPy + 0.25f) {
+            if (v.y > kPy + 0.2f && v.y < kPy + 0.4f) {
                 hasSouth = true;
             }
         }

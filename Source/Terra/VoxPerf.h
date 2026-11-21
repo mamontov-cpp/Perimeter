@@ -1,11 +1,19 @@
 // ============================================================================
-// VoxPerf.h — temporary instrumentation for the EXTDEMO skirmish-start hang.
-// Appends timestamped lines to "voxperf.log" next to the working directory
-// (GUI app: stderr is unreachable). REMOVE after diagnosis.
+// VoxPerf.h — optional instrumentation (temporary diagnosis tooling).
+//
+// OFF by default: with VOXPERF_ENABLED undefined every entry point is an
+// inline no-op that the compiler eliminates — zero cost, and no
+// voxperf.log file is created. Enable with -DOPTION_VOXPERF=ON (CMake) to
+// get the timestamped voxperf.log next to the working directory again.
+//
+// When enabled: appends timestamped lines to "voxperf.log" next to the
+// working directory (GUI app: stderr is unreachable).
 // ============================================================================
 
 #ifndef VOX_PERF_H
 #define VOX_PERF_H
+
+#ifdef VOXPERF_ENABLED
 
 #include <chrono>
 #include <cstdarg>
@@ -63,5 +71,29 @@ struct Scope
 };
 
 } // namespace voxperf
+
+#else // !VOXPERF_ENABLED — no-op stubs, compiled away.
+
+namespace voxperf {
+
+inline double nowMs()
+{
+	return 0.0;
+}
+
+inline void log(const char*, ...)
+{
+}
+
+struct Scope
+{
+	explicit Scope(const char*, bool = true)
+	{
+	}
+};
+
+} // namespace voxperf
+
+#endif // VOXPERF_ENABLED
 
 #endif // VOX_PERF_H
