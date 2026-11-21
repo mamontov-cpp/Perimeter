@@ -699,9 +699,79 @@ void VoxCavityOverlay::rebuildRect(int x0, int y0, int x1, int y1)
 				continue;
 			}
 			std::vector<VoxCavityVertex> w;
-			voxCavityAppendRowWallY(vMap, y, cells.data(), cells.size(), w);
-			const bool same = hadRow && oldRow->second == w;
+			if (!cells.empty()) {
+				voxCavityAppendRowWallY(vMap, y, cells.data(), cells.size(), w);
+			}
+			// Как у колонок ниже: запись общая на ВСЮ ширину строки, а
+			// кандидаты — только рект с кольцом ±1. Без сохранения квадов
+			// вне x-полосы регенерация от локальных клеток стирала стены
+			// строки за пределами ректа — одна выровненная колонка на
+			// краю острова пробивала прозрачную полосу через всю сторону
+			// (в том числе в нетронутых колонках). Сохраняем КВАДАМИ
+			// (6 вершин) — сортировка по вершинам рвёт треугольные
+			// веера; порядок и так корректен: сохранённые квады кончаются
+			// левее полосы, новые начинаются внутри неё.
+			bool same = false;
 			if (hadRow) {
+				const std::vector<VoxCavityVertex> oldCopy = oldRow->second;
+				const int keepLeft = x0 - 1;   // квады с x1 <= keepLeft
+				const int keepRight = x1 + 2;  // квады с x0 >= keepRight
+				// Три части в порядке возрастания x: сохранённые левее полосы,
+				// новые (полоса ректа), сохранённые правее. КВАДАМИ (6 вершин):
+				// сорт по вершинам рвёт треугольные веера.
+				std::vector<VoxCavityVertex> keptLo, keptHi;
+				// Насквозь проходящие серии рвём ФРАГМЕНТАМИ по границам
+				// полосы — иначе хвосты за пределами ректа терялись
+				// (дырки в покрытии стены). КВАДАМИ (6 вершин).
+				// Границы — по ФАКТИЧЕСКОМУ охвату кандидатов:
+				// колонка, собранная только из горизонтальных
+				// соседей, не имеет вертикального кольца ±1.
+				float cutLo = 1e9f, cutHi = -1e9f;
+				for (const std::uint32_t coff : cells) {
+					const float cx = static_cast<float>(coff % mapW);
+					cutLo = std::min(cutLo, cx);
+					cutHi = std::max(cutHi, cx + 1.0f);
+				}
+				if (cells.empty()) { cutLo = 1e9f; cutHi = -1e9f; }
+				for (size_t i = 0; i + 6 <= oldCopy.size(); i += 6) {
+					float q0 = oldCopy[i].x, q1 = oldCopy[i].x;
+					for (int k = 1; k < 6; ++k) {
+						q0 = std::min(q0, oldCopy[i + k].x);
+						q1 = std::max(q1, oldCopy[i + k].x);
+					}
+					if (q1 <= cutLo) {
+						keptLo.insert(keptLo.end(), oldCopy.begin() + i,
+							oldCopy.begin() + i + 6);
+						continue;
+					}
+					if (q0 >= cutHi) {
+						keptHi.insert(keptHi.end(), oldCopy.begin() + i,
+							oldCopy.begin() + i + 6);
+						continue;
+					}
+					if (q0 < cutLo) {
+						keptLo.insert(keptLo.end(), oldCopy.begin() + i,
+							oldCopy.begin() + i + 6);
+						for (size_t k = keptLo.size() - 6; k < keptLo.size(); ++k) {
+							if (keptLo[k].x == q1) keptLo[k].x = cutLo;
+						}
+					}
+					if (q1 > cutHi) {
+						keptHi.insert(keptHi.end(), oldCopy.begin() + i,
+							oldCopy.begin() + i + 6);
+						for (size_t k = keptHi.size() - 6; k < keptHi.size(); ++k) {
+							if (keptHi[k].x == q0) keptHi[k].x = cutHi;
+						}
+					}
+				}
+				std::vector<VoxCavityVertex> merged;
+				merged.reserve(oldCopy.size() + w.size());
+				merged.insert(merged.end(), keptLo.begin(), keptLo.end());
+				merged.insert(merged.end(), std::make_move_iterator(w.begin()),
+					std::make_move_iterator(w.end()));
+				merged.insert(merged.end(), keptHi.begin(), keptHi.end());
+				w = std::move(merged);
+				same = oldCopy == w;
 				wallRows_.erase(oldRow);
 			}
 			if (!same) {
@@ -734,28 +804,66 @@ void VoxCavityOverlay::rebuildRect(int x0, int y0, int x1, int y1)
 				const std::vector<VoxCavityVertex> oldCopy = oldCol->second;
 				const int keepBelow = y0 - 1; // квады с y1 <= keepBelow
 				const int keepAbove = y1 + 2; // квады с y0 >= keepAbove
+				// Сохраняем КВАДАМИ (6 вершин), сохранённые — ДО новых:
+				// они кончаются ниже полосы, новые начинаются внутри неё,
+				// так что порядок вееров корректен без сортировки. Сорт по
+				// вершинам тут рвал треугольные веера (квады собирались
+				// из вершин соседних квадов).
+				// Три части в порядке возрастания y: сохранённые ниже полосы,
+				// новые (полоса ректа), сохранённые выше — иначе «выше» оказывались
+				// раньше новых и порядок ломался. КВАДАМИ (6 вершин): сорт по
+				// вершинам рвёт треугольные веера.
+				std::vector<VoxCavityVertex> keptLo, keptHi;
+				// Насквозь проходящие серии рвём ФРАГМЕНТАМИ по границам
+				// полосы — иначе хвосты за пределами ректа терялись
+				// (дырки в покрытии стены). КВАДАМИ (6 вершин).
+				// Границы — по фактическому охвату кандидатов
+				// (см. строки выше).
+				float cutLo = 1e9f, cutHi = -1e9f;
+				for (const std::uint32_t coff : cells) {
+					const float cy = static_cast<float>(coff / mapW);
+					cutLo = std::min(cutLo, cy);
+					cutHi = std::max(cutHi, cy + 1.0f);
+				}
+				if (cells.empty()) { cutLo = 1e9f; cutHi = -1e9f; }
 				for (size_t i = 0; i + 6 <= oldCopy.size(); i += 6) {
-					float qy0 = oldCopy[i].y, qy1 = oldCopy[i].y;
+					float q0 = oldCopy[i].y, q1 = oldCopy[i].y;
 					for (int k = 1; k < 6; ++k) {
-						qy0 = std::min(qy0, oldCopy[i + k].y);
-						qy1 = std::max(qy1, oldCopy[i + k].y);
+						q0 = std::min(q0, oldCopy[i + k].y);
+						q1 = std::max(q1, oldCopy[i + k].y);
 					}
-					if (qy1 <= static_cast<float>(keepBelow) ||
-					    qy0 >= static_cast<float>(keepAbove)) {
-						w.insert(w.end(), oldCopy.begin() + i,
-						         oldCopy.begin() + i + 6);
+					if (q1 <= cutLo) {
+						keptLo.insert(keptLo.end(), oldCopy.begin() + i,
+							oldCopy.begin() + i + 6);
+						continue;
+					}
+					if (q0 >= cutHi) {
+						keptHi.insert(keptHi.end(), oldCopy.begin() + i,
+							oldCopy.begin() + i + 6);
+						continue;
+					}
+					if (q0 < cutLo) {
+						keptLo.insert(keptLo.end(), oldCopy.begin() + i,
+							oldCopy.begin() + i + 6);
+						for (size_t k = keptLo.size() - 6; k < keptLo.size(); ++k) {
+							if (keptLo[k].y == q1) keptLo[k].y = cutLo;
+						}
+					}
+					if (q1 > cutHi) {
+						keptHi.insert(keptHi.end(), oldCopy.begin() + i,
+							oldCopy.begin() + i + 6);
+						for (size_t k = keptHi.size() - 6; k < keptHi.size(); ++k) {
+							if (keptHi[k].y == q0) keptHi[k].y = cutHi;
+						}
 					}
 				}
-				// Детерминированный порядок: y, затем z (как у полос
-				// rebuildAll — одна клетка на y, x константа).
-				std::sort(w.begin(), w.end(),
-				          [](const VoxCavityVertex& a,
-				             const VoxCavityVertex& b) {
-					          if (a.y != b.y) return a.y < b.y;
-					          if (a.z != b.z) return a.z < b.z;
-					          if (a.x != b.x) return a.x < b.x;
-					          return a.diffuse < b.diffuse;
-				          });
+				std::vector<VoxCavityVertex> merged;
+				merged.reserve(oldCopy.size() + w.size());
+				merged.insert(merged.end(), keptLo.begin(), keptLo.end());
+				merged.insert(merged.end(), std::make_move_iterator(w.begin()),
+					std::make_move_iterator(w.end()));
+				merged.insert(merged.end(), keptHi.begin(), keptHi.end());
+				w = std::move(merged);
 				same = oldCopy == w;
 				wallCols_.erase(oldCol);
 			}

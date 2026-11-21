@@ -684,6 +684,150 @@ bool runPaintReproTests()
 
 } // namespace
 
+// Level-stamp wall regression: leveling ONE column at the island edge must
+// not punch transparent holes through the side walls of the UN-leveled
+// columns. rebuildRect regenerates wall ROWS from the rect's local
+// candidates only — a stored row entry spans the whole map width, so the
+// pre-fix code replaced the entire row's walls with the local few and the
+// island side went see-through outside the stamp. The incremental mesh
+// after the stamp must be byte-identical to a full rebuild.
+bool runWallSideRegressionTests()
+{
+    MapEditor::Tests::TestContext& ctx = MapEditor::Tests::context();
+    MapEditor::setupErrHWrapper();
+
+    MapEditor::EditorSession session;
+    session.setGameDir(ctx.gameDir.u8string());
+    session.scanWorlds();
+    TEST_REQUIRE(session.loadWorldByName("EXTDEMO"),
+                 "the EXTDEMO world could not be loaded.");
+    vMap.WorldRender();
+
+    auto dumpMesh = [](std::vector<VoxCavityVertex>& out) {
+        VoxCavityOverlay ov;
+        ov.rebuildAll(1);
+        ov.debugDumpMesh(out);
+    };
+    std::vector<VoxCavityVertex> before;
+    dumpMesh(before);
+
+    // Level ONE column right at the disc edge ("one outer wall leveled"):
+    // take the widest row of the disc and find its eastern 500-edge.
+    const int ey = 2405;
+    int ex = -1;
+    for (int x = 2400; x > 2100; --x) {
+        if (vMap.VxDBuf[ey * vMap.H_SIZE + x] == 500) {
+            ex = x;
+            break;
+        }
+    }
+    TEST_REQUIRE(ex > 0, "the island edge fixture moved (no 500-column)");
+    {
+        MapEditor::BrushTool brush(session);
+        MapEditor::BrushParams p;
+        p.shape = MapEditor::BrushShape::FilledCircle;
+        p.radius = 2;
+        p.effect = MapEditor::BrushEffect::Align4ZP;
+        p.mode = MapEditor::BrushMode::Dam;
+        TEST_REQUIRE(brush.applyStamp(ex, ey, p), "level stamp refused");
+    }
+
+    VoxCavityOverlay incremental;
+    incremental.rebuildAll(1);
+    // Mirror drainPending's expansion (one cell of neighbor context).
+    incremental.debugRebuildRect(ex - 3, ey - 3, ex + 3, ey + 3);
+    std::vector<VoxCavityVertex> incr;
+    incremental.debugDumpMesh(incr);
+
+    std::vector<VoxCavityVertex> full;
+    dumpMesh(full);
+
+    std::printf("[WALL] verts before=%zu incr=%zu full=%zu; ",
+                before.size(), incr.size(), full.size());
+    // Coverage comparison: the incremental path may SPLIT a merged wall
+    // run at the rect band boundary (two adjacent quads instead of one —
+    // same plane, same color, shared edge, identical rendering), so
+    // compare unioned per-plane coverage instead of raw quad streams.
+    auto coverage = [](const std::vector<VoxCavityVertex>& m) {
+        // key: plane axis+coord, z range, color -> union of along-intervals
+        std::map<std::tuple<int, int, int, int, std::uint32_t>,
+                 std::vector<std::pair<int, int>>>
+            cov;
+        for (size_t i = 0; i + 6 <= m.size(); i += 6) {
+            float x0 = m[i].x, x1 = m[i].x, y0 = m[i].y, y1 = m[i].y;
+            float z0 = m[i].z, z1 = m[i].z;
+            for (int k = 1; k < 6; ++k) {
+                x0 = std::min(x0, m[i + k].x);
+                x1 = std::max(x1, m[i + k].x);
+                y0 = std::min(y0, m[i + k].y);
+                y1 = std::max(y1, m[i + k].y);
+                z0 = std::min(z0, m[i + k].z);
+                z1 = std::max(z1, m[i + k].z);
+            }
+            int axis; // 0 = x-const plane, 1 = y-const, 2 = z-const
+            float coord, lo, hi;
+            if (x1 - x0 < 0.01f) {
+                axis = 0; coord = x0; lo = y0; hi = y1;
+            } else if (y1 - y0 < 0.01f) {
+                axis = 1; coord = y0; lo = x0; hi = x1;
+            } else {
+                axis = 2; coord = z0; lo = x0; hi = x1;
+            }
+            auto& v = cov[std::make_tuple(
+                axis, static_cast<int>(coord * 8.f + 0.5f),
+                static_cast<int>(z0 * 2.f + 0.5f),
+                static_cast<int>(z1 * 2.f + 0.5f), m[i].diffuse)];
+            v.push_back({static_cast<int>(lo * 8.f + 0.5f),
+                         static_cast<int>(hi * 8.f + 0.5f)});
+        }
+        for (auto& kv : cov) {
+            auto& v = kv.second;
+            std::sort(v.begin(), v.end());
+            std::vector<std::pair<int, int>> u;
+            for (auto& iv : v) {
+                if (!u.empty() && iv.first <= u.back().second) {
+                    u.back().second = std::max(u.back().second, iv.second);
+                } else {
+                    u.push_back(iv);
+                }
+            }
+            v.swap(u);
+        }
+        return cov;
+    };
+    const auto covIncr = coverage(incr);
+    const auto covFull = coverage(full);
+    if (covIncr != covFull) {
+        size_t shown = 0;
+        for (const auto& kv : covFull) {
+            const auto it = covIncr.find(kv.first);
+            if (it == covIncr.end() || it->second != kv.second) {
+                if (shown++ < 4) {
+                    std::printf("[WALL] coverage diff key(a%d c%d z%d-%d "
+                                "%X): full=[",
+                                std::get<0>(kv.first), std::get<1>(kv.first),
+                                std::get<2>(kv.first), std::get<3>(kv.first),
+                                std::get<4>(kv.first));
+                    for (auto& iv : kv.second)
+                        std::printf("%d-%d ", iv.first, iv.second);
+                    std::printf("] incr=[");
+                    const auto it2 = covIncr.find(kv.first);
+                    if (it2 != covIncr.end())
+                        for (auto& iv : it2->second)
+                            std::printf("%d-%d ", iv.first, iv.second);
+                    std::printf("]; ");
+                }
+            }
+        }
+    }
+    TEST_REQUIRE(covIncr == covFull,
+                 "incremental rebuild after a level stamp lost wall coverage "
+                 "(transparent side holes)");
+    TEST_REQUIRE(incr != before, "the level stamp changed nothing?");
+    session.unloadWorld();
+    return true;
+}
+
 MAP_EDITOR_REGISTER_TEST("Cavity overlay z-fight analysis (EXTDEMO "
                          "cylinder)",
                          130, runZfightTests);
@@ -693,3 +837,5 @@ MAP_EDITOR_REGISTER_TEST("Top paint lands on the island cap (cylinder)",
                          133, runPaintReproTests);
 MAP_EDITOR_REGISTER_TEST("Level-stamp remesh repro (cylinder cap)",
                          131, runRemeshReproTests);
+MAP_EDITOR_REGISTER_TEST("Level-stamp wall side regression (island edge)",
+                         135, runWallSideRegressionTests);
