@@ -227,40 +227,30 @@ void vrtMap::normalizeTransparentColumn(int off, int oldHeight)
 			}
 		}
 	} agg(nCalls, totalMs, voxperf::nowMs());
-	if (!voxLayers.mightHaveColumn(static_cast<uint32_t>(off))) {
-		return;
+	// C2: вся нормализация — один захват лока и один поиск колонки
+	// (VoxColLayers::normalize: solidify + схлоп верха + prune в одной
+	// операции; C3 — O(1) быстрый выход, C1 — version только при
+	// реальном изменении). Слои правятся только у колонок с живыми
+	// слоями (гейт hasLiveColumn в обёртке tVoxSetAll).
+	bool pruned = false;
+	const int h = voxLayers.normalize(
+	    static_cast<uint32_t>(off), oldHeight, VxDBuf[off],
+	    pruneVoxRangesAboveSurface ? defaultColumnRgb(off) : 0u,
+	    pruneVoxRangesAboveSurface, &pruned);
+	if (pruned && SurColBuf) {
+		// Слои над поверхностью срезаны — убираем и true-color краску
+		// верха: ровняный террейн показывает цвет зеропласта/палитры,
+		// а не старую декаль (иначе getColor32 отдаёт SurColBuf раньше
+		// ветки At_LEVELED, и выровненная земля остаётся разрисованной).
+		SurColBuf[off] = 0;
 	}
-	const int newHeight = VxDBuf[off];
-	if (newHeight > oldHeight) {
-		// Поднятие: ЛЮБОЙ прозрачный воксель колонки ниже нового верха
-		// заменяется сплошным с цветом по умолчанию колонки (правило
-		// «поднятие заменяет прозрачный воксель сплошным»).
-		const unsigned int rgb = defaultColumnRgb(off);
-		voxLayers.solidify(static_cast<uint32_t>(off), 0, newHeight - 1,
-		                   static_cast<unsigned char>((rgb >> 16) & 0xFF),
-		                   static_cast<unsigned char>((rgb >> 8) & 0xFF),
-		                   static_cast<unsigned char>(rgb & 0xFF));
-	}
-	// Инвариант: верхний воксель непрозрачный. Прозрачные воксели сверху
-	// уничтожаются (как невидимые), высота пересчитывается до ближайшего
-	// сплошного вокселя; если в дамбе остались одни прозрачные — высота 0.
-	const int solid = voxLayers.topSolidVoxel(off, newHeight);
-	const int h = (solid < 0) ? 0 : solid + 1;
-	if (h != newHeight) {
+	if (h != VxDBuf[off]) {
 		VxDBuf[off] = static_cast<VxWholeHeight>(h);
 		if (h == 0) {
 			// Дамба исчезла полностью — сбрасываем и дробную часть.
 			AtrBuf[off] = static_cast<unsigned char>(
 				AtrBuf[off] & ~VX_FRACTION_MASK);
 		}
-	}
-	// Игра: слои, целиком оказавшиеся над поверхностью (срезали террейн
-	// под них), больше не нужны — поверхность ниже них не вернётся, а
-	// «висячие» записи держат колонку в cavity-множестве оверлея и в
-	// горячем пути нормализации. Редактор флаг не включает: слои над
-	// поверхностью там — редактируемые данные (undo, срезы, перекраска).
-	if (pruneVoxRangesAboveSurface) {
-		voxLayers.pruneAbove(static_cast<uint32_t>(off), VxDBuf[off]);
 	}
 }
 
@@ -370,9 +360,19 @@ static bool loadHeights16Sidecar(vrtMap& m) {
 		// конец колонки = начало следующей); в рантайме границы развязаны
 		// (begin_/end_) — концы выводим здесь.
 		m.voxLayers.end_.resize(nColumns);
+		m.voxLayers.colHasTransparent_.resize(nColumns);
 		for (uint32_t i = 0; i < nColumns; ++i) {
 			m.voxLayers.end_[i] =
 			    i + 1 < nColumns ? m.voxLayers.begin_[i + 1] : totalRanges;
+			uint8_t hasTransparent = 0;
+			for (uint32_t k = m.voxLayers.begin_[i];
+			     k < m.voxLayers.end_[i]; ++k) {
+				if (m.voxLayers.ranges_[k].flags & VOX_LAYER_TRANSPARENT) {
+					hasTransparent = 1;
+					break;
+				}
+			}
+			m.voxLayers.colHasTransparent_[i] = hasTransparent;
 		}
 		m.voxLayers.liveRanges_ = totalRanges;
 		m.voxLayers.tombstones_ = 0;

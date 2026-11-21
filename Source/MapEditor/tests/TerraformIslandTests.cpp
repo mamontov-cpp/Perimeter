@@ -245,7 +245,116 @@ bool runTerraformIslandTests()
     return true;
 }
 
+// Painted island column leveled in GAME mode: the layers above the final
+// surface must be pruned to nothing AND the true-color top paint cleared
+// (a leveled surface shows the zeroplast/common color, not the old
+// decal). Editor semantics are pinned by other tests; here we drive
+// vrtMap::normalizeTransparentColumn exactly like the game wrapper does
+// (pruneVoxRangesAboveSurface on).
+bool runTerraformPaintClearTests()
+{
+    MapEditor::Tests::TestContext& ctx = MapEditor::Tests::context();
+    MapEditor::setupErrHWrapper();
+
+    const fs::path loadRoot = ctx.tempRoot / "load_root_terraform_paint";
+    std::error_code ec;
+    fs::remove_all(loadRoot, ec);
+    fs::create_directories(loadRoot / "RESOURCE" / "Worlds", ec);
+    MapEditor::Tests::copyDirectoryRecursive(ctx.gameDir / "RESOURCE" / "GeoTx",
+                                             loadRoot / "RESOURCE" / "GeoTx");
+    fs::copy_file(ctx.gameDir / "Perimeter.ini", loadRoot / "Perimeter.ini",
+                  fs::copy_options::overwrite_existing, ec);
+    MapEditor::Tests::copyDirectoryRecursive(
+        ctx.tempWorldDir, loadRoot / "RESOURCE" / "Worlds" / fs::u8path(ctx.worldName));
+
+    MapEditor::EditorSession session;
+    session.setUndoCoalescingWindowMs(0);
+    session.setGameDir(loadRoot.u8string());
+    session.scanWorlds();
+    session.loadWorld(0);
+
+    // Game hygiene on for this test (same as terHyperSpace sets).
+    vMap.pruneVoxRangesAboveSurface = true;
+
+    const int hZ = vMap.hZeroPlast;
+    const int kBase = hZ + 35;
+    const int kTop = hZ + 385;
+    const int PX = 1500, PY = 1500;
+    const int off = PY * vMap.H_SIZE + PX;
+    vMap.VxGBuf[off] = static_cast<vrtMap::VxWholeHeight>(kBase);
+    vMap.VxDBuf[off] = static_cast<vrtMap::VxWholeHeight>(kTop);
+    vMap.AtrBuf[off] = 0;
+    vMap.SurBuf[off] = 5;
+    // Solid painted range below the top + a transparent band.
+    vMap.voxLayers.paint(static_cast<std::uint32_t>(off), kTop - 40, kTop - 5,
+                         0x10, 0x20, 0x30, false);
+    vMap.voxLayers.paint(static_cast<std::uint32_t>(off), kTop - 184, kTop - 85,
+                         0, 0, 0, true);
+    vMap.voxLayers.buildBlockIndex();
+    // True-color decal on the top.
+    vMap.ensureSurColBuf();
+    vMap.SurColBuf[off] = 0xFF000000u | 0x00ABCDEF;
+
+    // Drive the dig down to the zeroplast plane in game-sized steps,
+    // calling the game wrapper each height change.
+    individualToolzer<T2TE_ALIGNMENT_TERRAIN_4ZP> toolzer;
+    toolzer.setHAppoximation(vMap.hZeroPlast);
+    for (int iter = 0; iter < 4000 &&
+                        vMap.SGetAlt(off) != (hZ << VX_FRACTION);
+         ++iter) {
+        toolzer.influenceDZ(PX, PY, 10, -3 << VX_FRACTION, 3);
+        toolzer.influenceDZ(PX, PY, 20, 0, 5);
+    }
+    TEST_REQUIRE(vMap.SGetAlt(off) == (hZ << VX_FRACTION),
+                 "painted column not leveled to zeroplast.");
+    TEST_REQUIRE(vMap.voxLayers.findColumn(static_cast<std::uint32_t>(off)) < 0 ||
+                     [] (int idx) {
+                         int count = 0;
+                         (void)vMap.voxLayers.columnRanges(idx, &count);
+                         return count == 0;
+                     }(vMap.voxLayers.findColumn(static_cast<std::uint32_t>(off))),
+                 "layers must be pruned to nothing after leveling.");
+    TEST_REQUIRE(vMap.SurColBuf[off] == 0,
+                 "true-color paint must be cleared when prune cuts the "
+                 "column (leveled surface shows zeroplast/common color).");
+
+    // Wall merging: a run of identical hollow columns against lower
+    // ground merges into ONE quad set (unshaded-color comparison; the
+    // old shaded comparison never merged and left ~700k verts).
+    const int MX = 1700, MY = 1700;
+    std::vector<std::uint32_t> offs;
+    for (int i = 0; i < 4; ++i) {
+        const int moff = MY * vMap.H_SIZE + (MX + i);
+        vMap.VxGBuf[moff] = 10;
+        vMap.VxDBuf[moff] = 40;
+        vMap.AtrBuf[moff] = 0;
+        vMap.SurBuf[moff] = 5;
+        vMap.voxLayers.paint(static_cast<std::uint32_t>(moff), 20, 25,
+                             0, 0, 0, true);
+        // Lower plain neighbor to the +y side: walls exist.
+        const int noff = (MY + 1) * vMap.H_SIZE + (MX + i);
+        vMap.VxGBuf[noff] = 5;
+        vMap.VxDBuf[noff] = 0;
+        vMap.AtrBuf[noff] = 0;
+        offs.push_back(static_cast<std::uint32_t>(moff));
+    }
+    vMap.voxLayers.buildBlockIndex();
+    std::vector<VoxCavityVertex> tris;
+    voxCavityAppendRowWallY(vMap, MY, offs.data(), offs.size(), tris);
+    // Two runs per column ([5..19] and [26..39]); 4 identical columns
+    // merged -> 2 quads = 12 verts. Unmerged would be 48.
+    TEST_REQUIRE(tris.size() == 12,
+                 "identical neighbor columns must merge into one wall quad "
+                 "set: got %zu verts, want 12.", tris.size());
+
+    session.unloadWorld();
+    return true;
+}
+
 } // namespace
 
 MAP_EDITOR_REGISTER_TEST("Terraforming removes transparent-split island",
                          127, runTerraformIslandTests);
+MAP_EDITOR_REGISTER_TEST("Leveling painted columns clears paint and "
+                         "layers (game)",
+                         129, runTerraformPaintClearTests);

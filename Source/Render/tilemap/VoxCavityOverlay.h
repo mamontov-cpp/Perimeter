@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <map>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 #include "../inc/Umath.h"
@@ -71,6 +72,8 @@ private:
 	/// test/diagnostic support; cheap, reads the stored mesh only.
 	size_t debugVertexCount() const
 	{
+		// A5: rebuild идёт на фоновом потоке — читаем состояние под локом.
+		std::lock_guard<std::mutex> lock(mutex_);
 		size_t total = 0;
 		for (const Chunk& ch : chunks_) {
 			total += ch.verts.size();
@@ -88,10 +91,18 @@ private:
 	}
 	void rebuildAll();
 
+
 	/// Pending update rects from the tilemap callback (logic thread in the
 	/// game) — drained by drainPending(), one rect at a time through the
 	/// cheap reject (most game updates — moving units etc. — touch no
 	/// cavity at all).
+	/// A5: сама обработка ректов (rebuildRect, ~50–300 мс на больших
+	/// полостях) идёт на фоновом потоке — кадр, в котором назрел drain,
+	/// больше не ждёт её целиком (PreDraw → drainPending раньше встраивал
+	/// rebuild в кадр, игра дёргалась на каждый drain). Поток рендера
+	/// публикует только готовый снимок: Draw/PreDraw ноды берут КРАТКИЙ
+	/// лок самого RawMeshObj, а не overlay-мьютекс. join в shutdown().
+	std::thread worker_;
 	std::mutex pendingMutex_;
 	std::vector<std::pair<Vect2i, Vect2i>> pending_;
 	std::chrono::steady_clock::time_point lastRebuild_{};
@@ -121,8 +132,25 @@ private:
 		// but only a handful of columns actually change).
 		std::uint64_t hash = 0;
 	};
-	std::mutex mutex_;
+	mutable std::mutex mutex_; // mutable: debugVertexCount() читает под локом
 	std::vector<Chunk> chunks_; // sorted by off
+	// Полный (не инкрементальный) меш ректа в ЛОКАЛЬНЫЕ контейнеры:
+	// rebuildAll гонит горизонтальные полосы мира на потоках (входы —
+	// только vMap, состояние оверлея не трогаем), потом мержит.
+	// Строгие границы: каждый владелец строки/колонки покрывается
+	// ровно один раз (без -1 расширения инкрементального пути).
+	struct RectMeshes
+	{
+		std::vector<Chunk> chunks; // sorted by off
+		std::map<int, std::vector<VoxCavityVertex>> capRows;
+		std::map<int, std::vector<VoxCavityVertex>> wallRows;
+		std::map<int, std::vector<VoxCavityVertex>> wallCols;
+	};
+	void meshRectFull(int x0, int y0, int x1, int y1,
+	                  RectMeshes& out) const;
+	// Flatten + setTriangles (вызывать под mutex_).
+	void publishLocked();
+
 	// Island caps, merged per map row (flat surfaces — per-column caps
 	// made the mesh ~1M vertices). Regenerated for every row the dirty
 	// rect spans, across the FULL row width (runs merge beyond the rect).

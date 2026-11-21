@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
 #include <algorithm>
 
 namespace {
@@ -115,6 +116,10 @@ void VoxCavityOverlay::init(cScene* scene, cTileMap* tilemap)
 
 void VoxCavityOverlay::shutdown()
 {
+	// A5: фоновый rebuild дожидаем — не трогать состояние из-под него.
+	if (worker_.joinable()) {
+		worker_.join();
+	}
 	if (node_) {
 		if (tilemap_) {
 			tilemap_->UnRegisterUpdateMap(&VoxCavityOverlay::onUpdateMap,
@@ -201,7 +206,6 @@ void VoxCavityOverlay::drainPending()
 	lastLayersVersion_ = vMap.voxLayers.version;
 	lastSeenVersion_ = seen;
 	lastRebuild_ = std::chrono::steady_clock::now();
-	const double tDrain = voxperf::nowMs();
 	// Merge overlapping/nearby rects: a burst of unit updates typically
 	// covers the same neighborhood repeatedly — rebuilding it once per
 	// drain instead of once per rect.
@@ -212,7 +216,17 @@ void VoxCavityOverlay::drainPending()
 		                                        : a.first.y < b.first.y;
 	          });
 	std::vector<std::pair<Vect2i, Vect2i>> merged;
-	const int kMargin = 2; // expanded rects already touch neighbors
+	// renderQuant шлёт обновления ПОЛОСАМИ шириной в грязные строки
+	// (x-диапазон × 1–11 строк) — один бур камаза даёт ~40 ректов с
+	// вертикальными зазорами ~4–6 клеток. С kMargin=2 полосы НЕ сливались,
+	// и каждая полоса (fixed cost: движение чанков на всю ширину строк,
+	// реген кепок/стен по строкам/колонкам ~47 мс) перестраивалась
+	// отдельно: бурст из 68 полос = 3.2 с rebuild'а (см. voxperf.log
+	// "68 rects drained in 3210 ms"). Margin 12 схлопывает бурст в ОДИН
+	// блок (~240×170) — один rebuild вместо десятков; далёкие правки
+	// (>12 клеток) по-прежнему не объединяются (multi-second whole-world
+	// rebuild за один Union далёких ректов — прежняя ловушка).
+	const int kMargin = 12;
 	for (const auto& r : rects) {
 		if (!merged.empty()) {
 			auto& last = merged.back();
@@ -230,22 +244,210 @@ void VoxCavityOverlay::drainPending()
 		merged.push_back(r);
 	}
 	rects.swap(merged);
-	// Drain rect by rect — the near-merge above already collapses a burst
-	// covering one neighborhood, and a genuinely map-wide change (world
-	// load) arrives as a single map-wide rect, which rebuilds fully on its
-	// own. NEVER union distant rects into a full-map rebuild: two far-
-	// apart edits used to trigger a multi-second whole-world rebuild.
-	for (const auto& r : rects) {
-		rebuildRect(r.first.x, r.first.y, r.second.x, r.second.y);
+	// A5: rebuild — на фоновом потоке. Кадр не ждёт: rebuildRect берёт
+	// overlay-мьютекс на всё своё время, но поток рендера его НЕ берёт
+	// (нода публикует/копирует снимок под своим собственным коротким
+	// локом). Предыдущий воркер обычно завершён (троттлинг 300 мс против
+	// rebuild ~50–300 мс); join страхует от наложения rebuild'ов.
+	if (worker_.joinable()) {
+		worker_.join();
 	}
-	voxperf::log("drainPending: %zu rects drained in %.2f ms", rects.size(),
-	             voxperf::nowMs() - tDrain);
+	worker_ = std::thread(
+	    [this](std::vector<std::pair<Vect2i, Vect2i>> rs) {
+		    const double tDrain = voxperf::nowMs();
+		    // Drain rect by rect — the near-merge above already collapses
+		    // a burst covering one neighborhood, and a genuinely map-wide
+		    // change (world load) arrives as a single map-wide rect, which
+		    // rebuilds fully on its own. NEVER union distant rects into a
+		    // full-map rebuild: two far-apart edits used to trigger a
+		    // multi-second whole-world rebuild.
+		    for (const auto& r : rs) {
+			    rebuildRect(r.first.x, r.first.y, r.second.x, r.second.y);
+		    }
+		    voxperf::log("drainPending: %zu rects drained in %.2f ms",
+		                 rs.size(), voxperf::nowMs() - tDrain);
+	    },
+	    std::move(rects));
+}
+
+void VoxCavityOverlay::meshRectFull(int x0, int y0, int x1, int y1,
+                                    RectMeshes& out) const
+{
+	const int mapW = static_cast<int>(vMap.H_SIZE);
+	const std::uint32_t offBeg =
+	    static_cast<std::uint32_t>(y0) * mapW + static_cast<std::uint32_t>(x0);
+	const std::uint32_t offEnd =
+	    static_cast<std::uint32_t>(y1) * mapW + static_cast<std::uint32_t>(x1);
+	// Кандидаты: кавити-колонки ректа + их 4-соседи (владельцами стен
+	// могут быть «просто solid» клетки). Полосы rebuildAll перекрываются
+	// кольцом ±1 — дубликаты чанков схлопываем по off при мерже.
+	std::vector<std::uint32_t> colOffs;
+	const auto colRange = vMap.voxLayers.columnIndexRange(offBeg, offEnd);
+	const int mapH = static_cast<int>(vMap.V_SIZE);
+	for (int i = colRange.first; i < colRange.second; ++i) {
+		const std::uint32_t off = vMap.voxLayers.columnOffset(i);
+		const int cx = static_cast<int>(off % mapW);
+		if (cx < x0 || cx > x1) {
+			continue;
+		}
+		colOffs.push_back(off);
+		const int cy = static_cast<int>(off / mapW);
+		const int dxs[4] = {1, -1, 0, 0};
+		const int dys[4] = {0, 0, 1, -1};
+		for (int d = 0; d < 4; ++d) {
+			const int nx2 = cx + dxs[d];
+			const int ny2 = cy + dys[d];
+			if (nx2 < 0 || ny2 < 0 || nx2 >= mapW || ny2 >= mapH) {
+				continue;
+			}
+			const std::uint32_t noff =
+			    static_cast<std::uint32_t>(ny2) * mapW + nx2;
+			if (!vMap.voxLayers.columnHasTransparent(noff)) {
+				colOffs.push_back(noff);
+			}
+		}
+	}
+	std::sort(colOffs.begin(), colOffs.end());
+	colOffs.erase(std::unique(colOffs.begin(), colOffs.end()),
+	              colOffs.end());
+	out.chunks.reserve(colOffs.size());
+	for (const std::uint32_t off : colOffs) {
+		Chunk ch;
+		ch.off = off;
+		const int cx = static_cast<int>(off % mapW);
+		const int cy = static_cast<int>(off / mapW);
+		ch.hash = columnInputHash(cx, cy);
+		voxCavityAppendColumn(vMap, cx, cy, ch.verts, /*emitSides=*/false);
+		if (!ch.verts.empty()) {
+			out.chunks.push_back(std::move(ch));
+		}
+	}
+	// Кепки: строки ректа СТРОГО [y0..y1] — в полном проходе каждая
+	// строка владеет своей +y гранью ровно один раз.
+	for (int y = y0; y <= y1; ++y) {
+		const std::uint32_t rowBeg =
+		    static_cast<std::uint32_t>(y) * mapW +
+		    static_cast<std::uint32_t>(x0);
+		const std::uint32_t rowEnd =
+		    static_cast<std::uint32_t>(y) * mapW +
+		    static_cast<std::uint32_t>(x1);
+		const auto rowRange =
+		    vMap.voxLayers.columnIndexRange(rowBeg, rowEnd);
+		if (rowRange.first == rowRange.second) {
+			continue;
+		}
+		std::vector<VoxCavityVertex> caps;
+		voxCavityAppendRowCaps(vMap, y, 0, mapW - 1, caps);
+		if (!caps.empty()) {
+			out.capRows.emplace(y, std::move(caps));
+		}
+	}
+	// Стены: +y владеют строки (строго [y0..y1]), +x — колонки (строго
+	// [x0..x1]). Ключи wallCols (x) общие между полосами — мерж конкатом.
+	{
+		std::vector<std::vector<std::uint32_t>> rowCells(
+		    static_cast<size_t>(y1) + 1);
+		std::vector<std::vector<std::uint32_t>> colCells(
+		    static_cast<size_t>(x1) + 1);
+		for (const std::uint32_t off : colOffs) {
+			const int cx = static_cast<int>(off % mapW);
+			const int cy = static_cast<int>(off / mapW);
+			if (cy >= y0 && cy <= y1) {
+				rowCells[static_cast<size_t>(cy)].push_back(off);
+			}
+			if (cx >= x0 && cx <= x1) {
+				colCells[static_cast<size_t>(cx)].push_back(off);
+			}
+		}
+		for (int y = y0; y <= y1; ++y) {
+			const auto& cells = rowCells[static_cast<size_t>(y)];
+			if (cells.empty()) {
+				continue;
+			}
+			std::vector<VoxCavityVertex> w;
+			voxCavityAppendRowWallY(vMap, y, cells.data(), cells.size(), w);
+			if (!w.empty()) {
+				out.wallRows.emplace(y, std::move(w));
+			}
+		}
+		for (int x = x0; x <= x1; ++x) {
+			const auto& cells = colCells[static_cast<size_t>(x)];
+			if (cells.empty()) {
+				continue;
+			}
+			std::vector<VoxCavityVertex> w;
+			voxCavityAppendColWallX(vMap, x, cells.data(), cells.size(), w);
+			if (!w.empty()) {
+				out.wallCols.emplace(x, std::move(w));
+			}
+		}
+	}
 }
 
 void VoxCavityOverlay::rebuildAll()
 {
-	rebuildRect(0, 0, static_cast<int>(vMap.H_SIZE) - 1,
-	            static_cast<int>(vMap.V_SIZE) - 1);
+	std::lock_guard<std::mutex> lock(mutex_);
+	const int mapW = static_cast<int>(vMap.H_SIZE);
+	const int mapH = static_cast<int>(vMap.V_SIZE);
+	// Параллелизм по горизонтальным полосам: полный меш мира (~192k
+	// колонок, 3.8 с однопоточно) режется на hardware_concurrency
+	// полос; мешер читает только vMap (внутренние локи voxLayers
+	// потокобезопасны), состояние оверлея на потоках не трогаем.
+	const unsigned hc = std::thread::hardware_concurrency();
+	const int bands =
+	    std::min(16, std::max(1, hc ? static_cast<int>(hc) : 1));
+	voxperf::log("rebuildAll: full rebuild START bands=%d", bands);
+	const double tAll = voxperf::nowMs();
+	std::vector<RectMeshes> outs(bands);
+	{
+		std::vector<std::thread> threads;
+		threads.reserve(bands);
+		for (int b = 0; b < bands; ++b) {
+			const int y0 = b * mapH / bands;
+			const int y1 = (b + 1) * mapH / bands - 1;
+			threads.emplace_back([this, y0, y1, mapW, &outs, b] {
+				meshRectFull(0, y0, mapW - 1, y1, outs[b]);
+			});
+		}
+		for (auto& t : threads) {
+			t.join();
+		}
+	}
+	chunks_.clear();
+	capRows_.clear();
+	wallRows_.clear();
+	wallCols_.clear();
+	for (int b = 0; b < bands; ++b) {
+		RectMeshes& o = outs[b];
+		chunks_.insert(chunks_.end(),
+		               std::make_move_iterator(o.chunks.begin()),
+		               std::make_move_iterator(o.chunks.end()));
+		for (auto& kv : o.capRows) {
+			capRows_.emplace(kv.first, std::move(kv.second));
+		}
+		for (auto& kv : o.wallRows) {
+			wallRows_.emplace(kv.first, std::move(kv.second));
+		}
+		for (auto& kv : o.wallCols) {
+			auto& dst = wallCols_[kv.first];
+			dst.insert(dst.end(),
+			           std::make_move_iterator(kv.second.begin()),
+			           std::make_move_iterator(kv.second.end()));
+		}
+	}
+	// Кольцо ±1 полос даёт дубликаты чанков на границах — схлопываем
+	// по off (геометрия идентична: мешер детерминирован по входам).
+	std::sort(chunks_.begin(), chunks_.end(),
+	          [](const Chunk& a, const Chunk& b) { return a.off < b.off; });
+	chunks_.erase(std::unique(chunks_.begin(), chunks_.end(),
+	                          [](const Chunk& a, const Chunk& b) {
+		                          return a.off == b.off;
+	                          }),
+	              chunks_.end());
+	dirty_ = true;
+	voxperf::log("rebuildAll: full rebuild END (chunks=%zu) took %.2f ms",
+	             chunks_.size(), voxperf::nowMs() - tAll);
+	publishLocked();
 }
 
 void VoxCavityOverlay::rebuildRect(int x0, int y0, int x1, int y1)
@@ -463,7 +665,10 @@ void VoxCavityOverlay::rebuildRect(int x0, int y0, int x1, int y1)
 	{
 		std::vector<std::vector<std::uint32_t>> rowCells(
 		    static_cast<size_t>(y1) + 2);
-		std::map<int, std::vector<std::uint32_t>> colCells;
+		// B7: индексированный вектор вместо std::map (аллокация узла на
+		// колонку в каждом drain).
+		std::vector<std::vector<std::uint32_t>> colCells(
+		    static_cast<size_t>(x1) + 2);
 		for (const std::uint32_t off : colOffs) {
 			const int cx = static_cast<int>(off % mapW);
 			const int cy = static_cast<int>(off / mapW);
@@ -471,7 +676,7 @@ void VoxCavityOverlay::rebuildRect(int x0, int y0, int x1, int y1)
 				rowCells[static_cast<size_t>(cy)].push_back(off);
 			}
 			if (cx >= x0 - 1 && cx <= x1) {
-				colCells[cx].push_back(off);
+				colCells[static_cast<size_t>(cx)].push_back(off);
 			}
 		}
 		for (int y = std::max(0, y0 - 1); y <= y1; ++y) {
@@ -497,15 +702,14 @@ void VoxCavityOverlay::rebuildRect(int x0, int y0, int x1, int y1)
 		for (int x = std::max(0, x0 - 1); x <= x1; ++x) {
 			auto oldCol = wallCols_.find(x);
 			const bool hadCol = oldCol != wallCols_.end();
-			const auto it = colCells.find(x);
-			const std::vector<std::uint32_t>* cells =
-			    it != colCells.end() ? &it->second : nullptr;
-			if ((!cells || cells->empty()) && !hadCol) {
+			const std::vector<std::uint32_t>& cells =
+			    colCells[static_cast<size_t>(x)];
+			if (cells.empty() && !hadCol) {
 				continue;
 			}
 			std::vector<VoxCavityVertex> w;
-			if (cells) {
-				voxCavityAppendColWallX(vMap, x, cells->data(), cells->size(),
+			if (!cells.empty()) {
+				voxCavityAppendColWallX(vMap, x, cells.data(), cells.size(),
 				                        w);
 			}
 			const bool same = hadCol && oldCol->second == w;
@@ -531,51 +735,56 @@ void VoxCavityOverlay::rebuildRect(int x0, int y0, int x1, int y1)
 	}
 	dirty_ = true;
 	voxperf::log("rebuildRect: rebuild took %.2f ms, chunksAfter=%zu", voxperf::nowMs() - tReb, chunks_.size());
-	if (node_) {
-		// Flatten once per actual change (not per update). VoxCavityVertex
-		// mirrors sVertexXYZDT1 byte-for-byte — bulk memcpy per chunk,
-		// no per-vertex conversion.
-		static_assert(sizeof(VoxCavityVertex) == sizeof(sVertexXYZDT1),
-		              "VoxCavityVertex must mirror sVertexXYZDT1");
-		std::vector<sVertexXYZDT1> flat;
-		size_t total = 0;
-		for (const Chunk& ch : chunks_) {
-			total += ch.verts.size();
-		}
-		for (const auto& row : capRows_) {
-			total += row.second.size();
-		}
-		for (const auto& row : wallRows_) {
-			total += row.second.size();
-		}
-		for (const auto& col : wallCols_) {
-			total += col.second.size();
-		}
-		flat.resize(total);
-		const double tFlat = voxperf::nowMs();
-		sVertexXYZDT1* dst = flat.data();
-		for (const Chunk& ch : chunks_) {
+	publishLocked();
+}
 
-			memcpy(dst, ch.verts.data(),
-			       ch.verts.size() * sizeof(sVertexXYZDT1));
-			dst += ch.verts.size();
-		}
-		for (const auto& row : capRows_) {
-			memcpy(dst, row.second.data(),
-			       row.second.size() * sizeof(sVertexXYZDT1));
-			dst += row.second.size();
-		}
-		for (const auto& row : wallRows_) {
-			memcpy(dst, row.second.data(),
-			       row.second.size() * sizeof(sVertexXYZDT1));
-			dst += row.second.size();
-		}
-		for (const auto& col : wallCols_) {
-			memcpy(dst, col.second.data(),
-			       col.second.size() * sizeof(sVertexXYZDT1));
-			dst += col.second.size();
-		}
-		voxperf::log("publish: flatten %.2f ms verts=%zu", voxperf::nowMs() - tFlat, flat.size());
-		node_->setTriangles(flat);
+void VoxCavityOverlay::publishLocked()
+{
+	if (!node_) {
+		return;
 	}
+	// Flatten once per actual change (not per update). VoxCavityVertex
+	// mirrors sVertexXYZDT1 byte-for-byte — bulk memcpy per chunk,
+	// no per-vertex conversion.
+	static_assert(sizeof(VoxCavityVertex) == sizeof(sVertexXYZDT1),
+	              "VoxCavityVertex must mirror sVertexXYZDT1");
+	std::vector<sVertexXYZDT1> flat;
+	size_t total = 0;
+	for (const Chunk& ch : chunks_) {
+		total += ch.verts.size();
+	}
+	for (const auto& row : capRows_) {
+		total += row.second.size();
+	}
+	for (const auto& row : wallRows_) {
+		total += row.second.size();
+	}
+	for (const auto& col : wallCols_) {
+		total += col.second.size();
+	}
+	flat.resize(total);
+	const double tFlat = voxperf::nowMs();
+	sVertexXYZDT1* dst = flat.data();
+	for (const Chunk& ch : chunks_) {
+		memcpy(dst, ch.verts.data(),
+		       ch.verts.size() * sizeof(sVertexXYZDT1));
+		dst += ch.verts.size();
+	}
+	for (const auto& row : capRows_) {
+		memcpy(dst, row.second.data(),
+		       row.second.size() * sizeof(sVertexXYZDT1));
+		dst += row.second.size();
+	}
+	for (const auto& row : wallRows_) {
+		memcpy(dst, row.second.data(),
+		       row.second.size() * sizeof(sVertexXYZDT1));
+		dst += row.second.size();
+	}
+	for (const auto& col : wallCols_) {
+		memcpy(dst, col.second.data(),
+		       col.second.size() * sizeof(sVertexXYZDT1));
+		dst += col.second.size();
+	}
+	voxperf::log("publish: flatten %.2f ms verts=%zu", voxperf::nowMs() - tFlat, flat.size());
+	node_->setTriangles(flat);
 }

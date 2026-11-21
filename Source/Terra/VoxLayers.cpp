@@ -127,6 +127,203 @@ bool VoxColLayers::lookupSolidBelow(uint32_t cellOffset, int height,
 	return false;
 }
 
+int VoxColLayers::findColumnImpl(uint32_t cellOffset) const
+{
+	// Без лока — вызывать под захваченным accessMtx (после
+	// ensureBlockBegin в findColumn или самостоятельно). Дублирует
+	// findColumn, но без вложенных захватов: горячий путь normalize
+	// берёт лок ОДИН раз (C2).
+	if (!mightHaveColumn(cellOffset)) {
+		return -1;
+	}
+	ensureBlockBegin();
+	const size_t blk = static_cast<size_t>(cellOffset) >> kBlockShift;
+	int lo = static_cast<int>(blockBegin_[blk]);
+	int hi = static_cast<int>(blockBegin_[blk + 1]);
+	while (lo < hi) {
+		const int mid = (lo + hi) / 2;
+		if (col_[static_cast<size_t>(mid)] < cellOffset) {
+			lo = mid + 1;
+		} else if (col_[static_cast<size_t>(mid)] > cellOffset) {
+			hi = mid;
+		} else {
+			return mid;
+		}
+	}
+	return -1;
+}
+
+// Верхний сплошной воксель строго ниже height по уже снятому списку
+// диапазонов (та же математика, что в topSolidVoxel, но без локов и
+// поиска — normalize уже держит снимок).
+static int topSolidFromRanges(const VoxLayerRange* r, int count, int height)
+{
+	if (height <= 0) {
+		return -1;
+	}
+	if (count == 0) {
+		return height - 1; // слоёв нет — порода сплошная
+	}
+	int h = height - 1;
+	for (int i = count; i-- > 0;) {
+		if (r[i].z0 > h) {
+			continue; // диапазон выше текущего запроса
+		}
+		if (r[i].z1 < h) {
+			return h; // зазор — безымянный сплошной воксель
+		}
+		if (r[i].flags & VOX_LAYER_TRANSPARENT) {
+			h = static_cast<int>(r[i].z0) - 1; // проваливаемся сквозь пустоту
+			if (h < 0) {
+				return -1;
+			}
+			continue;
+		}
+		return h; // h внутри сплошного диапазона
+	}
+	return h; // ниже всех диапазонов — сплошная порода
+}
+
+bool VoxColLayers::capInfo(int colIdx, int vxd, int* displayH,
+                           std::uint32_t* topRgb, std::uint8_t* topFlags) const
+{
+	std::lock_guard<std::recursive_mutex> lock(accessMtx);
+	*displayH = -1;
+	*topRgb = 0;
+	*topFlags = 0;
+	if (colIdx < 0 || colIdx >= static_cast<int>(col_.size())) {
+		return false;
+	}
+	const uint32_t b = begin_[static_cast<size_t>(colIdx)];
+	const uint32_t e = end_[static_cast<size_t>(colIdx)];
+	if (vxd > 0) {
+		int display = -1;
+		for (uint32_t k = b; k < e; ++k) {
+			const VoxLayerRange& r = ranges_[k];
+			if ((r.flags & VOX_LAYER_TRANSPARENT) && r.z0 < vxd &&
+			    (display < 0 || r.z0 < display)) {
+				display = r.z0;
+			}
+		}
+		*displayH = display < 0 ? -1
+		                        : (display <= vxd ? display : vxd);
+		const int h = vxd - 1;
+		for (uint32_t k = b; k < e; ++k) {
+			const VoxLayerRange& r = ranges_[k];
+			if (h < r.z0) {
+				break;
+			}
+			if (h <= r.z1) {
+				*topFlags = r.flags;
+				*topRgb = (static_cast<std::uint32_t>(r.r) << 16) |
+				          (static_cast<std::uint32_t>(r.g) << 8) | r.b;
+				break;
+			}
+		}
+	}
+	return true;
+}
+
+int VoxColLayers::normalize(uint32_t cellOffset, int oldHeight, int newHeight,
+                            std::uint32_t rgb, bool prune, bool* prunedOut)
+{
+	std::lock_guard<std::recursive_mutex> lock(accessMtx);
+	if (prunedOut) {
+		*prunedOut = false;
+	}
+	const int idx = findColumnImpl(cellOffset);
+	if (idx < 0) {
+		return newHeight;
+	}
+	const uint32_t b = begin_[static_cast<size_t>(idx)];
+	const uint32_t e = end_[static_cast<size_t>(idx)];
+	const int count = static_cast<int>(e - b);
+	// C3 — быстрый выход O(1): прозрачных нет (схлоп не сработает,
+	// заливать нечего) и prune нечего резать (последний диапазон
+	// заканчивается ниже новой высоты). Горячий путь «ровная колонка
+	// с краской под собой» при каждом кванте камаза.
+	if (colHasTransparent_[static_cast<size_t>(idx)] == 0 &&
+	    (!prune || count == 0 ||
+	     static_cast<int>(ranges_[e - 1].z1) < newHeight)) {
+		return newHeight;
+	}
+	// Рабочая копия диапазонов: стек при коротком списке (обычно 1–3),
+	// куча при длинном. Результат пишется через setColumn один раз —
+	// слот, флаги и version (C1) фиксирует он.
+	VoxLayerRange work[32];
+	std::vector<VoxLayerRange> workHeap;
+	const VoxLayerRange* cur = ranges_.data() + b;
+	int n = count;
+	bool modified = false;
+	if (newHeight > oldHeight) {
+		// Подъём: ЛЮБОЙ прозрачный воксель ниже нового верха заменяется
+		// сплошным с цветом по умолчанию колонки (правило solidify).
+		bool any = false;
+		for (int i = 0; i < count; ++i) {
+			if ((cur[i].flags & VOX_LAYER_TRANSPARENT) &&
+			    cur[i].z0 < newHeight) {
+				any = true;
+				break;
+			}
+		}
+		if (any) {
+			const uint8_t rr = static_cast<uint8_t>((rgb >> 16) & 0xFF);
+			const uint8_t gg = static_cast<uint8_t>((rgb >> 8) & 0xFF);
+			const uint8_t bb = static_cast<uint8_t>(rgb & 0xFF);
+			VoxLayerRange* dst = work;
+			if (count + 2 > 32) {
+				workHeap.resize(static_cast<size_t>(count) + 2);
+				dst = workHeap.data();
+			}
+			int m = 0;
+			for (int i = 0; i < count; ++i) {
+				const VoxLayerRange& o = cur[i];
+				if (!(o.flags & VOX_LAYER_TRANSPARENT) ||
+				    o.z0 > newHeight - 1) {
+					dst[m++] = o;
+					continue;
+				}
+				dst[m++] = VoxLayerRange{
+				    o.z0,
+				    static_cast<uint16_t>(
+				        std::min(static_cast<int>(o.z1), newHeight - 1)),
+				    rr, gg, bb, 0};
+				if (o.z1 > newHeight - 1) {
+					dst[m++] = VoxLayerRange{
+					    static_cast<uint16_t>(newHeight), o.z1,
+					    o.r, o.g, o.b,
+					    static_cast<uint8_t>(VOX_LAYER_TRANSPARENT)};
+				}
+			}
+			cur = dst;
+			n = m;
+			modified = true;
+		}
+	}
+	// Инвариант «верхний воксель непрозрачный»: высота схлопывается к
+	// ближайшему сплошному под новым верхом.
+	const int solid = topSolidFromRanges(cur, n, newHeight);
+	const int h = (solid < 0) ? 0 : solid + 1;
+	int kept = n;
+	if (prune) {
+		// Диапазоны, целиком над итоговой высотой, вырезаются.
+		kept = 0;
+		while (kept < n && cur[kept].z0 < h) {
+			++kept;
+		}
+		if (kept != n) {
+			modified = true;
+			if (prunedOut) {
+				*prunedOut = true;
+			}
+		}
+	}
+	if (modified) {
+		setColumn(cellOffset, cur, kept);
+	}
+	return h;
+}
+
 int VoxColLayers::findColumn(uint32_t cellOffset) const
 {
 	std::lock_guard<std::recursive_mutex> lock(accessMtx);
@@ -199,8 +396,6 @@ void VoxColLayers::setColumn(uint32_t cellOffset, const VoxLayerRange* ranges,
                              int count)
 {
 	std::lock_guard<std::recursive_mutex> lock(accessMtx);
-	++version;
-	lastMutationOff = cellOffset;
 	if (count < 0) {
 		count = 0;
 	}
@@ -208,6 +403,11 @@ void VoxColLayers::setColumn(uint32_t cellOffset, const VoxLayerRange* ranges,
 	// begin_/end_ (границы развязаны — в пуле есть дырки), удалённая
 	// колонка остаётся ТОМБСТОУНОМ (begin_==end_) — без memmove col_.
 	// Дырки и томбстоуны упаковывает лениво compact() (перед сохранением).
+	// C1: version бампается ТОЛЬКО при реальном изменении содержимого —
+	// идентичная перезапись (той же формы, равные байты) его не трогает,
+	// иначе оверлей полостей получает ложный сигнал и rebuild'ит rect
+	// впустую (drainPending не может отбросить такое обновление).
+	bool bumpVersion = false;
 	const int idx = findColumn(cellOffset);
 	if (idx >= 0) {
 		const uint32_t b = begin_[static_cast<size_t>(idx)];
@@ -215,7 +415,7 @@ void VoxColLayers::setColumn(uint32_t cellOffset, const VoxLayerRange* ranges,
 		liveRanges_ -= e - b;
 		if (count == 0) {
 			if (e > b) {
-				// live -> tombstone: живых слоев больше нет — игровой гейт
+				// live -> tombstone: живых слоёв больше нет — игровой гейт
 				// hasLiveColumn перестаёт звать normalize для этой колонки.
 				const size_t blk =
 				    static_cast<size_t>(cellOffset) >> kBlockShift;
@@ -223,8 +423,14 @@ void VoxColLayers::setColumn(uint32_t cellOffset, const VoxLayerRange* ranges,
 					--blockLive_[blk];
 				}
 				++tombstones_;
+				bumpVersion = true;
 			}
 			end_[static_cast<size_t>(idx)] = b;
+			colHasTransparent_[static_cast<size_t>(idx)] = 0;
+			if (bumpVersion) {
+				++version;
+				lastMutationOff = cellOffset;
+			}
 			return;
 		}
 		liveRanges_ += count;
@@ -237,23 +443,43 @@ void VoxColLayers::setColumn(uint32_t cellOffset, const VoxLayerRange* ranges,
 			if (tombstones_ > 0) {
 				--tombstones_;
 			}
+			bumpVersion = true;
+		}
+		uint8_t hasTransparent = 0;
+		for (int i = 0; i < count; ++i) {
+			if (ranges[i].flags & VOX_LAYER_TRANSPARENT) {
+				hasTransparent = 1;
+				break;
+			}
 		}
 		if (static_cast<uint32_t>(count) == e - b) {
-			// Same shape: copy the ranges in place (the common repaint).
-			std::copy(ranges, ranges + count, ranges_.begin() + b);
-			return;
-		}
-		if (static_cast<uint32_t>(count) < e - b) {
+			// Same shape: перезапись на месте (обычная перекраска). C1:
+			// идентичные байты — ничего не трогаем вообще.
+			if (std::memcmp(ranges, ranges_.data() + b,
+			                count * sizeof(VoxLayerRange)) != 0) {
+				std::copy(ranges, ranges + count, ranges_.begin() + b);
+				colHasTransparent_[static_cast<size_t>(idx)] = hasTransparent;
+				bumpVersion = true;
+			}
+		} else if (static_cast<uint32_t>(count) < e - b) {
 			// Ужать на месте; хвост старого слота — дырка в пуле.
 			std::copy(ranges, ranges + count, ranges_.begin() + b);
 			end_[static_cast<size_t>(idx)] = b + count;
-			return;
+			colHasTransparent_[static_cast<size_t>(idx)] = hasTransparent;
+			bumpVersion = true;
+		} else {
+			// Рост: новый слот в конец пула (amortized), старый — дырка.
+			const uint32_t nb = static_cast<uint32_t>(ranges_.size());
+			ranges_.insert(ranges_.end(), ranges, ranges + count);
+			begin_[static_cast<size_t>(idx)] = nb;
+			end_[static_cast<size_t>(idx)] = nb + count;
+			colHasTransparent_[static_cast<size_t>(idx)] = hasTransparent;
+			bumpVersion = true;
 		}
-		// Рост: новый слот в конец пула (amortized), старый — дырка.
-		const uint32_t nb = static_cast<uint32_t>(ranges_.size());
-		ranges_.insert(ranges_.end(), ranges, ranges + count);
-		begin_[static_cast<size_t>(idx)] = nb;
-		end_[static_cast<size_t>(idx)] = nb + count;
+		if (bumpVersion) {
+			++version;
+			lastMutationOff = cellOffset;
+		}
 		return;
 	}
 	if (count == 0) {
@@ -277,10 +503,20 @@ void VoxColLayers::setColumn(uint32_t cellOffset, const VoxLayerRange* ranges,
 		}
 		pos = lo;
 	}
+	uint8_t hasTransparent = 0;
+	for (int i = 0; i < count; ++i) {
+		if (ranges[i].flags & VOX_LAYER_TRANSPARENT) {
+			hasTransparent = 1;
+			break;
+		}
+	}
 	col_.insert(col_.begin() + static_cast<ptrdiff_t>(pos), cellOffset);
 	begin_.insert(begin_.begin() + static_cast<ptrdiff_t>(pos), nb);
 	end_.insert(end_.begin() + static_cast<ptrdiff_t>(pos),
 	            nb + static_cast<uint32_t>(count));
+	colHasTransparent_.insert(
+	    colHasTransparent_.begin() + static_cast<ptrdiff_t>(pos),
+	    hasTransparent);
 	liveRanges_ += count;
 	growBlockIndex(cellOffset);
 	++blockCount_[static_cast<size_t>(cellOffset) >> kBlockShift];
@@ -288,6 +524,8 @@ void VoxColLayers::setColumn(uint32_t cellOffset, const VoxLayerRange* ranges,
 	// Вставка сдвинула индексы колонок после pos — кэш первых колонок
 	// блоков протух.
 	blockBeginDirty_ = true;
+	++version;
+	lastMutationOff = cellOffset;
 }
 
 void VoxColLayers::compact()
@@ -297,7 +535,9 @@ void VoxColLayers::compact()
 	std::vector<uint32_t> nbegin;
 	std::vector<uint32_t> nend;
 	std::vector<VoxLayerRange> nranges;
+	std::vector<uint8_t> nflags;
 	ncol.reserve(col_.size());
+	nflags.reserve(col_.size());
 	nbegin.reserve(col_.size());
 	nend.reserve(col_.size());
 	nranges.reserve(static_cast<size_t>(liveRanges_));
@@ -312,10 +552,19 @@ void VoxColLayers::compact()
 		               ranges_.begin() + end_[i]);
 		nend.push_back(static_cast<uint32_t>(nranges.size()));
 		ncol.push_back(col_[i]);
+		uint8_t t = 0;
+		for (uint32_t k = begin_[i]; k < end_[i]; ++k) {
+			if (ranges_[k].flags & VOX_LAYER_TRANSPARENT) {
+				t = 1;
+				break;
+			}
+		}
+		nflags.push_back(t);
 	}
 	col_.swap(ncol);
 	begin_.swap(nbegin);
 	end_.swap(nend);
+	colHasTransparent_.swap(nflags);
 	ranges_.swap(nranges);
 	tombstones_ = 0;
 	buildBlockIndex();
@@ -403,6 +652,19 @@ void VoxColLayers::solidify(uint32_t cellOffset, int z0, int z1,
 	}
 	int count = 0;
 	const VoxLayerRange* old = columnRanges(idx, &count);
+	// C1: нет пересечений с прозрачными — setColumn не нужен (иначе
+	// бампается version и оверлей rebuild'ит rect впустую).
+	bool any = false;
+	for (int i = 0; i < count; ++i) {
+		if ((old[i].flags & VOX_LAYER_TRANSPARENT) &&
+		    old[i].z1 >= z0 && old[i].z0 <= z1) {
+			any = true;
+			break;
+		}
+	}
+	if (!any) {
+		return;
+	}
 	// Новый список: прозрачные пересечения [z0..z1] заменяются сплошным
 	// диапазоном с цветом по умолчанию; непрозрачные не трогаем.
 	std::vector<VoxLayerRange> next;
@@ -460,6 +722,7 @@ void VoxColLayers::clear()
 	begin_.clear();
 	end_.clear();
 	ranges_.clear();
+	colHasTransparent_.clear();
 	blockCount_.clear();
 	blockLive_.clear();
 	blockBegin_.clear();

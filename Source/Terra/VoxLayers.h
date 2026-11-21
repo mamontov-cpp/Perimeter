@@ -61,6 +61,7 @@ public:
 			col_ = o.col_;
 			begin_ = o.begin_;
 			end_ = o.end_;
+			colHasTransparent_ = o.colHasTransparent_;
 			ranges_ = o.ranges_;
 			blockCount_ = o.blockCount_;
 			blockLive_ = o.blockLive_;
@@ -95,6 +96,14 @@ public:
 	// прозрачные диапазоны вниз. true + цвет, если такой есть.
 	bool lookupSolidBelow(uint32_t cellOffset, int height, uint32_t* rgb) const;
 
+	// Для кепок полостей (B5): под ОДНИМ локом отдаёт display height и
+	// цвет/флаги верхнего вокселя (vxd-1) колонки по её ИНДЕКСУ — RowCaps
+	// итерирует columnIndexRange и раньше звал lookup() +
+	// cavityDisplayHeight(), каждый со своим findColumn по всей таблице.
+	// Возвращает false, если колонки нет (тогда *displayH = -1).
+	bool capInfo(int colIdx, int vxd, int* displayH, std::uint32_t* topRgb,
+	             std::uint8_t* topFlags) const;
+
 	// УДАЛЕНИЕ «висячих» диапазонов: все диапазоны, целиком лежащие на
 	// высоте >= height (над поверхностью колонки), вырезаются; колонка без
 	// оставшихся диапазонов удаляется. Игровая гигиена: после того как
@@ -105,6 +114,25 @@ public:
 	// (флаг vrtMap::pruneVoxRangesAboveSurface): там слои над поверхностью
 	// сохраняются для редактирования.
 	void pruneAbove(uint32_t cellOffset, int height);
+
+	// Комбинированная нормализация колонки после изменения высоты (C2+C3):
+	// ОДИН захват лока и ОДИН поиск колонки на всю операцию. Правила —
+	// прежние (normalizeTransparentColumn): подъём (newHeight > oldHeight)
+	// заливает прозрачные [0..newHeight) сплошными цветом rgb; верхний
+	// воксель схлопывается к ближайшему сплошному под новым верхом;
+	// prune режет диапазоны целиком над итоговой высотой. Возвращает
+	// итоговую высоту дамбы (воксели). Слои переписываются ТОЛЬКО при
+	// реальном изменении содержимого (C1: version не бампается на
+	// идентичных данных — иначе оверлей получает ложный сигнал и делает
+	// rebuild впустую). Быстрый выход (C3): у колонки нет прозрачных и
+	// prune нечего резать — O(1) по кэшированному биту.
+	// prunedOut (может быть nullptr): true, если prune вырезал хотя бы
+	// один диапазон — враппер в игре по этому флагу сбрасывает true-color
+	// краску поверхности (SurColBuf): срезанная под слои колонка должна
+	// показывать ровный террейн (цвет зеропласта/палитры), а не старую
+	// декаль.
+	int normalize(uint32_t cellOffset, int oldHeight, int newHeight,
+	              std::uint32_t rgb, bool prune, bool* prunedOut);
 
 	// Покрасить [z0..z1] в (r,g,b): вычитание пересечений, вставка,
 	// слияние смежных одноцветных. z1 >= z0 >= 0. transparent помечает
@@ -141,6 +169,8 @@ public:
 	std::vector<uint32_t> col_;    // cell offsets, ascending
 	std::vector<uint32_t> begin_;  // begin into ranges_ (parallel to col_)
 	std::vector<uint32_t> end_;    // end into ranges_ (parallel to col_)
+	std::vector<uint8_t> colHasTransparent_; // parallel bit: column has a
+	                                         // transparent range (C3)
 	std::vector<VoxLayerRange> ranges_; // per column sorted by z0, has gaps
 	std::vector<uint32_t> blockCount_;  // mightHaveColumn: RECORDS per block
 	std::vector<uint32_t> blockLive_;   // hasLiveColumn: live columns per block
@@ -234,6 +264,8 @@ private:
 	void growBlockIndex(uint32_t cellOffset);
 	// Ленивая пересборка blockBegin_ (вызывать под локом).
 	void ensureBlockBegin() const;
+	// Поиск колонки БЕЗ захвата лока (вызывать под захваченным accessMtx).
+	int findColumnImpl(uint32_t cellOffset) const;
 };
 
 #endif // VOX_LAYERS_H

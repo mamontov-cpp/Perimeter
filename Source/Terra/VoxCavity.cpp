@@ -117,7 +117,10 @@ void segmentsOfRanges(const VoxLayerRange* ranges, int count, int height,
 void runsOfRanges(const VoxLayerRange* ranges, int count, int height,
                   std::uint32_t fallback, std::vector<SolidRun>& out)
 {
-	std::vector<Segment> spans;
+	// B3: буфер потока вместо локального вектора на каждый вызов.
+	static thread_local std::vector<Segment> spansBuf;
+	spansBuf.clear();
+	std::vector<Segment>& spans = spansBuf;
 	segmentsOfRanges(ranges, count, height, spans);
 	for (const Segment& s : spans) {
 		int c = s.z0;
@@ -275,22 +278,27 @@ bool sideRunsFor(vrtMap& m, int x, int y, bool dirY,
 	    dirY ? (m.YCYCL(y + 1) * mapW + x) : (y * mapW + m.XCYCL(x + 1));
 	const int nh =
 		m.VxDBuf[noff] != 0 ? m.VxDBuf[noff] : m.VxGBuf[noff];
-	const unsigned light = m.RnrBuf[off] & 0x7F;
 	RangeCopy myCopy;
 	copyRanges(m, static_cast<std::uint32_t>(off), myCopy);
 	RangeCopy nCopy;
 	copyRanges(m, static_cast<std::uint32_t>(noff), nCopy);
-	std::vector<SolidRun> mine;
-	mine.reserve(8);
+	// B3: буферы потока, не аллокации на каждую клетку (вокер зовёт
+	// sideRunsFor на каждого кандидата — десятки тысяч раз на drain).
+	static thread_local std::vector<SolidRun> mineBuf;
+	static thread_local std::vector<SolidRun> neighborBuf;
+	static thread_local std::vector<int> boundsBuf;
+	mineBuf.clear();
+	neighborBuf.clear();
+	boundsBuf.clear();
+	std::vector<SolidRun>& mine = mineBuf;
+	std::vector<SolidRun>& neighbor = neighborBuf;
 	runsOfRanges(myCopy.data, myCopy.count, height, m.defaultColumnRgb(off),
 	             mine);
-	std::vector<SolidRun> neighbor;
-	neighbor.reserve(8);
 	runsOfRanges(nCopy.data, nCopy.count, nh, m.defaultColumnRgb(noff),
 	             neighbor);
 	// События — все границы ранов обеих колонок + walkMax.
 	const int walkMax = height > nh ? height : nh;
-	std::vector<int> bounds;
+	std::vector<int>& bounds = boundsBuf;
 	bounds.reserve(2 + 2 * (mine.size() + neighbor.size()) + 2);
 	bounds.push_back(0);
 	bounds.push_back(walkMax);
@@ -328,8 +336,12 @@ bool sideRunsFor(vrtMap& m, int x, int y, bool dirY,
 		if (aSolid == bSolid) {
 			continue; // void==void или solid==solid — грань не нужна
 		}
-		out.push_back(
-		    {z0, z1, shade(aSolid ? colA : colB, kSideShade, light)});
+		// НЕзатененный цвет: мерж серий сравнивает раны по цвету, а
+		// затенение от рельефного света колонки делало соседние
+		// идентичные клетки "разными" — стены не сливались и меш
+		// оставался ~700k вершин. Затенение — на эмите (владелец
+		// серии / колонки), как у кепок.
+		out.push_back({z0, z1, aSolid ? colA : colB});
 	}
 	return true;
 }
@@ -357,28 +369,30 @@ void appendMergedWalls(vrtMap& m, int line, const std::uint32_t* offs,
 	bool accActive = false;
 	int accA = 0;
 	int accB = 0;
+	unsigned accLight = 0;
 	auto flush = [&]() {
 		if (!accActive) {
 			return;
 		}
 		for (const SideRun& r : accRuns) {
+			const std::uint32_t col = shade(r.color, kSideShade, accLight);
 			const float zf = static_cast<float>(r.z0);
 			const float zf1 = static_cast<float>(r.z1);
 			VoxCavityVertex a, b, c, d;
 			if (dirY) {
 				const float ye =
 				    static_cast<float>(line + 1) + kSideEps;
-				a = {static_cast<float>(accA), ye, zf, r.color};
-				b = {static_cast<float>(accB), ye, zf, r.color};
-				c = {static_cast<float>(accB), ye, zf1, r.color};
-				d = {static_cast<float>(accA), ye, zf1, r.color};
+				a = {static_cast<float>(accA), ye, zf, col};
+				b = {static_cast<float>(accB), ye, zf, col};
+				c = {static_cast<float>(accB), ye, zf1, col};
+				d = {static_cast<float>(accA), ye, zf1, col};
 			} else {
 				const float xe =
 				    static_cast<float>(line + 1) + kSideEps;
-				a = {xe, static_cast<float>(accA), zf, r.color};
-				b = {xe, static_cast<float>(accB), zf, r.color};
-				c = {xe, static_cast<float>(accB), zf1, r.color};
-				d = {xe, static_cast<float>(accA), zf1, r.color};
+				a = {xe, static_cast<float>(accA), zf, col};
+				b = {xe, static_cast<float>(accB), zf, col};
+				c = {xe, static_cast<float>(accB), zf1, col};
+				d = {xe, static_cast<float>(accA), zf1, col};
 			}
 			quad(out, a, b, c, d);
 		}
@@ -406,6 +420,7 @@ void appendMergedWalls(vrtMap& m, int line, const std::uint32_t* offs,
 			accActive = true;
 			accA = t;
 			accB = t + 1;
+			accLight = m.RnrBuf[off] & 0x7F;
 			accRuns = cur;
 		}
 		prev = t;
@@ -472,21 +487,21 @@ void voxCavityAppendRowCaps(vrtMap& m, int y, int x0, int x1,
 		// at the same z — emitting a cap there z-fights the surface into
 		// striped circles in the exact shape of the depth paint. Likewise
 		// a column whose display height already equals the top.
-		const int capDisp = m.cavityDisplayHeight(off);
+		// B5: display height и цвет верха берём под одним локом по уже
+		// известному индексу колонки — без повторных findColumn в
+		// cavityDisplayHeight/lookup.
+		int capDisp = -1;
+		std::uint32_t rgb2 = 0;
+		std::uint8_t flags = 0;
+		m.voxLayers.capInfo(i, h, &capDisp, &rgb2, &flags);
 		if (capDisp < 0 || capDisp >= h) {
 			flush(cx - 1);
 			continue;
 		}
-		// Top voxel color: the solid layer at h-1, else the default.
-		const std::uint32_t rgb = [&]() {
-			std::uint32_t rgb2 = 0;
-			uint8_t flags = 0;
-			if (m.voxLayers.lookup(off, h - 1, &rgb2, &flags) &&
-			    !(flags & VOX_LAYER_TRANSPARENT)) {
-				return rgb2;
-			}
-			return m.defaultColumnRgb(static_cast<int>(off));
-		}();
+		const std::uint32_t rgb =
+		    (flags != 0 && !(flags & VOX_LAYER_TRANSPARENT))
+		        ? rgb2
+		        : m.defaultColumnRgb(static_cast<int>(off));
 		if (runStart >= 0 && cx == runEndXCached + 1 && h == runH &&
 		    rgb == runRgb) {
 			runEndXCached = cx;
@@ -623,7 +638,8 @@ void voxCavityAppendColumn(vrtMap& m, int x, int y,
 			}
 			sideRunsFor(m, x, y, dir == 2, runs);
 			for (const SideRun& r : runs) {
-				emitSide(out, dir, x, y, r.z0, r.z1, r.color);
+				emitSide(out, dir, x, y, r.z0, r.z1,
+				         shade(r.color, kSideShade, light));
 			}
 		}
 	}
