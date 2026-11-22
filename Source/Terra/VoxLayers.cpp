@@ -285,53 +285,90 @@ int VoxColLayers::normalize(uint32_t cellOffset, int oldHeight, int newHeight,
 	const VoxLayerRange* cur = ranges_.data() + b;
 	int n = count;
 	bool modified = false;
+	// Заливка прозрачных вокселей ниже нового верха сплошным цветом
+	// колонки (правило solidify): на подъёме — всегда; на СПУСКЕ —
+	// только если верхний воксель новой высоты оказался бы прозрачным:
+	// без заливки инвариант «верх непрозрачен» схлопывал бы колонку к
+	// сплошному под полостью — ОСТРОВ терялся одним шагом при копании
+	// сквозь него (репорт: «columns instantly disappearing», данные
+	// рваные). С заливкой остров тает плавно, пустота под новой
+	// поверхностью заделывается.
+	// upTo — новая высотка поверхности. dropRemainder (СПУСК): остаток
+	// прозрачного диапазона, начинающийся на/выше upTo, — съеденный
+	// материал, выбрасывается (иначе 1-воксельный «хвост» на старой
+	// поверхности вечно держал колонку cavity и оверлей квадами).
+	auto fillBelow = [&](int upTo, bool dropRemainder) {
+		const uint8_t rr = static_cast<uint8_t>((rgb >> 16) & 0xFF);
+		const uint8_t gg = static_cast<uint8_t>((rgb >> 8) & 0xFF);
+		const uint8_t bb = static_cast<uint8_t>(rgb & 0xFF);
+		VoxLayerRange* dst = work;
+		// Буфер на n+1 слот достаточен: диапазоны колонки непересекающиеся
+		// (paint поддерживает инвариант), поэтому upTo пересекает МАКСИМУМ
+		// один прозрачный диапазон — хвост-двойник бывает только один.
+		// Берём 2n запасом: при нарушенном инварианте (баг/рассинхрон
+		// загрузки) переполнение work[32] на стеке портило бы соседние
+		// объекты, включая внутренние указатели workHeap, — порча кучи.
+		const size_t need = static_cast<size_t>(n) * 2;
+		if (need > 32) {
+			workHeap.resize(need);
+			dst = workHeap.data();
+		}
+		int m = 0;
+		for (int i = 0; i < n; ++i) {
+			const VoxLayerRange& o = cur[i];
+			if (!(o.flags & VOX_LAYER_TRANSPARENT) ||
+			    o.z0 > upTo - 1) {
+				dst[m++] = o;
+				continue;
+			}
+			dst[m++] = VoxLayerRange{
+			    o.z0, static_cast<uint16_t>(std::min(static_cast<int>(o.z1), upTo - 1)),
+			    rr, gg, bb, 0};
+			if (o.z1 > upTo - 1 && !dropRemainder) {
+				dst[m++] = VoxLayerRange{
+				    static_cast<uint16_t>(upTo), o.z1,
+				    o.r, o.g, o.b,
+				    static_cast<uint8_t>(VOX_LAYER_TRANSPARENT)};
+			}
+		}
+		cur = dst;
+		n = m;
+		modified = true;
+	};
 	if (newHeight > oldHeight) {
-		// Подъём: ЛЮБОЙ прозрачный воксель ниже нового верха заменяется
-		// сплошным с цветом по умолчанию колонки (правило solidify).
-		bool any = false;
+		// Подъём: ЛЮБОЙ прозрачный воксель ниже нового верха заливается.
 		for (int i = 0; i < count; ++i) {
 			if ((cur[i].flags & VOX_LAYER_TRANSPARENT) &&
 			    cur[i].z0 < newHeight) {
-				any = true;
+				fillBelow(newHeight, false);
 				break;
 			}
 		}
-		if (any) {
-			const uint8_t rr = static_cast<uint8_t>((rgb >> 16) & 0xFF);
-			const uint8_t gg = static_cast<uint8_t>((rgb >> 8) & 0xFF);
-			const uint8_t bb = static_cast<uint8_t>(rgb & 0xFF);
-			VoxLayerRange* dst = work;
-			if (count + 2 > 32) {
-				workHeap.resize(static_cast<size_t>(count) + 2);
-				dst = workHeap.data();
-			}
-			int m = 0;
-			for (int i = 0; i < count; ++i) {
-				const VoxLayerRange& o = cur[i];
-				if (!(o.flags & VOX_LAYER_TRANSPARENT) ||
-				    o.z0 > newHeight - 1) {
-					dst[m++] = o;
-					continue;
-				}
-				dst[m++] = VoxLayerRange{
-				    o.z0,
-				    static_cast<uint16_t>(
-				        std::min(static_cast<int>(o.z1), newHeight - 1)),
-				    rr, gg, bb, 0};
-				if (o.z1 > newHeight - 1) {
-					dst[m++] = VoxLayerRange{
-					    static_cast<uint16_t>(newHeight), o.z1,
-					    o.r, o.g, o.b,
-					    static_cast<uint8_t>(VOX_LAYER_TRANSPARENT)};
+	} else if (newHeight < oldHeight) {
+		// СПУСК (копание): заливаем ТОЛЬКО если верх на новой высоте
+		// прозрачный — иначе копание сквозь остров схлопнуло бы его
+		// целиком (репорт: «columns instantly disappearing», рваные
+		// данные). При oldHeight == newHeight (снятие прозрачного топа
+		// краской) схлоп СОХРАНЯЕТСЯ — краской пустоты по верху колонку
+		// разъедает намеренно.
+		const int solid = topSolidFromRanges(cur, n, newHeight);
+		if (solid != newHeight - 1) {
+			bool any = false;
+			for (int i = 0; i < n; ++i) {
+				if ((cur[i].flags & VOX_LAYER_TRANSPARENT) &&
+				    cur[i].z0 < newHeight) {
+					any = true;
+					break;
 				}
 			}
-			cur = dst;
-			n = m;
-			modified = true;
+			if (any) {
+				fillBelow(newHeight, true);
+			}
 		}
 	}
 	// Инвариант «верхний воксель непрозрачный»: высота схлопывается к
-	// ближайшему сплошному под новым верхом.
+	// ближайшему сплошному под новым верхом (после заливки выше не
+	// срабатывает — осталось страховкой на экзотические расклады).
 	const int solid = topSolidFromRanges(cur, n, newHeight);
 	const int h = (solid < 0) ? 0 : solid + 1;
 	int kept = n;

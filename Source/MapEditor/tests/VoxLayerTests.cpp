@@ -33,6 +33,7 @@
 #include "terra.h"
 
 #include "VoxCavity.h"
+#include "VoxLayers.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -863,3 +864,76 @@ MAP_EDITOR_REGISTER_TEST("Cavity overlay mesher", 125,
                          runVoxCavityMesherTests);
 MAP_EDITOR_REGISTER_TEST("Cavity floor paint color", 126,
                          runVoxCavityFloorColorTests);
+
+// ---------------------------------------------------------------------------
+// Граничный случай normalize(): диапазоны колонки непересекающиеся, поэтому
+// новый верх (upTo) раскалывает МАКСИМУМ один прозрачный диапазон
+// (залитый кусок + прозрачный хвост) — выходов ровно n+1. Подъём поверх
+// 23 сквозных прозрачных диапазонов + одного пересекающего верх.
+// ---------------------------------------------------------------------------
+namespace {
+
+bool runVoxNormalizeManyRangesTests()
+{
+    VoxColLayers layers;
+    const uint32_t off = 4242;
+    const int n = 24;
+    // Пересекающий будущий верх (600) — единственный, кто даст хвост.
+    layers.paint(off, 100, 700, 200, 100, 50, /*transparent=*/true);
+    for (int i = 0; i < n - 1; ++i) {
+        const int z0 = 720 + 20 * i; // выше верха — проходят как есть
+        layers.paint(off, z0, z0 + 15, 200, 100, 50, /*transparent=*/true);
+    }
+    const int idx = layers.findColumn(off);
+    int count = 0;
+    const VoxLayerRange* ranges = layers.columnRanges(idx, &count);
+    TEST_REQUIRE(count == n,
+                 "setup: expected %d disjoint transparent ranges, got %d.",
+                 n, count);
+    for (int i = 0; i < count; ++i) {
+        TEST_REQUIRE((ranges[i].flags & VOX_LAYER_TRANSPARENT) != 0,
+                     "setup: range %d must be transparent.", i);
+    }
+
+    // Подъём 100 -> 600: пересекающий диапазон [100..700] раскалывается
+    // на залитый [100..599] и прозрачный хвост [600..700].
+    const int h = layers.normalize(off, 100, 600, 0x00808080u,
+                                   /*prune=*/false, nullptr);
+    TEST_REQUIRE(h == 600,
+                 "raise must keep the new top: z=599 is inside the "
+                 "solidified piece (got h=%d, want 600).",
+                 h);
+    const int idx2 = layers.findColumn(off);
+    int count2 = 0;
+    const VoxLayerRange* out = layers.columnRanges(idx2, &count2);
+    TEST_REQUIRE(count2 == n + 1,
+                 "exactly the crossing range may split (got %d outputs, "
+                 "want %d).",
+                 count2, n + 1);
+    bool sawRemainder = false;
+    for (int i = 0; i < count2; ++i) {
+        if ((out[i].flags & VOX_LAYER_TRANSPARENT) != 0) {
+            // Прозрачные: хвост [600..700] либо нетронутые выше-верха.
+            TEST_REQUIRE(out[i].z0 >= 600,
+                         "transparent ranges must start at/above the new "
+                         "top (z0=%d).",
+                         static_cast<int>(out[i].z0));
+            if (out[i].z0 == 600) {
+                sawRemainder = true;
+                TEST_REQUIRE(out[i].z1 == 700,
+                             "remainder must keep the original tail end.");
+            }
+        } else {
+            TEST_REQUIRE(out[i].z1 <= 599,
+                         "solidified ranges must stay below the new top.");
+        }
+    }
+    TEST_REQUIRE(sawRemainder, "the crossing range must leave a tail.");
+    std::printf("[PASS] normalize with many stacked transparent ranges.\n");
+    return true;
+}
+
+} // namespace
+
+MAP_EDITOR_REGISTER_TEST("VoxLayers normalize many-range solidify", 140,
+                         runVoxNormalizeManyRangesTests);

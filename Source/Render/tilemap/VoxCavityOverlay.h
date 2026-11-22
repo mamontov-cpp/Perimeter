@@ -37,6 +37,7 @@
 class cScene;
 class cTileMap;
 class cRawMeshObj;
+class cTexture;
 
 class VoxCavityOverlay
 {
@@ -53,7 +54,7 @@ public:
 	/// Unregister and release the node (call BEFORE the tilemap dies).
 	void shutdown();
 
-	bool active() const { return node_ != nullptr; }
+	bool active() const { return chunksNode_ != nullptr; }
 
 	/// Called by the overlay node each frame (render thread): coalesces
 	/// the pending update rects into ONE rebuild per frame at most. Without
@@ -104,6 +105,37 @@ public:
 		rebuildRect(x0, y0, x1, y1);
 	}
 
+	/// Test hook: ЗАТЕНЁННЫЙ цвет кепки клетки (x,y) из бейка текстуры,
+	/// 0x00000000 когда кепки нет. В рендере цвет кепки идёт из mipmapped
+	/// текстуры (квады белые с UV), поэтому меш больше цвета не несёт.
+	std::uint32_t debugCapColor(int x, int y) const
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		const int w = static_cast<int>(capTexW_);
+		if (x < 0 || y < 0 || x >= w ||
+		    y >= static_cast<int>(capTexH_)) {
+			return 0;
+		}
+		return capTex_[static_cast<size_t>(y) * w + x];
+	}
+
+private:
+	/// Одна строка бейка перепечена: залить тексели клеток (row [0..W-1]
+	/// цветов — по клетке, прочие в 0) и пометить текстуру грязной.
+	void bakeCapRowLocked(int y, const std::vector<std::uint32_t>& cellColors);
+	/// Перенос бейка в GPU-текстуру: построение mip-цепочки (CPU, может
+	/// зваться из воркера), заливка уровней через SetTextureMipData +
+	/// Lock/Unlock (тоже CPU-side; сами sg-вызовы происходят на бинде
+	/// рендер-потоком). Вызывать под mutex_.
+	void syncTextureLocked(cTexture* tex,
+	                       const std::vector<std::uint32_t>& bake,
+	                       bool& dirtyFlag);
+	void syncCapTextureLocked();
+	/// Полный перепёк стенных бейков из wallRowRuns_/wallColRuns_.
+	void bakeWallTexturesLocked();
+	/// Ленивое выделение бейка (headless-тесты не зовут init). Под mutex_.
+	void ensureCapTexLocked();
+
 
 	/// Pending update rects from the tilemap callback (logic thread in the
 	/// game) — drained by drainPending(), one rect at a time through the
@@ -128,7 +160,16 @@ public:
 
 	cScene* scene_ = nullptr;
 	cTileMap* tilemap_ = nullptr;
-	cRawMeshObj* node_ = nullptr;
+	// Четыре ноды — по текстурному режиму (шейдер mesh_color_tex1:
+	// пустой слот сэмплит белую emptyTexture, tex*color = color):
+	//   chunksNode_     — внутренние грани плит (вершинные цвета)
+	//   capsNode_       — кепки (текстура capTex_)
+	//   rowWallsNode_   — +y стены (текстура rowWallTex_, ключ (x,z))
+	//   colWallsNode_   — +x стены (текстура colWallTex_, ключ (y,z))
+	cRawMeshObj* chunksNode_ = nullptr;
+	cRawMeshObj* capsNode_ = nullptr;
+	cRawMeshObj* rowWallsNode_ = nullptr;
+	cRawMeshObj* colWallsNode_ = nullptr;
 
 	// Per-column geometry, each column owning its vertices — an edit
 	// rebuilds ONLY the columns it touches (the world is segmented, no
@@ -160,6 +201,8 @@ public:
 		std::map<int, std::vector<VoxCavityVertex>> capRows;
 		std::map<int, std::vector<VoxCavityVertex>> wallRows;
 		std::map<int, std::vector<VoxCavityVertex>> wallCols;
+		std::map<int, std::vector<VoxWallRun>> wallRowRuns;
+		std::map<int, std::vector<VoxWallRun>> wallColRuns;
 	};
 	// Flatten + setTriangles (вызывать под mutex_).
 	void publishLocked();
@@ -176,6 +219,37 @@ public:
 	std::map<int, std::vector<VoxCavityVertex>> wallRows_;
 	std::map<int, std::vector<VoxCavityVertex>> wallCols_;
 	bool dirty_ = false;
+
+	// --- Текстура цветов кепок (трилинейная фильтрация как у террейна) ---
+	// Кепки рисуются БЕЛЫМИ квадами с UV в топ-даун текстуру РОВНО W×H
+	// (движок требует степени двойки — иначе cTexture округлит размер и
+	// залогирует «Bad width»): клетка (x,y) — тексель (x,y), UV по углам
+	// клеток сглаживает соседей как у террейна, мипы убирают мерцание.
+	// Стены и плиты рисуются ВТОРОЙ нодой БЕЗ текстуры (пустой слот шейдера
+	// сэмплит белую emptyTexture — tex*color = вершинный цвет), поэтому
+	// белый тексель в текстуре не нужен. Бейк живёт в CPU-памяти и доступен
+	// headless (тесты читают напрямую); GPU-текстура создаётся в init
+	// (рендер-поток) и догоняется на паблишах (мипы — на воркере, sg-вызовы
+	// — на бинде рендер-потоком через механизм dirty-текстур).
+	std::vector<std::uint32_t> capTex_;
+	std::uint32_t capTexW_ = 0;
+	std::uint32_t capTexH_ = 0;
+	bool capTexDirty_ = false;
+	cTexture* capTexture_ = nullptr;
+	// Стенные бейки: (mapW|mapH) × VOX_WALL_TEX_ZCAP. Пиксели пишутся из
+	// wallRowRuns_/wallColRuns_ (полный перепёк при паблише — порядок
+	// std::map детерминирован, при коллизиях серий в одном текселе
+	// побеждает последняя; у одноцветных стен (типично) коллизий нет).
+	std::vector<std::uint32_t> rowWallTex_;
+	std::vector<std::uint32_t> colWallTex_;
+	bool rowWallTexDirty_ = false;
+	bool colWallTexDirty_ = false;
+	cTexture* rowWallTexture_ = nullptr;
+	cTexture* colWallTexture_ = nullptr;
+	// Затенённые цвета стенных серий (источник бейков), параллельно
+	// wallRows_/wallCols_.
+	std::map<int, std::vector<VoxWallRun>> wallRowRuns_;
+	std::map<int, std::vector<VoxWallRun>> wallColRuns_;
 };
 
 #endif // VOX_CAVITY_OVERLAY_H

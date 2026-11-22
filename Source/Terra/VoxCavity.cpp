@@ -187,18 +187,17 @@ void runsOfRanges(const VoxLayerRange* ranges, int count, int height,
 	}
 }
 
+// Затенение — ТОЖДЕСТВЕННО террейну (vrtMap::trueColor32): k = 0.05 +
+// light*(1.45/127) с клампом — линейный scale давал кепкам/стенам оверлея
+// цвета на ~30% темнее, чем у террейна на тех же данных (репорт: тёмный
+// верхний цилиндр при ярком «полу» той же колонки). Множители граней
+// (верх/сторона/низ) вкладываются в light.
 std::uint32_t shade(std::uint32_t rgb, float factor, unsigned light)
 {
-	unsigned r = static_cast<unsigned>((rgb >> 16) & 0xFF) * light / 127u;
-	unsigned g = static_cast<unsigned>((rgb >> 8) & 0xFF) * light / 127u;
-	unsigned b = static_cast<unsigned>(rgb & 0xFF) * light / 127u;
-	r = static_cast<unsigned>(static_cast<float>(r) * factor);
-	g = static_cast<unsigned>(static_cast<float>(g) * factor);
-	b = static_cast<unsigned>(static_cast<float>(b) * factor);
-	if (r > 255) r = 255;
-	if (g > 255) g = 255;
-	if (b > 255) b = 255;
-	return 0xFF000000u | (r << 16) | (g << 8) | b;
+	const unsigned eff =
+	    std::min(127u, static_cast<unsigned>(light * factor));
+	return 0xFF000000u |
+	       vrtMap::trueColor32(0xFF000000u | rgb, eff);
 }
 
 /// One quad, single winding only. The overlay draws with culling disabled
@@ -214,6 +213,44 @@ void quad(std::vector<VoxCavityVertex>& out,
 	out.push_back(a);
 	out.push_back(c);
 	out.push_back(d);
+}
+
+} // namespace
+
+// Текстура кепок РОВНО W×H (движок требует степени двойки — cTexture
+// округляет вверх с «Bad width» иначе), клетка (x,y) — тексель (x,y), UV
+// — по углам клеток: u = x/W лежит МЕЖДУ текселями, билинейная выборка
+// сглаживает соседние клетки как у террейна. Стены/плиты рисуются
+// отдельной нодой БЕЗ текстуры (мesh_color_tex1 с пустым слотом сэмплит
+// белую emptyTexture — tex*color = color), их UV не используется.
+float voxCavityCapU(const vrtMap& m, int x)
+{
+	return static_cast<float>(x) / static_cast<float>(m.H_SIZE);
+}
+
+float voxCavityCapV(const vrtMap& m, int y)
+{
+	return static_cast<float>(y) / static_cast<float>(m.V_SIZE);
+}
+
+void voxCavityWhiteUv(const vrtMap& m, float& u, float& v)
+{
+	u = 0.5f / static_cast<float>(m.H_SIZE);
+	v = 0.5f / static_cast<float>(m.V_SIZE);
+}
+
+void voxCavityWorldUv(const vrtMap& m, float x, float y, float& u, float& v)
+{
+	u = x / static_cast<float>(m.H_SIZE);
+	v = y / static_cast<float>(m.V_SIZE);
+}
+
+namespace {
+
+// uv2 (мировые UV для лайтмапа террейна) из позиции вершины.
+void setWorldUv(const vrtMap& m, VoxCavityVertex& vtx)
+{
+	voxCavityWorldUv(m, vtx.x, vtx.y, vtx.u2, vtx.v2);
 }
 
 } // namespace
@@ -248,37 +285,43 @@ bool columnExposed(vrtMap& m, int x, int y, int height)
 
 /// One side quad (both windings) for the voxel run [z0..z1) on direction
 /// 0:+x 1:-x 2:+y 3:-y, pushed a small epsilon into the empty neighbor cell.
-void emitSide(std::vector<VoxCavityVertex>& out, int dir, int x, int y,
-              int z0, int z1, std::uint32_t col)
+void emitSide(vrtMap& m, std::vector<VoxCavityVertex>& out, int dir, int x,
+              int y, int z0, int z1, std::uint32_t col)
 {
 	const float zf = static_cast<float>(z0);
 	const float zf1 = static_cast<float>(z1);
+	float wu, wv;
+	voxCavityWhiteUv(m, wu, wv);
 	VoxCavityVertex a, b, c, d;
 	if (dir == 0) {
 		const float xe = static_cast<float>(x + 1) + kSideEps;
-		a = {xe, static_cast<float>(y), zf, col};
-		b = {xe, static_cast<float>(y + 1), zf, col};
-		c = {xe, static_cast<float>(y + 1), zf1, col};
-		d = {xe, static_cast<float>(y), zf1, col};
+		a = {xe, static_cast<float>(y), zf, col, wu, wv};
+		b = {xe, static_cast<float>(y + 1), zf, col, wu, wv};
+		c = {xe, static_cast<float>(y + 1), zf1, col, wu, wv};
+		d = {xe, static_cast<float>(y), zf1, col, wu, wv};
 	} else if (dir == 1) {
 		const float xw = static_cast<float>(x) - kSideEps;
-		a = {xw, static_cast<float>(y), zf, col};
-		b = {xw, static_cast<float>(y + 1), zf, col};
-		c = {xw, static_cast<float>(y + 1), zf1, col};
-		d = {xw, static_cast<float>(y), zf1, col};
+		a = {xw, static_cast<float>(y), zf, col, wu, wv};
+		b = {xw, static_cast<float>(y + 1), zf, col, wu, wv};
+		c = {xw, static_cast<float>(y + 1), zf1, col, wu, wv};
+		d = {xw, static_cast<float>(y), zf1, col, wu, wv};
 	} else if (dir == 2) {
 		const float ye = static_cast<float>(y + 1) + kSideEps;
-		a = {static_cast<float>(x), ye, zf, col};
-		b = {static_cast<float>(x + 1), ye, zf, col};
-		c = {static_cast<float>(x + 1), ye, zf1, col};
-		d = {static_cast<float>(x), ye, zf1, col};
+		a = {static_cast<float>(x), ye, zf, col, wu, wv};
+		b = {static_cast<float>(x + 1), ye, zf, col, wu, wv};
+		c = {static_cast<float>(x + 1), ye, zf1, col, wu, wv};
+		d = {static_cast<float>(x), ye, zf1, col, wu, wv};
 	} else {
 		const float ys = static_cast<float>(y) - kSideEps;
-		a = {static_cast<float>(x), ys, zf, col};
-		b = {static_cast<float>(x + 1), ys, zf, col};
-		c = {static_cast<float>(x + 1), ys, zf1, col};
-		d = {static_cast<float>(x), ys, zf1, col};
+		a = {static_cast<float>(x), ys, zf, col, wu, wv};
+		b = {static_cast<float>(x + 1), ys, zf, col, wu, wv};
+		c = {static_cast<float>(x + 1), ys, zf1, col, wu, wv};
+		d = {static_cast<float>(x), ys, zf1, col, wu, wv};
 	}
+	setWorldUv(m, a);
+	setWorldUv(m, b);
+	setWorldUv(m, c);
+	setWorldUv(m, d);
 	quad(out, a, b, c, d);
 }
 
@@ -390,7 +433,8 @@ namespace {
 // светом — полосы на стенах/крышках (тот же дефект, что у кепок).
 template <bool dirY>
 void appendMergedWalls(vrtMap& m, int line, const std::uint32_t* offs,
-                       size_t n, std::vector<VoxCavityVertex>& out)
+                       size_t n, std::vector<VoxCavityVertex>& out,
+                       std::vector<VoxWallRun>* runs)
 {
 	const int mapW = static_cast<int>(m.H_SIZE);
 	std::vector<SideRun> accRuns;
@@ -403,27 +447,46 @@ void appendMergedWalls(vrtMap& m, int line, const std::uint32_t* offs,
 		if (!accActive) {
 			return;
 		}
+		// Квады БЕЛЫЕ с UV в стенную текстуру (u — координата вдоль
+		// линии на mapW, v — высота на kWallTexZCap; углы по границам
+		// клеток/вокселей — билинейная выборка сглаживает соседей).
+		// Затенённый цвет уходит в runs — бейк той текстуры.
+		const float alongScale =
+		    1.0f / static_cast<float>(m.H_SIZE);
+		const float zScale = 1.0f / static_cast<float>(VOX_WALL_TEX_ZCAP);
 		for (const SideRun& r : accRuns) {
 			const std::uint32_t col = shade(r.color, kSideShade, accLight);
 			const float zf = static_cast<float>(r.z0);
 			const float zf1 = static_cast<float>(r.z1);
+			const float ua = static_cast<float>(accA) * alongScale;
+			const float ub = static_cast<float>(accB) * alongScale;
+			const float va = zf * zScale;
+			const float vb = zf1 * zScale;
 			VoxCavityVertex a, b, c, d;
 			if (dirY) {
 				const float ye =
 				    static_cast<float>(line + 1) + kSideEps;
-				a = {static_cast<float>(accA), ye, zf, col};
-				b = {static_cast<float>(accB), ye, zf, col};
-				c = {static_cast<float>(accB), ye, zf1, col};
-				d = {static_cast<float>(accA), ye, zf1, col};
+				a = {static_cast<float>(accA), ye, zf, 0xFFFFFFFFu, ua, va};
+				b = {static_cast<float>(accB), ye, zf, 0xFFFFFFFFu, ub, va};
+				c = {static_cast<float>(accB), ye, zf1, 0xFFFFFFFFu, ub, vb};
+				d = {static_cast<float>(accA), ye, zf1, 0xFFFFFFFFu, ua, vb};
 			} else {
 				const float xe =
 				    static_cast<float>(line + 1) + kSideEps;
-				a = {xe, static_cast<float>(accA), zf, col};
-				b = {xe, static_cast<float>(accB), zf, col};
-				c = {xe, static_cast<float>(accB), zf1, col};
-				d = {xe, static_cast<float>(accA), zf1, col};
+				a = {xe, static_cast<float>(accA), zf, 0xFFFFFFFFu, ua, va};
+				b = {xe, static_cast<float>(accB), zf, 0xFFFFFFFFu, ub, va};
+				c = {xe, static_cast<float>(accB), zf1, 0xFFFFFFFFu, ub, vb};
+				d = {xe, static_cast<float>(accA), zf1, 0xFFFFFFFFu, ua, vb};
 			}
+			setWorldUv(m, a);
+			setWorldUv(m, b);
+			setWorldUv(m, c);
+			setWorldUv(m, d);
 			quad(out, a, b, c, d);
+			if (runs) {
+				runs->push_back(
+				    {accA, accB, r.z0, r.z1, col});
+			}
 		}
 		accActive = false;
 	};
@@ -462,19 +525,22 @@ void appendMergedWalls(vrtMap& m, int line, const std::uint32_t* offs,
 } // namespace
 
 void voxCavityAppendRowWallY(vrtMap& m, int y, const std::uint32_t* offs,
-                             size_t n, std::vector<VoxCavityVertex>& out)
+                             size_t n, std::vector<VoxCavityVertex>& out,
+                             std::vector<VoxWallRun>* runs)
 {
-	appendMergedWalls<true>(m, y, offs, n, out);
+	appendMergedWalls<true>(m, y, offs, n, out, runs);
 }
 
 void voxCavityAppendColWallX(vrtMap& m, int x, const std::uint32_t* offs,
-                             size_t n, std::vector<VoxCavityVertex>& out)
+                             size_t n, std::vector<VoxCavityVertex>& out,
+                             std::vector<VoxWallRun>* runs)
 {
-	appendMergedWalls<false>(m, x, offs, n, out);
+	appendMergedWalls<false>(m, x, offs, n, out, runs);
 }
 
 void voxCavityAppendRowCaps(vrtMap& m, int y, int x0, int x1,
-                            std::vector<VoxCavityVertex>& out)
+                            std::vector<VoxCavityVertex>& out,
+                            std::vector<std::uint32_t>* cellColors)
 {
 	const int mapW = static_cast<int>(m.H_SIZE);
 	const std::uint32_t rowBeg =
@@ -487,20 +553,44 @@ void voxCavityAppendRowCaps(vrtMap& m, int y, int x0, int x1,
 	int runH = -1;
 	std::uint32_t runRgb = 0;
 	unsigned runLight = 0;
+	// Кепки рисуются БЕЛЫМИ с UV в топ-даун текстуру цветов: оверлей
+	// печёт mipmapped-текстуру (тот же затенённый цвет, что раньше жил в
+	// diffuse) и получает трилинейную фильтрацию как террейн. Затенённый
+	// цвет дублируется в cellColors (источник пикселей той текстуры).
+	const float vA = voxCavityCapV(m, y);
+	const float vB = voxCavityCapV(m, y + 1);
 	auto flush = [&](int runEndX) {
 		if (runStart < 0) {
 			return;
 		}
 		const std::uint32_t col = shade(runRgb, kTopShade, runLight);
 		const float z = static_cast<float>(runH);
+		const float uA = voxCavityCapU(m, runStart);
+		const float uB = voxCavityCapU(m, runEndX + 1);
 		VoxCavityVertex a, b, c, d;
-		a = {static_cast<float>(runStart), static_cast<float>(y), z, col};
-		b = {static_cast<float>(runEndX + 1), static_cast<float>(y), z, col};
-		c = {static_cast<float>(runEndX + 1), static_cast<float>(y + 1), z, col};
-		d = {static_cast<float>(runStart), static_cast<float>(y + 1), z, col};
+		a = {static_cast<float>(runStart), static_cast<float>(y), z,
+		     0xFFFFFFFFu, uA, vA};
+		b = {static_cast<float>(runEndX + 1), static_cast<float>(y), z,
+		     0xFFFFFFFFu, uB, vA};
+		c = {static_cast<float>(runEndX + 1), static_cast<float>(y + 1), z,
+		     0xFFFFFFFFu, uB, vB};
+		d = {static_cast<float>(runStart), static_cast<float>(y + 1), z,
+		     0xFFFFFFFFu, uA, vB};
+		setWorldUv(m, a);
+		setWorldUv(m, b);
+		setWorldUv(m, c);
+		setWorldUv(m, d);
 		quad(out, a, b, c, d);
+		if (cellColors) {
+			for (int x = runStart; x <= runEndX; ++x) {
+				(*cellColors)[static_cast<size_t>(x - x0)] = col;
+			}
+		}
 		runStart = -1;
 	};
+	if (cellColors) {
+		cellColors->assign(static_cast<size_t>(x1 - x0 + 1), 0u);
+	}
 	for (int i = range.first; i < range.second; ++i) {
 		const std::uint32_t off = m.voxLayers.columnOffset(i);
 		const int cx = static_cast<int>(off % mapW);
@@ -658,11 +748,17 @@ void voxCavityAppendColumn(vrtMap& m, int x, int y,
 			const float z = static_cast<float>(s.z1 + 1);
 			const std::uint32_t col = shade(
 				colorAt(s.z1), kTopShade, light);
+			float wu, wv;
+			voxCavityWhiteUv(m, wu, wv);
 			VoxCavityVertex a, b, c, d;
-			a = {static_cast<float>(x), static_cast<float>(y), z, col};
-			b = {static_cast<float>(x + 1), static_cast<float>(y), z, col};
-			c = {static_cast<float>(x + 1), static_cast<float>(y + 1), z, col};
-			d = {static_cast<float>(x), static_cast<float>(y + 1), z, col};
+			a = {static_cast<float>(x), static_cast<float>(y), z, col, wu, wv};
+			b = {static_cast<float>(x + 1), static_cast<float>(y), z, col, wu, wv};
+			c = {static_cast<float>(x + 1), static_cast<float>(y + 1), z, col, wu, wv};
+			d = {static_cast<float>(x), static_cast<float>(y + 1), z, col, wu, wv};
+			setWorldUv(m, a);
+			setWorldUv(m, b);
+			setWorldUv(m, c);
+			setWorldUv(m, d);
 			quad(out, a, b, c, d);
 		}
 		// Bottom face (a cavity below the slab) — only where the cavity
@@ -670,11 +766,17 @@ void voxCavityAppendColumn(vrtMap& m, int x, int y,
 		if (exposed && s.z0 > 0 && transparentAt(s.z0 - 1)) {
 			const float z = static_cast<float>(s.z0);
 			const std::uint32_t col = shade(colorAt(s.z0), kBottomShade, light);
+			float wu, wv;
+			voxCavityWhiteUv(m, wu, wv);
 			VoxCavityVertex a, b, c, d;
-			a = {static_cast<float>(x), static_cast<float>(y), z, col};
-			b = {static_cast<float>(x + 1), static_cast<float>(y), z, col};
-			c = {static_cast<float>(x + 1), static_cast<float>(y + 1), z, col};
-			d = {static_cast<float>(x), static_cast<float>(y + 1), z, col};
+			a = {static_cast<float>(x), static_cast<float>(y), z, col, wu, wv};
+			b = {static_cast<float>(x + 1), static_cast<float>(y), z, col, wu, wv};
+			c = {static_cast<float>(x + 1), static_cast<float>(y + 1), z, col, wu, wv};
+			d = {static_cast<float>(x), static_cast<float>(y + 1), z, col, wu, wv};
+			setWorldUv(m, a);
+			setWorldUv(m, b);
+			setWorldUv(m, c);
+			setWorldUv(m, d);
 			quad(out, a, d, c, b); // south-facing underside
 		}
 	}
@@ -692,7 +794,7 @@ void voxCavityAppendColumn(vrtMap& m, int x, int y,
 			}
 			sideRunsFor(m, x, y, dir == 2, runs);
 			for (const SideRun& r : runs) {
-				emitSide(out, dir, x, y, r.z0, r.z1,
+				emitSide(m, out, dir, x, y, r.z0, r.z1,
 				         shade(r.color, kSideShade, light));
 			}
 		}

@@ -156,7 +156,14 @@ int cSokolRender::DeleteTexture(cTexture* Texture) {
 #ifdef PERIMETER_RENDER_TRACKER_RESOURCES
     RenderSubmitEvent(RenderEvent::DELETE_TEXTURE, "", Texture);
 #endif
-    for (auto frame : Texture->frames) {
+    // Iterate BY REFERENCE: TextureImage.ptr/.sg share one union storage.
+    // A by-value loop deleted frame.sg through a copy and nulled the copy,
+    // leaving the frame's own pointer dangling — any second DeleteTexture
+    // (cTexture::~cTexture calls it again at refcount 0) double-freed the
+    // SokolTexture2D (heap corruption c0000374 on editor close / skirmish
+    // exit). D3D's DeleteTexture nulls through a reference and is
+    // idempotent — match that here.
+    for (auto& frame : Texture->frames) {
         delete frame.sg;
         frame.ptr = nullptr;
     }
@@ -208,6 +215,29 @@ void* cSokolRender::LockTextureRect(cTexture* Texture, int& Pitch, Vect2i pos, V
     uint8_t* ptr = static_cast<uint8_t*>(tex->data);
     size_t start = (pos.y * Texture->GetWidth() + pos.x) * fmt_size;
     return ptr + start;
+}
+
+void cSokolRender::SetTextureMipData(cTexture* Texture, int level,
+                                     const void* data, int size) {
+    if (level < 1) {
+        xassert(0);
+        return;
+    }
+    TextureImage* frm = Texture->GetFrameImage(0);
+    xassert(frm);
+    if (!frm) {
+        return;
+    }
+    SokolTexture2D* tex = frm->sg;
+    xassert(tex);
+    if (!tex) {
+        return;
+    }
+    if (static_cast<int>(tex->mip_storage.size()) < level) {
+        tex->mip_storage.resize(level);
+    }
+    tex->mip_storage[level - 1].assign(static_cast<const uint8_t*>(data),
+                                       static_cast<const uint8_t*>(data) + size);
 }
 
 void cSokolRender::UnlockTexture(cTexture* Texture) {

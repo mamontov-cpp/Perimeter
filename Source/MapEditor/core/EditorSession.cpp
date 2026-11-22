@@ -16,6 +16,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -1983,46 +1984,62 @@ void EditorSession::finalizePendingUndoGroup()
         }
     }
 
-    // Слои: до-состояние колонки определяет самый ранний снимок, ПОКРЫВШИЙ
-    // её прямоугольник; «покрыл, но не записал» = колонки тогда НЕ БЫЛО
-    // (recordUndoArea перебирал live на момент записи). Поэтому решающими
-    // помечаются ВСЕ колонки прямоугольника снимка, а не только записанные:
-    // иначе колонка, созданная внутри группы и запечённая более поздним
-    // снапшотом, пережила бы undo как «до-состояние». Вне объединённого
-    // прямоугольника группа ничего не правила — до-состояние = текущее.
-    std::unordered_set<std::uint32_t> decided;
+    // Слои: до-состояние колонки = её состояние в ПЕРВОМ снимке, чей
+    // прямоугольник её накрыл; «накрыл, но не записал» = колонки тогда НЕ
+    // БЫЛО (тамбстоун — undo удалит созданную внутри группы колонку, а не
+    // восстановит её в середийном состоянии). Решает map «колонка →
+    // индекс первого накрывшего снимка»: перебираем ТОЛЬКО окно col_,
+    // пересекающее прямоугольник снимка (col_ отсортирован). Раньше тут шёл
+    // полный проход по ВСЕМ колонкам мира с копированием каждой в
+    // merged.lay — на EXTDEMO (~193k колонок) это O(N²) (setColumn портил
+    // block-индекс, findColumn пересканировал растущий массив) и минуты на
+    // каждый штамп — см. тест «Dig through island descends smoothly».
     const int H = static_cast<int>(vMap.H_SIZE);
-    for (const UndoAreaSnapshot& snap : undoGroup_) {
-        for (int i = 0; i < snap.lay.columnCount(); ++i) {
-            const std::uint32_t off = snap.lay.columnOffset(i);
-            if (decided.insert(off).second) {
-                int count = 0;
-                const VoxLayerRange* r = snap.lay.columnRanges(i, &count);
-                merged.lay.setColumn(off, r, count);
+    std::unordered_map<std::uint32_t, int> firstCover;
+    const auto& worldCols = vMap.voxLayers.col_;
+    for (int s = 0; s < static_cast<int>(undoGroup_.size()); ++s) {
+        const UndoAreaSnapshot& snap = undoGroup_[s];
+        const std::uint32_t rectBeg =
+            static_cast<std::uint32_t>(snap.y) * H + snap.x;
+        const std::uint32_t rectEnd =
+            static_cast<std::uint32_t>(snap.y + snap.sy - 1) * H +
+            (snap.x + snap.sx - 1);
+        const auto lo = std::lower_bound(worldCols.begin(), worldCols.end(),
+                                         rectBeg);
+        for (auto it = lo; it != worldCols.end() && *it <= rectEnd; ++it) {
+            const int x = static_cast<int>(*it % H);
+            if (x < snap.x || x >= snap.x + snap.sx) {
+                continue; // окно по offset включает соседние строки
             }
+            firstCover.emplace(*it, s); // первый накрывший выигрывает
         }
-        for (std::uint32_t off : vMap.voxLayers.col_) {
-            const int x = static_cast<int>(off % H);
-            const int y = static_cast<int>(off / H);
-            if (x >= snap.x && x < snap.x + snap.sx &&
-                y >= snap.y && y < snap.y + snap.sy) {
-                decided.insert(off);
-            }
+        // Колонки, записанные снимком, но уже удалённые из мира к моменту
+        // finalize: без этой ветки undo не восстановил бы их.
+        for (int i = 0; i < snap.lay.columnCount(); ++i) {
+            firstCover.emplace(snap.lay.columnOffset(i), s);
         }
     }
-    for (std::uint32_t off : vMap.voxLayers.col_) {
-        const int x = static_cast<int>(off % H);
-        const int y = static_cast<int>(off / H);
-        if (x >= x0 && x < x1 && y >= y0 && y < y1) {
-            continue; // решение вынесено снимками (вплоть до «не было»)
+    std::unordered_set<std::uint32_t> mergedCols;
+    for (int s = 0; s < static_cast<int>(undoGroup_.size()); ++s) {
+        const UndoAreaSnapshot& snap = undoGroup_[s];
+        for (int i = 0; i < snap.lay.columnCount(); ++i) {
+            const std::uint32_t off = snap.lay.columnOffset(i);
+            const auto cov = firstCover.find(off);
+            if (cov == firstCover.end() || cov->second != s ||
+                !mergedCols.insert(off).second) {
+                continue; // вне окна снимков / не первый свидетель / уже есть
+            }
+            int count = 0;
+            const VoxLayerRange* r = snap.lay.columnRanges(i, &count);
+            merged.lay.setColumn(off, r, count);
         }
-        if (merged.lay.findColumn(off) >= 0) {
-            continue;
+    }
+    // Колонки, накрытые снимками, но НИКЕМ не записанные: созданы внутри
+    // группы — фиксируем тамбстоун («не существовала»).
+    for (const auto& kv : firstCover) {
+        if (mergedCols.find(kv.first) == mergedCols.end()) {
+            merged.lay.setColumn(kv.first, nullptr, 0);
         }
-        int count = 0;
-        const VoxLayerRange* r = vMap.voxLayers.columnRanges(
-            vMap.voxLayers.findColumn(off), &count);
-        merged.lay.setColumn(off, r, count);
     }
 
     undoGroup_.clear();

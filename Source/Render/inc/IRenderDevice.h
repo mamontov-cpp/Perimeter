@@ -305,6 +305,28 @@ public:
     virtual void* LockTexture(class cTexture *Texture, int& Pitch) = 0;
     virtual void* LockTextureRect(class cTexture* Texture, int& Pitch, Vect2i pos, Vect2i size) = 0;
     virtual void UnlockTexture(class cTexture *Texture) = 0;
+    // CPU-side storage of a stream texture's mip level (level >= 1;
+    // level 0 lives in the Lock/Unlock shadow). The stored levels upload
+    // together with the next dirty flush on the render thread — this is
+    // how the cavity overlay refreshes its mipmapped cap-color texture
+    // from a background worker without sokol calls there. No-op where
+    // unsupported (legacy backends keep level 0 only).
+    virtual void SetTextureMipData(class cTexture* Texture, int level,
+                                   const void* data, int size) {}
+    /// True, если при заливке пикселей RGBA8 (0xAARRGGBB, как у нас) в
+    /// текстуры бэкенда нужно менять R и B местами: sokol сэмплит byte0
+    /// как R (порядок RGBA), а D3D9 с его A8R8G8B8 читает byte0 как B —
+    /// т.е. канонический 0xAARRGGBB ложится туда БЕЗ свопа (своп для D3D
+    /// как раз даёт перепутанные цвета — репорт из игры).
+    virtual bool SwapRBOnTextureUpload() const { return false; }
+    /// True, если лайтмап GetLightMap() имеет БЕЛУЮ базу (затемнение
+    /// тенями) и потому может безопасно УМНОЖАТЬся на цвет в шейдере/
+    /// фиксированном конвейере (sokol: рендер-таргет чистится в белый).
+    /// Лайтмапа D3D9 — это топ-даун ПРОЕКЦИЯ террейна для кастомных
+    /// шейдеров теней (тёмная база + свет пятнами): умножение на неё в
+    /// фиксированном конвейере систематически темнит меш (репорт: острова
+    /// тёмные в игре, яркие в редакторе).
+    virtual bool IsLightMapMultiplicative() const { return false; }
     virtual void SetTextureImage(uint32_t slot, struct TextureImage* texture_image) = 0;
     virtual void SetTextureTransform(uint32_t slot, const Mat4f& transform) = 0;
     virtual uint32_t GetMaxTextureSlots() = 0;

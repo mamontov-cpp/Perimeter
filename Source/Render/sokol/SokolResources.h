@@ -12,6 +12,8 @@
 #include "MemoryResource.h"
 #include "RenderMT.h"
 
+#include <vector>
+
 using SokolResourceKey = uint64_t;
 static const SokolResourceKey SokolResourceKeyNone = 0;
 
@@ -86,6 +88,12 @@ struct SokolTexture2D : MemoryResource {
     sg_image_desc* desc = nullptr;
     SokolResourceKey resource_key = SokolResourceKeyNone;
     SokolResource<sg_image>* image = nullptr;
+    // CPU-side mip levels 1..N of a stream texture (level 0 is `data`).
+    // Filled via cSokolRender::SetTextureMipData; uploaded together with
+    // the next dirty flush. The cavity overlay's cap-color texture uses
+    // this: the worker builds the chain off the render thread, the bind
+    // path uploads it (trilinear filtering needs fresh mips).
+    std::vector<std::vector<uint8_t>> mip_storage;
 
     explicit SokolTexture2D(sg_image_desc* desc);
     NO_COPY_CONSTRUCTOR(SokolTexture2D)

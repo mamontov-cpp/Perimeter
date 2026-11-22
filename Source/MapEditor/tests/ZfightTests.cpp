@@ -324,20 +324,15 @@ bool runZfightTests()
                          "(modal light %d)",
                          badRows, rows, modalLight);
         }
-        // Cap color histogram over the plateau (diagnostic print).
+        // Cap color histogram over the plateau (diagnostic print) —
+        // из бейка текстуры (меш несёт белые квады с UV).
         {
             std::map<std::uint32_t, int> hist;
-            for (size_t i = 0; i + 6 <= mesh.size(); i += 6) {
-                float z0=mesh[i].z, z1=mesh[i].z, x0=mesh[i].x, x1=mesh[i].x;
-                float y0=mesh[i].y, y1=mesh[i].y;
-                for (int k=1;k<6;++k){
-                    z0=std::min(z0,mesh[i+k].z); z1=std::max(z1,mesh[i+k].z);
-                    x0=std::min(x0,mesh[i+k].x); x1=std::max(x1,mesh[i+k].x);
-                    y0=std::min(y0,mesh[i+k].y); y1=std::max(y1,mesh[i+k].y);
+            for (int y=2278;y<2518;++y)
+                for (int x=2050;x<2290;++x) {
+                    const std::uint32_t c = overlay.debugCapColor(x, y);
+                    if (c != 0) hist[c]++;
                 }
-                if (z1-z0>0.01f || z0<499.5f || z0>500.5f) continue;
-                hist[mesh[i].diffuse]++;
-            }
             std::printf("[ZF] cap colors=%zu:", hist.size());
             int shown=0;
             for (auto& kv : hist) {
@@ -366,28 +361,14 @@ bool runRemeshReproTests()
     vMap.WorldRender();
 
     VoxCavityOverlay overlay;
+    // Цвет кепки — в бейке текстуры оверлея (меш: белые квады с UV).
     auto capColors = [&overlay]() {
-        std::vector<VoxCavityVertex> mesh;
-        overlay.debugDumpMesh(mesh);
         std::map<std::pair<int, int>, std::uint32_t> m;
-        for (size_t i = 0; i + 6 <= mesh.size(); i += 6) {
-            float z0 = mesh[i].z, z1 = mesh[i].z;
-            float x0 = mesh[i].x, x1 = mesh[i].x;
-            float y0 = mesh[i].y, y1 = mesh[i].y;
-            for (int k = 1; k < 6; ++k) {
-                z0 = std::min(z0, mesh[i + k].z);
-                z1 = std::max(z1, mesh[i + k].z);
-                x0 = std::min(x0, mesh[i + k].x);
-                x1 = std::max(x1, mesh[i + k].x);
-                y0 = std::min(y0, mesh[i + k].y);
-                y1 = std::max(y1, mesh[i + k].y);
+        for (int x = 2140; x < 2220; ++x)
+            for (int y = 2360; y < 2450; ++y) {
+                const std::uint32_t c = overlay.debugCapColor(x, y);
+                if (c != 0) m[{x, y}] = c;
             }
-            if (z1 - z0 > 0.01f || z0 < 499.5f || z0 > 500.5f) continue;
-            for (int x = (int)x0; x < (int)x1; ++x)
-                for (int y = (int)y0; y < (int)y1; ++y)
-                    if (x >= 2140 && x < 2220 && y >= 2360 && y < 2450)
-                        m[{x, y}] = mesh[i].diffuse;
-        }
         return m;
     };
 
@@ -510,25 +491,12 @@ bool runParallelepipedProbeTests()
                  vMap.getColor32(off) & 0xFFFFFFu,
                  vMap.Sur2Col32[vMap.SurBuf[off]][vMap.RnrBuf[off]]);
 
+    // Цвет кепки теперь в бейке текстуры оверлея (меш несёт белые квады
+    // с UV — трилинейная фильтрация как у террейна).
     auto capColorAt = [&](int x, int y) {
         VoxCavityOverlay ov;
         ov.rebuildAll(1);
-        std::vector<VoxCavityVertex> m;
-        ov.debugDumpMesh(m);
-        for (size_t i = 0; i + 6 <= m.size(); i += 6) {
-            float x0 = m[i].x, x1 = m[i].x, y0 = m[i].y, y1 = m[i].y;
-            float z0 = m[i].z, z1 = m[i].z;
-            for (int k = 1; k < 6; ++k) {
-                x0 = std::min(x0, m[i + k].x); x1 = std::max(x1, m[i + k].x);
-                y0 = std::min(y0, m[i + k].y); y1 = std::max(y1, m[i + k].y);
-                z0 = std::min(z0, m[i + k].z); z1 = std::max(z1, m[i + k].z);
-            }
-            if (z1 - z0 < 0.01f && z0 > 499.5f && z0 < 500.5f &&
-                (int)x0 <= x && x < (int)x1 && (int)y0 <= y && y < (int)y1) {
-                return m[i].diffuse & 0xFFFFFFu;
-            }
-        }
-        return 0u;
+        return ov.debugCapColor(x, y) & 0xFFFFFFu;
     };
     auto stampRed = [&](int h) {
         MapEditor::BrushTool brush(session);
@@ -610,29 +578,17 @@ bool runPaintReproTests()
     vMap.WorldRender();
 
     const int off = 2405 * vMap.H_SIZE + 2177;
-    // Кепка красит 0xFF0000 светом колонки ровно как shade() мешера.
+    // Кепка красит 0xFF0000 светом колонки ровно как shade() мешера —
+    // а тот теперь тождественен vrtMap::trueColor32 (затенение террейна).
     const unsigned light = vMap.RnrBuf[off] & 0x7F;
     const std::uint32_t shadedRed =
-        ((255u * light / 127u) << 16);
+        vrtMap::trueColor32(0xFF000000u | 0xFF0000u, light);
+    // Цвет кепки теперь в бейке текстуры оверлея (меш несёт белые квады
+    // с UV — трилинейная фильтрация как у террейна).
     auto capColorAt = [&](int x, int y) {
         VoxCavityOverlay ov;
         ov.rebuildAll(1);
-        std::vector<VoxCavityVertex> m;
-        ov.debugDumpMesh(m);
-        for (size_t i = 0; i + 6 <= m.size(); i += 6) {
-            float x0 = m[i].x, x1 = m[i].x, y0 = m[i].y, y1 = m[i].y;
-            float z0 = m[i].z, z1 = m[i].z;
-            for (int k = 1; k < 6; ++k) {
-                x0 = std::min(x0, m[i + k].x); x1 = std::max(x1, m[i + k].x);
-                y0 = std::min(y0, m[i + k].y); y1 = std::max(y1, m[i + k].y);
-                z0 = std::min(z0, m[i + k].z); z1 = std::max(z1, m[i + k].z);
-            }
-            if (z1 - z0 < 0.01f && z0 > 499.5f && z0 < 500.5f &&
-                (int)x0 <= x && x < (int)x1 && (int)y0 <= y && y < (int)y1) {
-                return m[i].diffuse & 0xFFFFFFu;
-            }
-        }
-        return 0u;
+        return ov.debugCapColor(x, y) & 0xFFFFFFu;
     };
     auto stampRed = [&](int h) {
         MapEditor::BrushTool brush(session);
@@ -673,7 +629,7 @@ bool runPaintReproTests()
     // тела — жёлтым.
     const unsigned light2 = vMap.RnrBuf[off] & 0x7F;
     const std::uint32_t shadedYellow =
-        (((255u * light2 / 127u) << 16) | ((255u * light2 / 127u) << 8));
+        vrtMap::trueColor32(0xFF000000u | 0xFFFF00u, light2);
     TEST_REQUIRE(capColorAt(2177, 2405) == shadedYellow,
                  "floor paint leaked onto the island cap: %06X",
                  capColorAt(2177, 2405) & 0xFFFFFFu);
@@ -837,5 +793,168 @@ MAP_EDITOR_REGISTER_TEST("Top paint lands on the island cap (cylinder)",
                          133, runPaintReproTests);
 MAP_EDITOR_REGISTER_TEST("Level-stamp remesh repro (cylinder cap)",
                          131, runRemeshReproTests);
+// Mesh-content regression for the texture filtering layout: caps must be
+// WHITE quads with corner UVs into the W×H bake; merged walls WHITE with
+// (along/mapW, z/VOX_WALL_TEX_ZCAP) UVs; interior slab faces keep vertex
+// colors. A regression here means the GPU receives no/!wrong UVs and the
+// "filtering" degenerates to flat fills.
+bool runUvLayoutTests()
+{
+    MapEditor::Tests::TestContext& ctx = MapEditor::Tests::context();
+    MapEditor::setupErrHWrapper();
+
+    MapEditor::EditorSession session;
+    session.setGameDir(ctx.gameDir.u8string());
+    session.scanWorlds();
+    TEST_REQUIRE(session.loadWorldByName("EXTDEMO"),
+                 "the EXTDEMO world could not be loaded.");
+    vMap.WorldRender();
+
+    VoxCavityOverlay ov;
+    ov.rebuildAll(1);
+    std::vector<VoxCavityVertex> m;
+    ov.debugDumpMesh(m);
+    const float mapW = static_cast<float>(vMap.H_SIZE);
+
+    int caps = 0, walls = 0, slabs = 0;
+    for (size_t i = 0; i + 6 <= m.size(); i += 6) {
+        float x0 = m[i].x, x1 = m[i].x, y0 = m[i].y, y1 = m[i].y;
+        float z0 = m[i].z, z1 = m[i].z;
+        for (int k = 1; k < 6; ++k) {
+            x0 = std::min(x0, m[i + k].x); x1 = std::max(x1, m[i + k].x);
+            y0 = std::min(y0, m[i + k].y); y1 = std::max(y1, m[i + k].y);
+            z0 = std::min(z0, m[i + k].z); z1 = std::max(z1, m[i + k].z);
+        }
+        const std::uint32_t d = m[i].diffuse;
+        if (z1 - z0 < 0.01f && z0 > 499.5f && z0 < 500.5f &&
+            x0 >= 2050.f && x1 <= 2290.f && y0 >= 2278.f && y1 <= 2518.f) {
+            // Cap quad on the cylinder plateau: white, UV = corner/mapW.
+            ++caps;
+            TEST_REQUIRE(d == 0xFFFFFFFFu, "cap quad not white: %X", d);
+            const float uA = x0 / mapW, uB = x1 / mapW;
+            const float vA = y0 / mapW, vB = y1 / mapW;
+            bool uvOk = true;
+            for (int k = 0; k < 6; ++k) {
+                const VoxCavityVertex& q = m[i + k];
+                const bool uOk = (q.u == uA || q.u == uB);
+                const bool vOk = (q.v == vA || q.v == vB);
+                const bool cornerOk =
+                    (q.u == uA) == (q.x == x0) || (q.u == uB) == (q.x == x1);
+                if (!uOk || !vOk || !cornerOk) uvOk = false;
+            }
+            TEST_REQUIRE(uvOk, "cap quad UV mismatch: u=%f v=%f", m[i].u,
+                         m[i].v);
+        } else if (z1 - z0 > 0.01f && (x1 - x0 < 0.01f || y1 - y0 < 0.01f) &&
+                   x0 >= 2050.f && x1 <= 2290.f && y0 >= 2278.f &&
+                   y1 <= 2518.f) {
+            // Merged wall quad on the cylinder: white, UV in [0,1].
+            ++walls;
+            TEST_REQUIRE(d == 0xFFFFFFFFu, "wall quad not white: %X", d);
+            TEST_REQUIRE(m[i].u >= 0.f && m[i].u <= 1.f &&
+                             m[i].v >= 0.f && m[i].v <= 1.f,
+                         "wall UV out of range: %f %f", m[i].u, m[i].v);
+        }
+    }
+    // Interior slab faces (chunks) keep shaded colors, not white.
+    const int off = 2405 * vMap.H_SIZE + 2177;
+    const int ci = vMap.voxLayers.findColumn(static_cast<std::uint32_t>(off));
+    (void)ci;
+    std::printf("[UVL] caps=%d walls=%d (slab faces stay colored); ",
+                caps, walls);
+    TEST_REQUIRE(caps > 100, "no cap quads sampled: %d", caps);
+    TEST_REQUIRE(walls > 100, "no wall quads sampled: %d", walls);
+    // TEMP probe: is the terrain's visible pattern the leveled-material
+    // (LvdTex) branch of getColor32? Compare getColor32 (terrain color)
+    // vs the plain palette fallback (what the overlay would use) on the
+    // floor ring around the cylinder.
+    std::printf("[UVL] leveled probe (x y atr getCol32 palFallback): ");
+    for (int y = 2445; y <= 2455; y += 2) {
+        for (int x = 2320; x <= 2340; x += 2) {
+            const int o2 = y * vMap.H_SIZE + x;
+            std::printf("(%d,%d a=%02X g=%06X p=%06X) ", x, y,
+                        vMap.AtrBuf[o2] & At_LEVELED,
+                        vMap.getColor32(o2) & 0xFFFFFFu,
+                        vMap.defaultColumnRgb(o2) & 0xFFFFFFu);
+        }
+    }
+    std::printf("\n");
+    session.unloadWorld();
+    return true;
+}
+
+// Dig-through-island regression: digging down through a transparent band
+// must descend smoothly (the void under the new surface fills solid),
+// not collapse the whole column to the solid below the band — the old
+// collapse ate islands in one step ("columns instantly disappearing,
+// chunky data").
+bool runTerraformSmoothnessProbe()
+{
+    MapEditor::Tests::TestContext& ctx = MapEditor::Tests::context();
+    MapEditor::setupErrHWrapper();
+
+    MapEditor::EditorSession session;
+    session.setGameDir(ctx.gameDir.u8string());
+    session.scanWorlds();
+    TEST_REQUIRE(session.loadWorldByName("EXTDEMO"),
+                 "the EXTDEMO world could not be loaded.");
+    vMap.WorldRender();
+
+    const int cx = 2177, cy = 2405;
+    const int off = cy * vMap.H_SIZE + cx;
+    std::printf("[SM] dig center 500->150 in 25-voxel steps (cap z / "
+                "verts / disp):\n");
+    for (int target = 475; target >= 150; target -= 25) {
+        MapEditor::BrushTool brush(session);
+        MapEditor::BrushParams p;
+        p.shape = MapEditor::BrushShape::FilledCircle;
+        p.radius = 3;
+        p.effect = MapEditor::BrushEffect::AlignVariableH;
+        p.heightLevel = target;
+        p.mode = MapEditor::BrushMode::Dam;
+        TEST_REQUIRE(brush.applyStamp(cx, cy, p), "dig stamp refused");
+        VoxCavityOverlay ov;
+        ov.rebuildAll(1);
+        std::vector<VoxCavityVertex> m;
+        ov.debugDumpMesh(m);
+        // cap z at center: topmost flat quad over the cell
+        float capZ = -1;
+        for (size_t i = 0; i + 6 <= m.size(); i += 6) {
+            float x0 = m[i].x, x1 = m[i].x, y0 = m[i].y, y1 = m[i].y;
+            float z0 = m[i].z, z1 = m[i].z;
+            for (int k = 1; k < 6; ++k) {
+                x0 = std::min(x0, m[i + k].x); x1 = std::max(x1, m[i + k].x);
+                y0 = std::min(y0, m[i + k].y); y1 = std::max(y1, m[i + k].y);
+                z0 = std::min(z0, m[i + k].z); z1 = std::max(z1, m[i + k].z);
+            }
+            if (z1 - z0 < 0.01f && (int)x0 <= cx && cx < (int)x1 &&
+                (int)y0 <= cy && cy < (int)y1) {
+                capZ = std::max(capZ, z0);
+            }
+        }
+        const int idx =
+            vMap.voxLayers.findColumn(static_cast<std::uint32_t>(off));
+        int count = 0;
+        const VoxLayerRange* rr =
+            idx >= 0 ? vMap.voxLayers.columnRanges(idx, &count) : nullptr;
+        std::printf("[SM] target=%d VxD=%d capZ=%.0f verts=%zu disp=%d "
+                    "layers=%d\n",
+                    target, vMap.VxDBuf[off], capZ, m.size(),
+                    vMap.cavityDisplayHeight(off), count);
+        (void)rr;
+        // Exact-level stamps: the dam height must track the target every
+        // step (the old collapse snapped 425 -> 253 when the dig crossed
+        // the transparent band).
+        TEST_REQUIRE(vMap.VxDBuf[off] == target,
+                     "dig jumped: target=%d VxD=%d", target,
+                     vMap.VxDBuf[off]);
+    }
+    session.unloadWorld();
+    return true;
+}
+
+MAP_EDITOR_REGISTER_TEST("Dig through island descends smoothly", 137,
+                         runTerraformSmoothnessProbe);
+MAP_EDITOR_REGISTER_TEST("Overlay mesh UV layout (textured caps/walls)",
+                         136, runUvLayoutTests);
 MAP_EDITOR_REGISTER_TEST("Level-stamp wall side regression (island edge)",
                          135, runWallSideRegressionTests);

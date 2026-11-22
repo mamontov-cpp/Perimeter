@@ -42,9 +42,11 @@
 
 class vrtMap;
 
-// Layout kept IDENTICAL to the render stack's sVertexXYZDT1 (24 bytes) so
+// Layout kept IDENTICAL to the render stack's sVertexXYZDT2 (32 bytes) so
 // the overlay publish is a bulk memcpy, not a per-vertex conversion — the
-// Debug field-by-field loop cost milliseconds per flatten.
+// Debug field-by-field loop cost milliseconds per flatten. uv — раскладка
+// в бейк-цвета оверлея; uv2 — МИРОВЫЕ UV (x/SizeX, y/SizeY) для лайтмапа
+// террейна (тот же мультипликатор, что у террейна: bake×lightmap×color).
 struct VoxCavityVertex
 {
 	float x = 0.f;
@@ -53,13 +55,30 @@ struct VoxCavityVertex
 	std::uint32_t diffuse = 0xFF000000u; // ARGB
 	float u = 0.f;
 	float v = 0.f;
+	float u2 = 0.f;
+	float v2 = 0.f;
 
 	bool operator==(const VoxCavityVertex& o) const
 	{
-		return x == o.x && y == o.y && z == o.z && diffuse == o.diffuse;
+		return x == o.x && y == o.y && z == o.z && diffuse == o.diffuse &&
+		       u == o.u && v == o.v && u2 == o.u2 && v2 == o.v2;
 	}
 	bool operator!=(const VoxCavityVertex& o) const { return !(*this == o); }
 };
+
+// Мировые UV вершины для лайтмапа террейна.
+void voxCavityWorldUv(const vrtMap& m, float x, float y, float& u,
+                      float& v);
+
+// Текстурная раскладка цветов кепок: топ-даун текстура РОВНО W×H
+// (движок требует степени двойки), клетка (x,y) — тексель (x,y), UV кепок
+// — по УГЛАМ клеток: u = x/W лежит между текселями, билинейная выборка
+// сглаживает границы клеток ровно как у террейна. Стены/потолки плит
+// рисуются отдельной нодой БЕЗ текстуры (шейдер с пустым слотом сэмплит
+// белую emptyTexture — tex*color = color), их UV не используется.
+float voxCavityCapU(const vrtMap& m, int x);
+float voxCavityCapV(const vrtMap& m, int y);
+void voxCavityWhiteUv(const vrtMap& m, float& u, float& v);
 
 /// Appends the cavity geometry of one map column (cell x, y) to `out`
 /// (3 vertices per triangle, both windings per face). No-op when the
@@ -70,6 +89,25 @@ struct VoxCavityVertex
 void voxCavityAppendColumn(vrtMap& m, int x, int y,
                            std::vector<VoxCavityVertex>& out,
                            bool emitSides = true);
+
+/// Прямоугольник одной серии стены (источник пикселей стенных текстур):
+/// [along0..along1) — координата вдоль линии (x для +y стен, y для +x),
+/// [z0..z1) — высоты; color — ЗАТЕНЁННЫЙ цвет серии (тот, что раньше
+/// жил в diffuse квадов).
+/// Ёмкость стенных текстур по высоте (воксели): статическая степень
+/// двойки. Стены выше лимита сэмплят завёрнутые строки — карт выше 2048
+/// вокселей нет (EXTDEMO: 500, движковый максимум 8191). Совпадает с
+/// масштабом v в UV эмиссии стен (v = z / VOX_WALL_TEX_ZCAP).
+const int VOX_WALL_TEX_ZCAP = 2048;
+
+struct VoxWallRun
+{
+	int along0;
+	int along1;
+	int z0;
+	int z1;
+	std::uint32_t color;
+};
 
 /// SIDE WALLS, merged across consecutive cells (the per-column chunks
 /// emit up to ~100 quads per cavity column once trucks level the ground
@@ -83,16 +121,33 @@ void voxCavityAppendColumn(vrtMap& m, int x, int y,
 ///     Every y-facing plane is drawn exactly once (south column's walk).
 ///   * Column form: the +x boundary walls owned by cells of column x;
 ///     `offs` sorted by y. Every x-facing plane exactly once.
+///
+/// Квады стен эмитятся БЕЛЫМИ с UV в текстуру (row walls: u = x/W, v =
+/// z/Z; col walls: u = y/W, v = z/Z — углы по границам клеток/вокселей,
+/// билинейная выборка сглаживает соседей как у террейна). Затенённый цвет
+/// дублируется в `runs` (может быть nullptr) — источник пикселей той
+/// текстуры. Стены и плиты внутри плит (voxCavityAppendColumn/emitSide)
+/// НЕ текстурируются — рисуются вершинными цветами отдельной нодой.
 void voxCavityAppendRowWallY(vrtMap& m, int y, const std::uint32_t* offs,
-                             size_t n, std::vector<VoxCavityVertex>& out);
+                             size_t n, std::vector<VoxCavityVertex>& out,
+                             std::vector<VoxWallRun>* runs = nullptr);
 void voxCavityAppendColWallX(vrtMap& m, int x, const std::uint32_t* offs,
-                             size_t n, std::vector<VoxCavityVertex>& out);
+                             size_t n, std::vector<VoxCavityVertex>& out,
+                             std::vector<VoxWallRun>* runs = nullptr);
 
 /// Island caps for one map row, merged: consecutive cavity columns in
 /// [x0..x1] whose top sits at the SAME height with the SAME top-voxel
 /// color become ONE quad (the cap is a flat surface — per-column quads
 /// multiplied the mesh by the cavity area).
+///
+/// Цвет кепки идёт в ТЕКСТУРУ (мешер оверлея печёт топ-даун текстуру и
+/// рисует кепки белыми с UV — трилинейная фильтрация сглаживает их так же,
+/// как террейн), поэтому квады несут белый diffuse. `cellColors` (может
+/// быть nullptr) получает ЗАТЕНЁННЫЙ цвет каждой capped-клетки строки
+/// (индекс x-x0, 0xFF000000-прозрачно-чёрный для прочих) — источник пикселей
+/// той самой текстуры.
 void voxCavityAppendRowCaps(vrtMap& m, int y, int x0, int x1,
-                            std::vector<VoxCavityVertex>& out);
+                            std::vector<VoxCavityVertex>& out,
+                            std::vector<std::uint32_t>* cellColors = nullptr);
 
 #endif // VOX_CAVITY_H

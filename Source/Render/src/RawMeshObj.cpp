@@ -17,10 +17,10 @@ cRawMeshObj::cRawMeshObj()
 
 cRawMeshObj::~cRawMeshObj() = default;
 
-void cRawMeshObj::setTriangles(const std::vector<sVertexXYZDT1>& triangles)
+void cRawMeshObj::setTriangles(const std::vector<sVertexXYZDT2>& triangles)
 {
 	std::lock_guard<std::mutex> lock(mutex_);
-	triangles_ = std::make_shared<const std::vector<sVertexXYZDT1>>(triangles);
+	triangles_ = std::make_shared<const std::vector<sVertexXYZDT2>>(triangles);
 	// Bounding boxes per Draw() chunk (kChunk vertices each) for the
 	// frustum culling in Draw().
 	const size_t kChunk = kChunkVerts;
@@ -33,7 +33,7 @@ void cRawMeshObj::setTriangles(const std::vector<sVertexXYZDT1>& triangles)
 		Vect3f mn(1e30f, 1e30f, 1e30f);
 		Vect3f mx(-1e30f, -1e30f, -1e30f);
 		for (size_t i = beg; i < end; ++i) {
-			const sVertexXYZDT1& v = triangles[i];
+			const sVertexXYZDT2& v = triangles[i];
 			mn.x = std::min(mn.x, v.x);
 			mn.y = std::min(mn.y, v.y);
 			mn.z = std::min(mn.z, v.z);
@@ -69,7 +69,7 @@ void cRawMeshObj::PreDraw(cCamera* camera)
 void cRawMeshObj::Draw(cCamera* camera)
 {
 	const double tDraw0 = voxperf::nowMs();
-	std::shared_ptr<const std::vector<sVertexXYZDT1>> local;
+	std::shared_ptr<const std::vector<sVertexXYZDT2>> local;
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
 		local = triangles_;
@@ -77,9 +77,13 @@ void cRawMeshObj::Draw(cCamera* camera)
 	if (!local || local->empty()) {
 		return;
 	}
-	const std::vector<sVertexXYZDT1>& mesh = *local;
+	const std::vector<sVertexXYZDT2>& mesh = *local;
 
-	gb_RenderDevice->SetNoMaterial(ALPHA_NONE, 0, GetTexture());
+	// Texture slot 1 carries the terrain light map when the owner
+	// provides it (cavity overlay) — mesh_color_tex2 then computes
+	// bake*lightmap*color like the terrain. Queried per draw, never
+	// stored (see drawLightMap).
+	gb_RenderDevice->SetNoMaterial(ALPHA_NONE, 0, GetTexture(), drawLightMap());
 	gb_RenderDevice->SetWorldMatXf(GetGlobalMatrix());
 	// The cavity mesh is single-wound (quad() emits one fan) - faces must
 	// show from both sides, so culling goes off for this draw.
@@ -100,7 +104,7 @@ void cRawMeshObj::Draw(cCamera* camera)
 		for (size_t i = 0; i < chunks; ++i) {
 			std::unique_ptr<DrawBuffer> db(new DrawBuffer());
 			db->Create(kChunk, false, kChunk, false,
-			           sVertexXYZDT1::fmt, PT_TRIANGLES);
+			           sVertexXYZDT2::fmt, PT_TRIANGLES);
 			buffers_.push_back(std::move(db));
 		}
 		uploaded_ = nullptr; // force re-upload into the fresh buffers
@@ -122,7 +126,7 @@ void cRawMeshObj::Draw(cCamera* camera)
 				c < uploadedChunks &&
 				uploadedCopy_.size() >= base + n &&
 				std::memcmp(uploadedCopy_.data() + base, mesh.data() + base,
-				            n * sizeof(sVertexXYZDT1)) == 0;
+				            n * sizeof(sVertexXYZDT2)) == 0;
 			if (same) {
 				continue;
 			}
@@ -134,11 +138,11 @@ void cRawMeshObj::Draw(cCamera* camera)
 			buffers_[c] = std::make_unique<DrawBuffer>();
 			DrawBuffer* db = buffers_[c].get();
 			db->Create(kChunk, false, kChunk, false,
-			           sVertexXYZDT1::fmt, PT_TRIANGLES);
-			sVertexXYZDT1* v = nullptr;
+			           sVertexXYZDT2::fmt, PT_TRIANGLES);
+			sVertexXYZDT2* v = nullptr;
 			indices_t* ip = nullptr;
 			db->Lock(n, n, v, ip, false);
-			memcpy(v, mesh.data() + base, n * sizeof(sVertexXYZDT1));
+			memcpy(v, mesh.data() + base, n * sizeof(sVertexXYZDT2));
 			for (size_t i = 0; i < n; ++i) {
 				ip[i] = static_cast<indices_t>(i);
 			}
@@ -161,11 +165,11 @@ void cRawMeshObj::Draw(cCamera* camera)
 			const size_t n = std::min(kChunk, mesh.size() - base);
 			if (uploadedChunks == chunks &&
 			    std::memcmp(uploadedCopy_.data() + base, mesh.data() + base,
-			                n * sizeof(sVertexXYZDT1)) == 0) {
+			                n * sizeof(sVertexXYZDT2)) == 0) {
 				continue;
 			}
 			std::memcpy(uploadedCopy_.data() + base, mesh.data() + base,
-			            n * sizeof(sVertexXYZDT1));
+			            n * sizeof(sVertexXYZDT2));
 		}
 	}
 	// Some passes draw with no camera (shadow/reflection helpers) - those

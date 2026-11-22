@@ -160,5 +160,13 @@ void SokolTexture2D::update() {
     xassert(image->res.id != SG_INVALID_ID);
     sg_image_data imageData = {};
     imageData.subimage[0][0] = {data, data_len};
+    // Stream mip levels stored via SetTextureMipData upload along with
+    // the base level (the cavity overlay's cap-color texture).
+    for (size_t n = 0; n < mip_storage.size(); ++n) {
+        if (!mip_storage[n].empty()) {
+            imageData.subimage[0][n + 1] = {mip_storage[n].data(),
+                                            mip_storage[n].size()};
+        }
+    }
     sg_update_image(image->res, &imageData);
 }

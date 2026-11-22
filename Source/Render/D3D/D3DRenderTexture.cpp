@@ -208,6 +208,48 @@ void* cD3DRender::LockTextureRect(cTexture* Texture, int& Pitch, Vect2i pos, Vec
     return d3dLockRect.pBits;
 }
 
+void cD3DRender::SetTextureMipData(cTexture* Texture, int level,
+                                   const void* data, int size) {
+#ifdef PERIMETER_D3D9
+    if (level < 1 || !Texture || !Texture->GetFrameImage(0)) {
+        return;
+    }
+    IDirect3DTexture9* tex = Texture->GetFrameImage(0)->d3d;
+    if (!tex) {
+        return;
+    }
+    IDirect3DSurface9* surf = nullptr;
+    if (FAILED(tex->GetSurfaceLevel(level, &surf)) || !surf) {
+        return;
+    }
+    D3DSURFACE_DESC desc;
+    if (FAILED(surf->GetDesc(&desc))) {
+        surf->Release();
+        return;
+    }
+    const int need = static_cast<int>(desc.Width * desc.Height * 4);
+    if (size < need) {
+        surf->Release();
+        return;
+    }
+    D3DLOCKED_RECT lr;
+    if (SUCCEEDED(surf->LockRect(&lr, nullptr, 0))) {
+        const char* src = static_cast<const char*>(data);
+        const int rowBytes = static_cast<int>(desc.Width * 4);
+        if (lr.Pitch == rowBytes) {
+            memcpy(lr.pBits, src, rowBytes * desc.Height);
+        } else {
+            char* dst = static_cast<char*>(lr.pBits);
+            for (UINT y = 0; y < desc.Height; ++y) {
+                memcpy(dst + y * lr.Pitch, src + y * rowBytes, rowBytes);
+            }
+        }
+        surf->UnlockRect();
+    }
+    surf->Release();
+#endif
+}
+
 void cD3DRender::UnlockTexture(class cTexture *Texture)
 {
 #ifdef PERIMETER_RENDER_TRACKER_LOCKS

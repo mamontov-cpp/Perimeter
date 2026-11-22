@@ -288,6 +288,12 @@ public:
     void* LockTexture(class cTexture *Texture, int& Pitch) override;
     void* LockTextureRect(class cTexture* Texture, int& Pitch, Vect2i pos, Vect2i size) override;
     void UnlockTexture(class cTexture *Texture) override;
+    void SetTextureMipData(class cTexture* Texture, int level,
+                           const void* data, int size) override;
+    bool SwapRBOnTextureUpload() const override { return true; }
+    // Sokol's light map render target is cleared to white and darkened by
+    // shadows — safe (and intended) to multiply into the cavity mesh.
+    bool IsLightMapMultiplicative() const override { return true; }
     void SetTextureImage(uint32_t slot, struct TextureImage* texture_image) override;
     void SetTextureTransform(uint32_t slot, const Mat4f& transform) override;
     uint32_t GetMaxTextureSlots() override;

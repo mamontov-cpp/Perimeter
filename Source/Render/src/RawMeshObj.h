@@ -32,12 +32,22 @@ public:
 	~cRawMeshObj() override;
 
 	/// Replace the whole geometry (triangle list, 3 vertices per triangle).
-	void setTriangles(const std::vector<sVertexXYZDT1>& triangles);
+	void setTriangles(const std::vector<sVertexXYZDT2>& triangles);
 	/// Geometry is shown only while non-empty and not ATTRUNKOBJ_IGNORE.
 	void clear();
 
 	void PreDraw(cCamera* camera) override;
 	void Draw(cCamera* camera) override;
+
+protected:
+	/// Optional second texture for the draw (slot 1). Queried FRESH each
+	/// Draw — do NOT store a backend-owned pointer in Texture[1] for
+	/// this: cUnkObj::SetTexture would RELEASE the previous value on the
+	/// next call, and backends (D3D9) free/replace the light map render
+	/// target at will — a stored raw pointer becomes dangling (the
+	/// EXTDEMO-in-game crash). Default null (the shader's empty slot
+	/// samples white, tex*color = color).
+	virtual cTexture* drawLightMap() { return nullptr; }
 
 private:
 	// Double buffering: setTriangles publishes an immutable snapshot; Draw
@@ -46,13 +56,13 @@ private:
 	// even when the overlay is off-screen: no frustum culling for scene
 	// nodes).
 	std::mutex mutex_;
-	std::shared_ptr<const std::vector<sVertexXYZDT1>> triangles_;
+	std::shared_ptr<const std::vector<sVertexXYZDT2>> triangles_;
 	// Fixed pool of owned STATIC draw buffers (one per chunk), see Draw():
 	// uploaded once per mesh change, submitted per frame.
 	std::vector<std::unique_ptr<DrawBuffer>> buffers_;
-	std::shared_ptr<const std::vector<sVertexXYZDT1>> uploaded_;
+	std::shared_ptr<const std::vector<sVertexXYZDT2>> uploaded_;
 	// Copy of the uploaded mesh for per-chunk diffing on re-upload.
-	std::vector<sVertexXYZDT1> uploadedCopy_;
+	std::vector<sVertexXYZDT2> uploadedCopy_;
 	// Per-chunk bounding boxes, parallel to the 60000-vertex chunks Draw()
 	// submits: the mesh spans the whole map, so frustum-culling off-screen
 	// chunks skips most of the GPU vertex load per frame.

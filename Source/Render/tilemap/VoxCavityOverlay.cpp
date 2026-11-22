@@ -11,6 +11,11 @@
 
 #include "../src/Scene.h"
 
+#ifndef VOX_OVERLAY_HEADLESS
+#include "../inc/IRenderDevice.h"
+#include "../src/Texture.h"
+#endif
+
 #include "terra.h"
 #include "VMAP.h"
 
@@ -72,6 +77,55 @@ std::uint64_t columnInputHash(int x, int y)
 	return h;
 }
 
+/// Число уровней mip-цепочки текстуры maxDim x maxDim.
+int capTexMipLevelsFor(std::uint32_t maxDim)
+{
+	std::uint32_t m = maxDim;
+	int levels = 1;
+	while (m > 1) {
+		m >>= 1;
+		++levels;
+	}
+	return levels;
+}
+
+int capTexMipLevels()
+{
+	return capTexMipLevelsFor(
+	    std::max(static_cast<std::uint32_t>(vMap.H_SIZE),
+	             static_cast<std::uint32_t>(vMap.V_SIZE)));
+}
+
+/// Побайтовое усреднение 2x2 RGBA (для CPU-генерации мипов бейка).
+/// Нулевые (пустые) тексели ИСКЛЮЧАЮТСЯ из среднего: бейки разреженные
+/// (пустота = 0x00000000), и усреднение с чёрным давало бы тёмную кайму
+/// на мип-уровнях у террейна её нет — его текстуры заполнены целиком.
+/// Все четыре пустые -> 0 (копим пустоту вглубь мипов).
+std::uint32_t capTexAvg2x2(std::uint32_t a, std::uint32_t b, std::uint32_t c,
+                           std::uint32_t d)
+{
+	std::uint32_t sum[4] = {0, 0, 0, 0};
+	std::uint32_t cnt = 0;
+	const std::uint32_t v[4] = {a, b, c, d};
+	for (int k = 0; k < 4; ++k) {
+		if (v[k] == 0) {
+			continue;
+		}
+		++cnt;
+		for (int sh = 0; sh < 32; sh += 8) {
+			sum[sh / 8] += (v[k] >> sh) & 0xFFu;
+		}
+	}
+	if (cnt == 0) {
+		return 0;
+	}
+	std::uint32_t r = 0;
+	for (int sh = 0; sh < 32; sh += 8) {
+		r |= ((sum[sh / 8] / cnt) << sh);
+	}
+	return r;
+}
+
 #ifndef VOX_OVERLAY_HEADLESS
 class CavityOverlayNode : public cRawMeshObj
 {
@@ -82,6 +136,22 @@ public:
 	{
 		owner_->drainPending();
 		cRawMeshObj::PreDraw(camera);
+	}
+
+protected:
+	// Лайтмап террейна СВЕЖИЙ на каждый Draw — в Texture[1] его хранить
+	// нельзя: cUnkObj::SetTexture делает RELEASE старого значения, а
+	// бэкенд (D3D9) владеет рендер-таргетом и освобождает его между
+	// кадрами — RELEASE по висячему указателю (крах EXTDEMO в игре).
+	// Только бэкенды, где лайтмапа мультипликативна (sokol, белая база):
+	// у D3D9 это топ-даун проекция террейна для шейдеров теней — умножение
+	// на неё темнит меш (острова тёмные в игре, яркие в редакторе).
+	cTexture* drawLightMap() override
+	{
+		if (!gb_RenderDevice || !gb_RenderDevice->IsLightMapMultiplicative()) {
+			return nullptr;
+		}
+		return gb_RenderDevice->GetLightMap();
 	}
 
 private:
@@ -105,14 +175,65 @@ void VoxCavityOverlay::init(cScene* scene, cTileMap* tilemap)
 		return;
 	}
 #ifndef VOX_OVERLAY_HEADLESS
-	node_ = new CavityOverlayNode(this);
+	chunksNode_ = new CavityOverlayNode(this);
+	capsNode_ = new CavityOverlayNode(this);
+	rowWallsNode_ = new CavityOverlayNode(this);
+	colWallsNode_ = new CavityOverlayNode(this);
 #endif
 	if (std::getenv("VOX_NO_OVERLAY")) {
-		node_->SetAttr(ATTRUNKOBJ_IGNORE); // A/B diagnosis
+		chunksNode_->SetAttr(ATTRUNKOBJ_IGNORE); // A/B diagnosis
+		capsNode_->SetAttr(ATTRUNKOBJ_IGNORE);
+		rowWallsNode_->SetAttr(ATTRUNKOBJ_IGNORE);
+		colWallsNode_->SetAttr(ATTRUNKOBJ_IGNORE);
 	}
 #ifndef VOX_OVERLAY_HEADLESS
-	scene_->AttachObj(node_);
+	scene_->AttachObj(chunksNode_);
+	scene_->AttachObj(capsNode_);
+	scene_->AttachObj(rowWallsNode_);
+	scene_->AttachObj(colWallsNode_);
 	tilemap_->RegisterUpdateMap(&VoxCavityOverlay::onUpdateMap, this);
+#endif
+	// Бейк цветов кепок: текстура РОВНО W×H (движок требует степени
+	// двойки — cTexture иначе округлит размер и залогирует «Bad width»).
+	capTexW_ = static_cast<std::uint32_t>(vMap.H_SIZE);
+	capTexH_ = static_cast<std::uint32_t>(vMap.V_SIZE);
+	capTex_.assign(static_cast<size_t>(capTexW_) * capTexH_, 0u);
+#ifndef VOX_OVERLAY_HEADLESS
+	if (gb_RenderDevice) {
+		auto makeTex = [](const char* label, int w, int h, int levels) {
+			cTexture* t = new cTexture;
+			t->SetNumberMipMap(levels);
+			t->New(1);
+			t->SetWidth(w);
+			t->SetHeight(h);
+			t->SetTimePerFrame(0);
+			t->label = label;
+			gb_RenderDevice->CreateTexture(t, nullptr);
+			return t;
+		};
+		const int mapW = static_cast<int>(vMap.H_SIZE);
+		const int mapH = static_cast<int>(vMap.V_SIZE);
+		const int wallLevels = capTexMipLevelsFor(
+		    std::max(mapW, VOX_WALL_TEX_ZCAP));
+		capTexture_ = makeTex("VoxCavityCaps", mapW, mapH,
+		                      capTexMipLevels());
+		rowWallTexture_ = makeTex("VoxCavityRowWalls", mapW,
+		                          VOX_WALL_TEX_ZCAP, wallLevels);
+		colWallTexture_ = makeTex("VoxCavityColWalls", mapH,
+		                          VOX_WALL_TEX_ZCAP, wallLevels);
+		// Текстуру несёт только соответствующая нода; нода плит рисует
+		// без неё (пустой слот шейдера сэмплит белую emptyTexture).
+		// Слоту ноды нужна СВОЯ ссылка: cUnkObj::~cUnkObj делает RELEASE
+		// каждого Texture[i], а SetTexture IncRef НЕ делает — без своей
+		// ссылки деструктор ноды роняет счётчик удалённой текстуры
+		// (порча кучи c0000374 при закрытии редактора/выходе из скирмиша).
+		capsNode_->SetTexture(0, capTexture_);
+		capTexture_->IncRef();
+		rowWallsNode_->SetTexture(0, rowWallTexture_);
+		rowWallTexture_->IncRef();
+		colWallsNode_->SetTexture(0, colWallTexture_);
+		colWallTexture_->IncRef();
+	}
 #endif
 	voxperf::log("overlay init: full rebuild START");
 	rebuildAll();
@@ -128,14 +249,32 @@ void VoxCavityOverlay::shutdown()
 		worker_.join();
 	}
 #ifndef VOX_OVERLAY_HEADLESS
-	if (node_) {
-		if (tilemap_) {
-			tilemap_->UnRegisterUpdateMap(&VoxCavityOverlay::onUpdateMap,
-			                              this);
+	auto releaseTex = [](cTexture*& t) {
+		if (t) {
+			if (gb_RenderDevice) {
+				gb_RenderDevice->DeleteTexture(t);
+			}
+			t->Release();
+			t = nullptr;
 		}
-		node_->Release();
-		node_ = nullptr;
+	};
+	releaseTex(capTexture_);
+	releaseTex(rowWallTexture_);
+	releaseTex(colWallTexture_);
+	if (tilemap_) {
+		tilemap_->UnRegisterUpdateMap(&VoxCavityOverlay::onUpdateMap,
+		                              this);
 	}
+	auto releaseNode = [](cRawMeshObj*& n) {
+		if (n) {
+			n->Release();
+			n = nullptr;
+		}
+	};
+	releaseNode(chunksNode_);
+	releaseNode(capsNode_);
+	releaseNode(rowWallsNode_);
+	releaseNode(colWallsNode_);
 #endif
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
@@ -155,7 +294,7 @@ void VoxCavityOverlay::onUpdateMap(const Vect2i& pos1, const Vect2i& pos2,
                                    void* data)
 {
 	VoxCavityOverlay* self = static_cast<VoxCavityOverlay*>(data);
-	if (!self->node_) {
+	if (!self->chunksNode_) {
 		return;
 	}
 	// Только постановка в очередь: сама перестройка — на графическом
@@ -283,6 +422,7 @@ void VoxCavityOverlay::drainPending()
 void VoxCavityOverlay::rebuildAll(int bandsRequested)
 {
 	std::lock_guard<std::mutex> lock(mutex_);
+	ensureCapTexLocked();
 	const int mapW = static_cast<int>(vMap.H_SIZE);
 	const int mapH = static_cast<int>(vMap.V_SIZE);
 	const unsigned hc = std::thread::hardware_concurrency();
@@ -376,6 +516,8 @@ void VoxCavityOverlay::rebuildAll(int bandsRequested)
 				const auto rowHi = std::upper_bound(
 				    colOffs.begin(), colOffs.end(), rowEnd);
 				std::vector<std::uint32_t> rowCells;
+				std::vector<std::uint32_t> bakeRow;
+				std::vector<std::uint32_t> emptyRow;
 				for (auto it = rowLo; it != rowHi;) {
 					const int cy = static_cast<int>(*it / mapW);
 					auto jt = it;
@@ -391,18 +533,24 @@ void VoxCavityOverlay::rebuildAll(int bandsRequested)
 					        (mapW - 1));
 					if (cavRange.first != cavRange.second) {
 						std::vector<VoxCavityVertex> caps;
-						voxCavityAppendRowCaps(vMap, cy, 0, mapW - 1, caps);
+						voxCavityAppendRowCaps(vMap, cy, 0, mapW - 1, caps,
+						                       &bakeRow);
+						bakeCapRowLocked(cy, bakeRow);
 						if (!caps.empty()) {
 							o.capRows.emplace(cy, std::move(caps));
 						}
+					} else {
+						bakeCapRowLocked(cy, emptyRow);
 					}
 					if (!rowCells.empty()) {
 						std::vector<VoxCavityVertex> w;
+						std::vector<VoxWallRun> runs;
 						voxCavityAppendRowWallY(vMap, cy, rowCells.data(),
-						                        rowCells.size(), w);
+						                        rowCells.size(), w, &runs);
 						if (!w.empty()) {
 							o.wallRows.emplace(cy, std::move(w));
 						}
+						o.wallRowRuns.emplace(cy, std::move(runs));
 					}
 				}
 				// Колонки [x0..x1]: +x стены по полной высоте (серии идут
@@ -421,11 +569,13 @@ void VoxCavityOverlay::rebuildAll(int bandsRequested)
 						continue;
 					}
 					std::vector<VoxCavityVertex> w;
+					std::vector<VoxWallRun> runs;
 					voxCavityAppendColWallX(vMap, x, colCells.data(),
-					                        colCells.size(), w);
+					                        colCells.size(), w, &runs);
 					if (!w.empty()) {
 						o.wallCols.emplace(x, std::move(w));
 					}
+					o.wallColRuns.emplace(x, std::move(runs));
 				}
 			});
 		}
@@ -437,6 +587,8 @@ void VoxCavityOverlay::rebuildAll(int bandsRequested)
 	capRows_.clear();
 	wallRows_.clear();
 	wallCols_.clear();
+	wallRowRuns_.clear();
+	wallColRuns_.clear();
 	for (int b = 0; b < bands; ++b) {
 		RectMeshes& o = outs[b];
 		chunks_.insert(chunks_.end(),
@@ -450,6 +602,12 @@ void VoxCavityOverlay::rebuildAll(int bandsRequested)
 		}
 		for (auto& kv : o.wallCols) {
 			wallCols_.emplace(kv.first, std::move(kv.second));
+		}
+		for (auto& kv : o.wallRowRuns) {
+			wallRowRuns_[kv.first] = std::move(kv.second);
+		}
+		for (auto& kv : o.wallColRuns) {
+			wallColRuns_[kv.first] = std::move(kv.second);
 		}
 	}
 	// Чанки собраны из непересекающихся срезов — сортировка под бинарные
@@ -465,6 +623,7 @@ void VoxCavityOverlay::rebuildAll(int bandsRequested)
 void VoxCavityOverlay::rebuildRect(int x0, int y0, int x1, int y1)
 {
 	std::lock_guard<std::mutex> lock(mutex_);
+	ensureCapTexLocked();
 	const int mapW = static_cast<int>(vMap.H_SIZE);
 	const std::uint32_t offBeg =
 		static_cast<std::uint32_t>(y0) * mapW + static_cast<std::uint32_t>(x0);
@@ -642,6 +801,7 @@ void VoxCavityOverlay::rebuildRect(int x0, int y0, int x1, int y1)
 	// dominated the rebuild time).
 	const int capX0 = std::max(0, x0 - 1);
 	const int capX1 = std::min(mapW - 1, x1 + 1);
+	std::vector<std::uint32_t> bakeScratch_;
 	for (int y = y0; y <= y1; ++y) {
 		auto oldRow = capRows_.find(y);
 		const bool hadRow = oldRow != capRows_.end();
@@ -658,7 +818,9 @@ void VoxCavityOverlay::rebuildRect(int x0, int y0, int x1, int y1)
 		}
 		std::vector<VoxCavityVertex> caps;
 		voxCavityAppendRowCaps(vMap, y, 0,
-		                       static_cast<int>(vMap.H_SIZE) - 1, caps);
+		                       static_cast<int>(vMap.H_SIZE) - 1, caps,
+		                       &bakeScratch_);
+		bakeCapRowLocked(y, bakeScratch_);
 		const bool same = hadRow && oldRow->second == caps;
 		if (hadRow) {
 			capRows_.erase(oldRow);
@@ -699,9 +861,12 @@ void VoxCavityOverlay::rebuildRect(int x0, int y0, int x1, int y1)
 				continue;
 			}
 			std::vector<VoxCavityVertex> w;
+			std::vector<VoxWallRun> runs;
 			if (!cells.empty()) {
-				voxCavityAppendRowWallY(vMap, y, cells.data(), cells.size(), w);
+				voxCavityAppendRowWallY(vMap, y, cells.data(), cells.size(),
+				                        w, &runs);
 			}
+			wallRowRuns_[y] = std::move(runs);
 			// Как у колонок ниже: запись общая на ВСЮ ширину строки, а
 			// кандидаты — только рект с кольцом ±1. Без сохранения квадов
 			// вне x-полосы регенерация от локальных клеток стирала стены
@@ -790,10 +955,12 @@ void VoxCavityOverlay::rebuildRect(int x0, int y0, int x1, int y1)
 				continue;
 			}
 			std::vector<VoxCavityVertex> w;
+			std::vector<VoxWallRun> runs;
 			if (!cells.empty()) {
 				voxCavityAppendColWallX(vMap, x, cells.data(), cells.size(),
-				                        w);
+				                        w, &runs);
 			}
+			wallColRuns_[x] = std::move(runs);
 			bool same = false;
 			if (hadCol) {
 				// Новый проход покрывает y в [y0-1..y1+1] (кольцо
@@ -889,6 +1056,165 @@ void VoxCavityOverlay::rebuildRect(int x0, int y0, int x1, int y1)
 	publishLocked();
 }
 
+void VoxCavityOverlay::ensureCapTexLocked()
+{
+	if (capTex_.empty()) {
+		capTexW_ = static_cast<std::uint32_t>(vMap.H_SIZE);
+		capTexH_ = static_cast<std::uint32_t>(vMap.V_SIZE);
+		capTex_.assign(static_cast<size_t>(capTexW_) * capTexH_, 0u);
+	}
+	const size_t rowTexels =
+	    static_cast<size_t>(vMap.H_SIZE) * VOX_WALL_TEX_ZCAP;
+	const size_t colTexels =
+	    static_cast<size_t>(vMap.V_SIZE) * VOX_WALL_TEX_ZCAP;
+	if (rowWallTex_.size() != rowTexels) {
+		rowWallTex_.assign(rowTexels, 0u);
+	}
+	if (colWallTex_.size() != colTexels) {
+		colWallTex_.assign(colTexels, 0u);
+	}
+}
+
+void VoxCavityOverlay::bakeCapRowLocked(
+    int y, const std::vector<std::uint32_t>& cellColors)
+{
+	const size_t w = capTexW_;
+	std::uint32_t* row = capTex_.data() + static_cast<size_t>(y) * w;
+	const size_t cells = std::min(cellColors.size(), w);
+	for (size_t x = 0; x < cells; ++x) {
+		row[x] = cellColors[x];
+	}
+	for (size_t x = cells; x < w; ++x) {
+		row[x] = 0u;
+	}
+	capTexDirty_ = true;
+}
+
+void VoxCavityOverlay::syncTextureLocked(
+    cTexture* tex, const std::vector<std::uint32_t>& bake, bool& dirtyFlag)
+{
+#ifndef VOX_OVERLAY_HEADLESS
+	if (!tex || !dirtyFlag || !gb_RenderDevice) {
+		dirtyFlag = tex != nullptr && dirtyFlag;
+		return;
+	}
+	dirtyFlag = false;
+	const std::uint32_t texW = static_cast<std::uint32_t>(tex->GetWidth());
+	const std::uint32_t texH = static_cast<std::uint32_t>(tex->GetHeight());
+	const double t0 = voxperf::nowMs();
+	// Порядок байт — бэкенд-специфичен: sokol (RGBA8) сэмплит byte0
+	// как R и требует свопа R/B; D3D9 (A8R8G8B8) читает byte0 как B —
+	// канонический 0xAARRGGBB ложится туда без свопа (своп для D3D как
+	// раз перепутывает цвета). См. IRenderDevice::SwapRBOnTextureUpload.
+	const bool swapRB = gb_RenderDevice->SwapRBOnTextureUpload();
+	std::vector<std::uint32_t> upload(bake.size());
+	for (size_t i = 0; i < bake.size(); ++i) {
+		const std::uint32_t c = bake[i];
+		upload[i] = swapRB ? ((c & 0xFF00FF00u) | ((c >> 16) & 0xFFu) |
+		                      ((c & 0xFFu) << 16))
+		                   : c;
+	}
+	// Уровень 0 — через Lock/Unlock (загрузка случится на рендер-потоке
+	// при бинде dirty-текстуры); мипы — через SetTextureMipData (тот же
+	// флэш). CPU-фильтрация цепочки поглощается воркером.
+	int pitch = 0;
+	if (void* dst = gb_RenderDevice->LockTexture(tex, pitch)) {
+		const int need = static_cast<int>(texW * 4);
+		if (pitch == need) {
+			std::memcpy(dst, upload.data(), upload.size() * 4);
+		} else {
+			for (std::uint32_t y = 0; y < texH; ++y) {
+				std::memcpy(
+				    static_cast<char*>(dst) + y * pitch,
+				    upload.data() + static_cast<size_t>(y) * texW, need);
+			}
+		}
+		gb_RenderDevice->UnlockTexture(tex);
+	}
+	std::vector<std::uint32_t> prev = std::move(upload);
+	std::uint32_t pw = texW, ph = texH;
+	for (int level = 1; level < tex->GetNumberMipMap(); ++level) {
+		const std::uint32_t w = std::max<std::uint32_t>(1, pw >> 1);
+		const std::uint32_t h = std::max<std::uint32_t>(1, ph >> 1);
+		std::vector<std::uint32_t> cur(static_cast<size_t>(w) * h);
+		for (std::uint32_t y = 0; y < h; ++y) {
+			const std::uint32_t sy0 = std::min(y * 2, ph - 1);
+			const std::uint32_t sy1 = std::min(y * 2 + 1, ph - 1);
+			for (std::uint32_t x = 0; x < w; ++x) {
+				const std::uint32_t sx0 = std::min(x * 2, pw - 1);
+				const std::uint32_t sx1 = std::min(x * 2 + 1, pw - 1);
+				cur[static_cast<size_t>(y) * w + x] = capTexAvg2x2(
+				    prev[static_cast<size_t>(sy0) * pw + sx0],
+				    prev[static_cast<size_t>(sy0) * pw + sx1],
+				    prev[static_cast<size_t>(sy1) * pw + sx0],
+				    prev[static_cast<size_t>(sy1) * pw + sx1]);
+			}
+		}
+		gb_RenderDevice->SetTextureMipData(tex, level, cur.data(),
+		                                   static_cast<int>(cur.size() * 4));
+		prev.swap(cur);
+		pw = w;
+		ph = h;
+	}
+	voxperf::log("overlay texture sync: %.2f ms levels=%d",
+	             voxperf::nowMs() - t0, tex->GetNumberMipMap());
+#endif
+}
+
+void VoxCavityOverlay::syncCapTextureLocked()
+{
+	syncTextureLocked(capTexture_, capTex_, capTexDirty_);
+}
+
+void VoxCavityOverlay::bakeWallTexturesLocked()
+{
+	ensureCapTexLocked();
+	const std::uint32_t w = static_cast<std::uint32_t>(vMap.H_SIZE);
+	const std::uint32_t cap = VOX_WALL_TEX_ZCAP;
+	// Полный перепёк: порядок std::map детерминирован; при коллизиях
+	// серий в одном текселе (разные плоскости, один (x,z)) побеждает
+	// последняя — у одноцветных стен (типично) коллизий нет.
+	std::fill(rowWallTex_.begin(), rowWallTex_.end(), 0u);
+	for (const auto& kv : wallRowRuns_) {
+		for (const VoxWallRun& r : kv.second) {
+			const std::uint32_t x1 =
+			    std::min(static_cast<std::uint32_t>(r.along1), w);
+			const std::uint32_t z1 =
+			    std::min(static_cast<std::uint32_t>(r.z1), cap);
+			for (std::uint32_t z = static_cast<std::uint32_t>(r.z0);
+			     z < z1; ++z) {
+				std::uint32_t* row =
+				    rowWallTex_.data() + static_cast<size_t>(z) * w;
+				for (std::uint32_t x = static_cast<std::uint32_t>(r.along0);
+				     x < x1; ++x) {
+					row[x] = r.color;
+				}
+			}
+		}
+	}
+	rowWallTexDirty_ = true;
+	std::fill(colWallTex_.begin(), colWallTex_.end(), 0u);
+	const std::uint32_t h = static_cast<std::uint32_t>(vMap.V_SIZE);
+	for (const auto& kv : wallColRuns_) {
+		for (const VoxWallRun& r : kv.second) {
+			const std::uint32_t y1 =
+			    std::min(static_cast<std::uint32_t>(r.along1), h);
+			const std::uint32_t z1 =
+			    std::min(static_cast<std::uint32_t>(r.z1), cap);
+			for (std::uint32_t z = static_cast<std::uint32_t>(r.z0);
+			     z < z1; ++z) {
+				std::uint32_t* row =
+				    colWallTex_.data() + static_cast<size_t>(z) * h;
+				for (std::uint32_t y = static_cast<std::uint32_t>(r.along0);
+				     y < y1; ++y) {
+					row[y] = r.color;
+				}
+			}
+		}
+	}
+	colWallTexDirty_ = true;
+}
+
 void VoxCavityOverlay::debugDumpMesh(std::vector<VoxCavityVertex>& out) const
 {
 	std::lock_guard<std::mutex> lock(mutex_);
@@ -922,53 +1248,62 @@ void VoxCavityOverlay::debugDumpMesh(std::vector<VoxCavityVertex>& out) const
 
 void VoxCavityOverlay::publishLocked()
 {
-	if (!node_) {
+	if (!chunksNode_) {
 		return;
 	}
 	// Flatten once per actual change (not per update). VoxCavityVertex
-	// mirrors sVertexXYZDT1 byte-for-byte — bulk memcpy per chunk,
+	// mirrors sVertexXYZDT2 byte-for-byte — bulk memcpy per chunk,
 	// no per-vertex conversion.
-	static_assert(sizeof(VoxCavityVertex) == sizeof(sVertexXYZDT1),
-	              "VoxCavityVertex must mirror sVertexXYZDT1");
-	std::vector<sVertexXYZDT1> flat;
-	size_t total = 0;
+	static_assert(sizeof(VoxCavityVertex) == sizeof(sVertexXYZDT2),
+	              "VoxCavityVertex must mirror sVertexXYZDT2");
+	// Четыре ноды по текстурному режиму (см. заголовок класса). Порядок
+	// внутри каждой — как раньше (chunks, caps, wallRows, wallCols).
+	auto flatten = [](const std::vector<const std::vector<VoxCavityVertex>*>& parts) {
+		size_t total = 0;
+		for (const auto* p : parts) total += p->size();
+		std::vector<sVertexXYZDT2> flat(total);
+		sVertexXYZDT2* dst = flat.data();
+		for (const auto* p : parts) {
+			if (!p->empty()) {
+				memcpy(dst, p->data(), p->size() * sizeof(sVertexXYZDT2));
+				dst += p->size();
+			}
+		}
+		return flat;
+	};
+	std::vector<const std::vector<VoxCavityVertex>*> capParts;
+	std::vector<const std::vector<VoxCavityVertex>*> chunkParts;
+	std::vector<const std::vector<VoxCavityVertex>*> rowWallParts;
+	std::vector<const std::vector<VoxCavityVertex>*> colWallParts;
 	for (const Chunk& ch : chunks_) {
-		total += ch.verts.size();
+		chunkParts.push_back(&ch.verts);
 	}
 	for (const auto& row : capRows_) {
-		total += row.second.size();
+		capParts.push_back(&row.second);
 	}
 	for (const auto& row : wallRows_) {
-		total += row.second.size();
+		rowWallParts.push_back(&row.second);
 	}
 	for (const auto& col : wallCols_) {
-		total += col.second.size();
+		colWallParts.push_back(&col.second);
 	}
-	flat.resize(total);
 	const double tFlat = voxperf::nowMs();
-	sVertexXYZDT1* dst = flat.data();
-	for (const Chunk& ch : chunks_) {
-		memcpy(dst, ch.verts.data(),
-		       ch.verts.size() * sizeof(sVertexXYZDT1));
-		dst += ch.verts.size();
-	}
-	for (const auto& row : capRows_) {
-		memcpy(dst, row.second.data(),
-		       row.second.size() * sizeof(sVertexXYZDT1));
-		dst += row.second.size();
-	}
-	for (const auto& row : wallRows_) {
-		memcpy(dst, row.second.data(),
-		       row.second.size() * sizeof(sVertexXYZDT1));
-		dst += row.second.size();
-	}
-	for (const auto& col : wallCols_) {
-		memcpy(dst, col.second.data(),
-		       col.second.size() * sizeof(sVertexXYZDT1));
-		dst += col.second.size();
-	}
-	voxperf::log("publish: flatten %.2f ms verts=%zu", voxperf::nowMs() - tFlat, flat.size());
+	std::vector<sVertexXYZDT2> capsFlat = flatten(capParts);
+	std::vector<sVertexXYZDT2> chunksFlat = flatten(chunkParts);
+	std::vector<sVertexXYZDT2> rowWallsFlat = flatten(rowWallParts);
+	std::vector<sVertexXYZDT2> colWallsFlat = flatten(colWallParts);
+	voxperf::log("publish: flatten %.2f ms chunks=%zu caps=%zu "
+	             "rowWalls=%zu colWalls=%zu",
+	             voxperf::nowMs() - tFlat, chunksFlat.size(), capsFlat.size(),
+	             rowWallsFlat.size(), colWallsFlat.size());
+	syncCapTextureLocked();
+	bakeWallTexturesLocked();
+	syncTextureLocked(rowWallTexture_, rowWallTex_, rowWallTexDirty_);
+	syncTextureLocked(colWallTexture_, colWallTex_, colWallTexDirty_);
 #ifndef VOX_OVERLAY_HEADLESS
-	node_->setTriangles(flat);
+	chunksNode_->setTriangles(chunksFlat);
+	capsNode_->setTriangles(capsFlat);
+	rowWallsNode_->setTriangles(rowWallsFlat);
+	colWallsNode_->setTriangles(colWallsFlat);
 #endif
 }

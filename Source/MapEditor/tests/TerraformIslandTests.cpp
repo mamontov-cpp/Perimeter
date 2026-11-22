@@ -176,19 +176,23 @@ bool runTerraformIslandTests()
 
         const int h = vMap.VxDBuf[centerOff];
         if (!collapseChecked && h <= kBand1) {
-            // The step where the dig reaches the transparent band: the
-            // surface must collapse to the nearest solid voxel below and
-            // the band itself must stay untouched (no accidental
-            // solidify — that would mean normalize got a truncated old
-            // height and treated the dig as a raise).
-            TEST_REQUIRE(h == kBand0,
-                         "digging into the transparent band must collapse "
-                         "the surface to %d, got %d.",
-                         kBand0, h);
-            TEST_REQUIRE(vMap.voxLayers.isTransparent(
+            // The step where the dig reaches the transparent band: with
+            // the dig-fill rule the descent continues smoothly — the
+            // void under the new surface is filled solid (the band
+            // segment at/above the surface is eaten) instead of the old
+            // whole-column collapse to the nearest solid below (which
+            // made islands vanish in one step and read as "columns
+            // instantly disappearing"). The band must NOT survive as a
+            // cavity under the new surface.
+            TEST_REQUIRE(h >= kBand0,
+                         "the dig must not jump below the band bottom: "
+                         "got %d, band starts at %d.",
+                         h, kBand0);
+            TEST_REQUIRE(!vMap.voxLayers.isTransparent(
                              static_cast<std::uint32_t>(centerOff),
                              (kBand0 + kBand1) / 2),
-                         "the transparent band must survive the collapse.");
+                         "the band under the descended surface must be "
+                         "filled, not preserved as a cavity.");
             collapseChecked = true;
         }
 
