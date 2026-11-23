@@ -40,6 +40,8 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <map>
+#include <tuple>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -346,10 +348,107 @@ bool runTerraformPaintClearTests()
     std::vector<VoxCavityVertex> tris;
     voxCavityAppendRowWallY(vMap, MY, offs.data(), offs.size(), tris);
     // Two runs per column ([5..19] and [26..39]); 4 identical columns
-    // merged -> 2 quads = 12 verts. Unmerged would be 48.
+    // merged -> 2 quads = 12 verts. The 35-voxel cliff exceeds the smoothing
+    // threshold, so both geometry and merging remain unchanged.
     TEST_REQUIRE(tris.size() == 12,
-                 "identical neighbor columns must merge into one wall quad "
-                 "set: got %zu verts, want 12.", tris.size());
+                 "unsmoothed wall merging produced %zu verts, want 12.",
+                 tris.size());
+
+    const std::uint32_t redOff =
+        static_cast<std::uint32_t>(MY * vMap.H_SIZE + MX + 3);
+    vMap.voxLayers.paint(redOff, 0, 19, 0xFF, 0, 0, false);
+    vMap.voxLayers.paint(redOff, 26, 39, 0xFF, 0, 0, false);
+    tris.clear();
+    voxCavityAppendRowWallY(vMap, MY, offs.data(), offs.size(), tris);
+    int gradients = 0;
+    bool sharedColors = true;
+    std::map<std::tuple<int, int, int>, std::uint32_t> cornerColors;
+    for (size_t i = 0; i + 6 <= tris.size(); i += 6) {
+        if (tris[i].diffuse != tris[i + 1].diffuse ||
+            tris[i].diffuse != tris[i + 2].diffuse ||
+            tris[i].diffuse != tris[i + 5].diffuse) {
+            ++gradients;
+        }
+        for (int k : {0, 1, 2, 5}) {
+            const VoxCavityVertex& v = tris[i + k];
+            const auto key = std::make_tuple(
+                static_cast<int>(v.x * 8.f + 0.5f),
+                static_cast<int>(v.y * 8.f + 0.5f),
+                static_cast<int>(v.z * 8.f + 0.5f));
+            const auto inserted = cornerColors.emplace(key, v.diffuse);
+            if (!inserted.second && inserted.first->second != v.diffuse) {
+                sharedColors = false;
+            }
+        }
+    }
+    TEST_REQUIRE(gradients > 0,
+                 "contrasting neighboring walls must interpolate their "
+                 "boundary colors, not remain flat voxel bands.");
+    TEST_REQUIRE(sharedColors,
+                 "wall quads sharing an edge must agree on its endpoint "
+                 "colors.");
+
+    std::vector<VoxCavityVertex> caps;
+    std::vector<std::uint32_t> capColors;
+    voxCavityAppendRowCaps(vMap, MY, MX, MX + 3, caps, &capColors);
+    TEST_REQUIRE(caps.size() == 6,
+                 "same-height caps must merge across paint differences and "
+                 "across an unsmoothed cliff boundary: got %zu vertices, "
+                 "want 6.", caps.size());
+    TEST_REQUIRE(capColors.size() == 4 && capColors[0] != capColors[3],
+                 "cap merging must preserve per-cell bake colors.");
+
+    // Display-height interpolation is limited to a 10-voxel difference.
+    // 100/95 shares the 95-high corner and loses its top wall; 100/80 keeps
+    // flat caps and the original vertical wall, leaving the cavity open.
+    const int sx = 1800, sy = 1800;
+    for (int j = -1; j <= 1; ++j) {
+        for (int i = -1; i <= 1; ++i) {
+            const int off = offAt(sx + i, sy + j);
+            vMap.VxGBuf[off] = 0;
+            vMap.VxDBuf[off] = 0;
+            vMap.AtrBuf[off] = 0;
+            vMap.SurBuf[off] = 5;
+            vMap.voxLayers.setColumn(static_cast<std::uint32_t>(off), nullptr, 0);
+        }
+    }
+    const std::uint32_t highOff = static_cast<std::uint32_t>(offAt(sx, sy));
+    const std::uint32_t lowOff = static_cast<std::uint32_t>(offAt(sx + 1, sy));
+    for (int i = 0; i < 2; ++i) {
+        const std::uint32_t off = i == 0 ? highOff : lowOff;
+        vMap.VxGBuf[off] = 10;
+        vMap.VxDBuf[off] = static_cast<vrtMap::VxWholeHeight>(i == 0 ? 100 : 95);
+        vMap.voxLayers.paint(off, 40, 50, 0, 0, 0, true);
+    }
+    vMap.voxLayers.buildBlockIndex();
+    tris.clear();
+    voxCavityAppendColWallX(vMap, sx, &highOff, 1, tris);
+    TEST_REQUIRE(tris.empty(),
+                 "a 100/95 top wall survived beside interpolated caps: %zu",
+                 tris.size());
+    caps.clear();
+    voxCavityAppendRowCaps(vMap, sy, sx, sx + 1, caps);
+    TEST_REQUIRE(caps.size() == 12,
+                 "two height-transition caps must remain separate quads: %zu",
+                 caps.size());
+    TEST_REQUIRE(caps[0].z == 100.f && caps[1].z == 95.f,
+                 "high cap does not interpolate 100 -> 95: %.1f -> %.1f",
+                 caps[0].z, caps[1].z);
+    TEST_REQUIRE(caps[6].z == 95.f,
+                 "low cap does not share the 95-high corner: %.1f", caps[6].z);
+
+    vMap.VxDBuf[lowOff] = 80;
+    tris.clear();
+    voxCavityAppendColWallX(vMap, sx, &highOff, 1, tris);
+    TEST_REQUIRE(tris.size() == 6,
+                 "a 100/80 height cliff must keep its vertical wall: %zu",
+                 tris.size());
+    caps.clear();
+    voxCavityAppendRowCaps(vMap, sy, sx, sx + 1, caps);
+    TEST_REQUIRE(caps.size() == 12 && caps[0].z == 100.f &&
+                     caps[1].z == 100.f && caps[6].z == 80.f &&
+                     caps[7].z == 80.f,
+                 "a 100/80 height cliff must keep both caps flat");
 
     session.unloadWorld();
     return true;

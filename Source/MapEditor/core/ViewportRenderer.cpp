@@ -62,43 +62,16 @@ unsigned int color32WithLighting(int off, unsigned int lighting)
 /// crater floors left by the strip rule.
 unsigned int surfaceColor32(int off)
 {
-    if (!vMap.voxLayers.empty()) {
-        // The color follows the surface the heightfield RENDERS: for a
-        // cavity column that is the display height (the base under the
-        // cavity), not the full dam top — otherwise the cavity floor
-        // (rendered by the heightfield at the display height) would be
-        // colored with the column top color instead of the painted layer
-        // underneath the island.
-        const int rawSurface = vMap.SGetAlt(off) >> VX_FRACTION;
-        const int displayH = vMap.cavityDisplayHeight(off);
-        const int surface =
-            (displayH >= 0 && displayH < rawSurface) ? displayH : rawSurface;
-        const int h = (vMap.viewSliceHeight >= 0 &&
-                       vMap.viewSliceHeight < surface)
-                          ? vMap.viewSliceHeight
-                          : surface;
-        std::uint32_t rgb = 0;
-        uint8_t flags = 0;
-        if (vMap.voxLayers.lookup(static_cast<std::uint32_t>(off), h, &rgb,
-                                  &flags) &&
-            !(flags & VOX_LAYER_TRANSPARENT)) {
-            return vrtMap::trueColor32(0xFF000000u | rgb, vMap.RnrBuf[off] & 0x7F);
-        }
-        if ((flags & VOX_LAYER_TRANSPARENT) &&
-            vMap.voxLayers.lookupSolidBelow(static_cast<std::uint32_t>(off),
-                                            h, &rgb)) {
-            return vrtMap::trueColor32(0xFF000000u | rgb, vMap.RnrBuf[off] & 0x7F);
-        }
-        // Поверхность — срез полости (или съеденный топ), а под ней
-        // безымянная порода: декаль топа сюда не протекает — иначе краска
-        // «наверх» по верхнему параллелепипеду зажигала и пол (см.
-        // VMAP.h getColor32 surfaceIsCutVoid — логика дублируется тут).
-        // ВАЖНО: полный байт света (с дамбовым битом) — Sur2Col по биту 7
-        // выбирает половину палитры; без него палитра Geo даёт почти
-        // чёрный цвет у дамбы (репорт «тёмный верх нижнего параллелепипеда»).
-        if (flags & VOX_LAYER_TRANSPARENT) {
-            return color32WithLighting(off, vMap.RnrBuf[off]);
-        }
+    bool cutVoid = false;
+    std::uint32_t rgb = 0;
+    if (vMap.voxLayers.querySurfaceColor(
+            static_cast<std::uint32_t>(off),
+            vMap.SGetAlt(off) >> VX_FRACTION, vMap.VxDBuf[off],
+            vMap.viewSliceHeight, &rgb, &cutVoid)) {
+        return vrtMap::trueColor32(0xFF000000u | rgb, vMap.RnrBuf[off] & 0x7F);
+    }
+    if (cutVoid) {
+        return color32WithLighting(off, vMap.RnrBuf[off]);
     }
     if (vMap.SurColBuf && (vMap.SurColBuf[off] & 0xFF000000u)) {
         return vrtMap::trueColor32(vMap.SurColBuf[off], vMap.RnrBuf[off] & 0x7F);

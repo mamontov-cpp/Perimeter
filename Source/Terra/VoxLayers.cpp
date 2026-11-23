@@ -17,40 +17,28 @@ bool VoxColLayers::lookup(uint32_t cellOffset, int height, uint32_t* rgb) const
 bool VoxColLayers::lookup(uint32_t cellOffset, int height, uint32_t* rgb,
                           uint8_t* flags) const
 {
-	std::lock_guard<std::recursive_mutex> lock(accessMtx);
+	std::shared_lock<std::shared_mutex> lock(accessMtx);
 	*flags = 0;
-	if (height < 0 || height > 0xFFFF ||
-	    !mightHaveColumn(cellOffset)) {
+	if (height < 0 || height > 0xFFFF) {
 		return false;
 	}
-	// Бинарный поиск колонки.
-	int lo = 0;
-	int hi = static_cast<int>(col_.size()) - 1;
-	while (lo <= hi) {
-		const int mid = (lo + hi) / 2;
-		if (col_[static_cast<size_t>(mid)] < cellOffset) {
-			lo = mid + 1;
-		} else if (col_[static_cast<size_t>(mid)] > cellOffset) {
-			hi = mid - 1;
-		} else {
-			const uint32_t b = begin_[static_cast<size_t>(mid)];
-			const uint32_t e = end_[static_cast<size_t>(mid)];
-			const uint16_t h = static_cast<uint16_t>(height);
-			// Диапазонов в колонке обычно единицы — линейный проход; при
-			// больших списках выигрыш бинарного поиска нивелируется кэшем.
-			for (uint32_t i = b; i < e; ++i) {
-				const VoxLayerRange& r = ranges_[i];
-				if (h < r.z0) {
-					break; // диапазоны отсортированы по z0
-				}
-				if (h <= r.z1) {
-					*flags = r.flags;
-					*rgb = (static_cast<uint32_t>(r.r) << 16) |
-					       (static_cast<uint32_t>(r.g) << 8) | r.b;
-					return true;
-				}
-			}
-			return false;
+	const int idx = findColumnImpl(cellOffset);
+	if (idx < 0) {
+		return false;
+	}
+	const uint32_t b = begin_[static_cast<size_t>(idx)];
+	const uint32_t e = end_[static_cast<size_t>(idx)];
+	const uint16_t h = static_cast<uint16_t>(height);
+	for (uint32_t i = b; i < e; ++i) {
+		const VoxLayerRange& r = ranges_[i];
+		if (h < r.z0) {
+			break;
+		}
+		if (h <= r.z1) {
+			*flags = r.flags;
+			*rgb = (static_cast<uint32_t>(r.r) << 16) |
+			       (static_cast<uint32_t>(r.g) << 8) | r.b;
+			return true;
 		}
 	}
 	return false;
@@ -58,7 +46,6 @@ bool VoxColLayers::lookup(uint32_t cellOffset, int height, uint32_t* rgb,
 
 bool VoxColLayers::isTransparent(uint32_t cellOffset, int height) const
 {
-	std::lock_guard<std::recursive_mutex> lock(accessMtx);
 	uint32_t rgb = 0;
 	uint8_t flags = 0;
 	return lookup(cellOffset, height, &rgb, &flags) &&
@@ -67,16 +54,18 @@ bool VoxColLayers::isTransparent(uint32_t cellOffset, int height) const
 
 int VoxColLayers::topSolidVoxel(uint32_t cellOffset, int height) const
 {
-	std::lock_guard<std::recursive_mutex> lock(accessMtx);
+	std::shared_lock<std::shared_mutex> lock(accessMtx);
 	if (height <= 0) {
 		return -1;
 	}
-	const int idx = findColumn(cellOffset);
+	const int idx = findColumnImpl(cellOffset);
 	if (idx < 0) {
 		return height - 1; // слоёв нет — порода сплошная
 	}
-	int count = 0;
-	const VoxLayerRange* r = columnRanges(idx, &count);
+	const uint32_t b = begin_[static_cast<size_t>(idx)];
+	const uint32_t e = end_[static_cast<size_t>(idx)];
+	const VoxLayerRange* r = ranges_.data() + b;
+	const int count = static_cast<int>(e - b);
 	int h = height - 1;
 	for (int i = count; i-- > 0;) {
 		if (r[i].z0 > h) {
@@ -100,11 +89,11 @@ int VoxColLayers::topSolidVoxel(uint32_t cellOffset, int height) const
 bool VoxColLayers::lookupSolidBelow(uint32_t cellOffset, int height,
                                     uint32_t* rgb) const
 {
-	std::lock_guard<std::recursive_mutex> lock(accessMtx);
+	std::shared_lock<std::shared_mutex> lock(accessMtx);
 	if (height < 0 || height > 0xFFFF) {
 		return false;
 	}
-	const int colIdx = findColumn(cellOffset);
+	const int colIdx = findColumnImpl(cellOffset);
 	if (colIdx < 0) {
 		return false;
 	}
@@ -127,17 +116,83 @@ bool VoxColLayers::lookupSolidBelow(uint32_t cellOffset, int height,
 	return false;
 }
 
+bool VoxColLayers::querySurfaceColor(uint32_t cellOffset, int rawSurface,
+                                     int damHeight, int viewSliceHeight,
+                                     uint32_t* rgb, bool* cutVoid) const
+{
+	std::shared_lock<std::shared_mutex> lock(accessMtx);
+	*rgb = 0;
+	*cutVoid = false;
+	if (rawSurface < 0) {
+		return false;
+	}
+	const int idx = findColumnImpl(cellOffset);
+	if (idx < 0) {
+		return false;
+	}
+	const uint32_t b = begin_[static_cast<size_t>(idx)];
+	const uint32_t e = end_[static_cast<size_t>(idx)];
+	int surface = rawSurface;
+	if (damHeight > 0) {
+		int display = -1;
+		for (uint32_t i = b; i < e; ++i) {
+			const VoxLayerRange& r = ranges_[i];
+			if ((r.flags & VOX_LAYER_TRANSPARENT) && r.z0 < damHeight &&
+			    (display < 0 || r.z0 < display)) {
+				display = r.z0;
+			}
+		}
+		if (display >= 0 && display < surface) {
+			surface = display;
+		}
+	}
+	const int h = viewSliceHeight >= 0 && viewSliceHeight < surface
+	                  ? viewSliceHeight
+	                  : surface;
+	if (h < 0 || h > 0xFFFF) {
+		return false;
+	}
+	const VoxLayerRange* hit = nullptr;
+	for (uint32_t i = b; i < e; ++i) {
+		const VoxLayerRange& r = ranges_[i];
+		if (h < r.z0) {
+			break;
+		}
+		if (h <= r.z1) {
+			hit = &r;
+			break;
+		}
+	}
+	if (!hit) {
+		return false;
+	}
+	if (!(hit->flags & VOX_LAYER_TRANSPARENT)) {
+		*rgb = (static_cast<uint32_t>(hit->r) << 16) |
+		       (static_cast<uint32_t>(hit->g) << 8) | hit->b;
+		return true;
+	}
+	for (uint32_t i = e; i-- > b;) {
+		const VoxLayerRange& r = ranges_[i];
+		if (r.z1 > h) {
+			continue;
+		}
+		if (!(r.flags & VOX_LAYER_TRANSPARENT)) {
+			*rgb = (static_cast<uint32_t>(r.r) << 16) |
+			       (static_cast<uint32_t>(r.g) << 8) | r.b;
+			return true;
+		}
+	}
+	*cutVoid = true;
+	return false;
+}
+
 int VoxColLayers::findColumnImpl(uint32_t cellOffset) const
 {
-	// Без лока — вызывать под захваченным accessMtx (после
-	// ensureBlockBegin в findColumn или самостоятельно). Дублирует
-	// findColumn, но без вложенных захватов: горячий путь normalize
-	// берёт лок ОДИН раз (C2).
-	if (!mightHaveColumn(cellOffset)) {
+	// Caller holds a shared or unique lock; writers keep blockBegin_ current.
+	const size_t blk = static_cast<size_t>(cellOffset) >> kBlockShift;
+	if (blk >= blockCount_.size() || blockCount_[blk] == 0) {
 		return -1;
 	}
-	ensureBlockBegin();
-	const size_t blk = static_cast<size_t>(cellOffset) >> kBlockShift;
 	int lo = static_cast<int>(blockBegin_[blk]);
 	int hi = static_cast<int>(blockBegin_[blk + 1]);
 	while (lo < hi) {
@@ -189,7 +244,7 @@ bool VoxColLayers::capInfo(int colIdx, int vxd, int* displayH,
                            std::uint32_t* topInherit,
                            std::uint32_t inheritFallback, bool* topFound) const
 {
-	std::lock_guard<std::recursive_mutex> lock(accessMtx);
+	std::shared_lock<std::shared_mutex> lock(accessMtx);
 	*displayH = -1;
 	*topRgb = 0;
 	*topFlags = 0;
@@ -257,7 +312,7 @@ bool VoxColLayers::capInfo(int colIdx, int vxd, int* displayH,
 int VoxColLayers::normalize(uint32_t cellOffset, int oldHeight, int newHeight,
                             std::uint32_t rgb, bool prune, bool* prunedOut)
 {
-	std::lock_guard<std::recursive_mutex> lock(accessMtx);
+	std::unique_lock<std::shared_mutex> lock(accessMtx);
 	if (prunedOut) {
 		*prunedOut = false;
 	}
@@ -386,19 +441,18 @@ int VoxColLayers::normalize(uint32_t cellOffset, int oldHeight, int newHeight,
 		}
 	}
 	if (modified) {
-		setColumn(cellOffset, cur, kept);
+		setColumnImpl(cellOffset, cur, kept);
 	}
 	return h;
 }
 
 int VoxColLayers::findColumn(uint32_t cellOffset) const
 {
-	std::lock_guard<std::recursive_mutex> lock(accessMtx);
-	if (!mightHaveColumn(cellOffset)) {
+	std::shared_lock<std::shared_mutex> lock(accessMtx);
+	const size_t blk = static_cast<size_t>(cellOffset) >> kBlockShift;
+	if (blk >= blockCount_.size() || blockCount_[blk] == 0) {
 		return -1;
 	}
-	ensureBlockBegin();
-	const size_t blk = static_cast<size_t>(cellOffset) >> kBlockShift;
 	int lo = static_cast<int>(blockBegin_[blk]);
 	int hi = static_cast<int>(blockBegin_[blk + 1]);
 	while (lo < hi) {
@@ -414,12 +468,8 @@ int VoxColLayers::findColumn(uint32_t cellOffset) const
 	return -1;
 }
 
-void VoxColLayers::ensureBlockBegin() const
+void VoxColLayers::rebuildBlockBegin()
 {
-	if (!blockBeginDirty_) {
-		return;
-	}
-	blockBeginDirty_ = false;
 	if (col_.empty()) {
 		blockBegin_.clear();
 		return;
@@ -440,7 +490,7 @@ void VoxColLayers::ensureBlockBegin() const
 
 const VoxLayerRange* VoxColLayers::columnRanges(int colIdx, int* count) const
 {
-	std::lock_guard<std::recursive_mutex> lock(accessMtx);
+	std::shared_lock<std::shared_mutex> lock(accessMtx);
 	if (colIdx < 0 || colIdx >= static_cast<int>(col_.size())) {
 		*count = 0;
 		return nullptr;
@@ -462,7 +512,13 @@ bool VoxColLayers::sameColor(const VoxLayerRange& a, uint8_t r, uint8_t g,
 void VoxColLayers::setColumn(uint32_t cellOffset, const VoxLayerRange* ranges,
                              int count)
 {
-	std::lock_guard<std::recursive_mutex> lock(accessMtx);
+	std::unique_lock<std::shared_mutex> lock(accessMtx);
+	setColumnImpl(cellOffset, ranges, count);
+}
+
+void VoxColLayers::setColumnImpl(uint32_t cellOffset,
+                                 const VoxLayerRange* ranges, int count)
+{
 	if (count < 0) {
 		count = 0;
 	}
@@ -475,7 +531,7 @@ void VoxColLayers::setColumn(uint32_t cellOffset, const VoxLayerRange* ranges,
 	// иначе оверлей полостей получает ложный сигнал и rebuild'ит rect
 	// впустую (drainPending не может отбросить такое обновление).
 	bool bumpVersion = false;
-	const int idx = findColumn(cellOffset);
+	const int idx = findColumnImpl(cellOffset);
 	if (idx >= 0) {
 		const uint32_t b = begin_[static_cast<size_t>(idx)];
 		const uint32_t e = end_[static_cast<size_t>(idx)];
@@ -588,16 +644,28 @@ void VoxColLayers::setColumn(uint32_t cellOffset, const VoxLayerRange* ranges,
 	growBlockIndex(cellOffset);
 	++blockCount_[static_cast<size_t>(cellOffset) >> kBlockShift];
 	++blockLive_[static_cast<size_t>(cellOffset) >> kBlockShift];
-	// Вставка сдвинула индексы колонок после pos — кэш первых колонок
-	// блоков протух.
-	blockBeginDirty_ = true;
+	const size_t block = static_cast<size_t>(cellOffset) >> kBlockShift;
+	if (blockBegin_.empty()) {
+		rebuildBlockBegin();
+	} else {
+		if (block >= blockBegin_.size() - 1) {
+			blockBegin_.resize(block + 2, static_cast<std::uint32_t>(pos));
+		}
+		for (size_t b = 0; b + 1 < blockBegin_.size(); ++b) {
+			if ((b > block && blockBegin_[b] >= pos) ||
+			    (b == block && blockBegin_[b] > pos)) {
+				++blockBegin_[b];
+			}
+		}
+		blockBegin_.back() = static_cast<std::uint32_t>(col_.size());
+	}
 	++version;
 	lastMutationOff = cellOffset;
 }
 
 void VoxColLayers::compact()
 {
-	std::lock_guard<std::recursive_mutex> lock(accessMtx);
+	std::unique_lock<std::shared_mutex> lock(accessMtx);
 	std::vector<uint32_t> ncol;
 	std::vector<uint32_t> nbegin;
 	std::vector<uint32_t> nend;
@@ -634,14 +702,14 @@ void VoxColLayers::compact()
 	colHasTransparent_.swap(nflags);
 	ranges_.swap(nranges);
 	tombstones_ = 0;
-	buildBlockIndex();
+	buildBlockIndexImpl();
 	++version;
 }
 
 void VoxColLayers::paint(uint32_t cellOffset, int z0, int z1,
                          uint8_t r, uint8_t g, uint8_t b, bool transparent)
 {
-	std::lock_guard<std::recursive_mutex> lock(accessMtx);
+	std::unique_lock<std::shared_mutex> lock(accessMtx);
 	if (z1 < z0 || z0 < 0) {
 		return;
 	}
@@ -653,12 +721,14 @@ void VoxColLayers::paint(uint32_t cellOffset, int z0, int z1,
 	const uint8_t flags = transparent ? VOX_LAYER_TRANSPARENT : 0;
 
 	// Вычитаем [nz0..nz1] из существующих диапазонов колонки.
-	const int idx = findColumn(cellOffset);
+	const int idx = findColumnImpl(cellOffset);
 	std::vector<VoxLayerRange> kept;
 	bool coveredVoid = false;
 	if (idx >= 0) {
-		int count = 0;
-		const VoxLayerRange* old = columnRanges(idx, &count);
+		const uint32_t b = begin_[static_cast<size_t>(idx)];
+		const uint32_t e = end_[static_cast<size_t>(idx)];
+		const int count = static_cast<int>(e - b);
+		const VoxLayerRange* old = ranges_.data() + b;
 		for (int i = 0; i < count; ++i) {
 			const VoxLayerRange& o = old[i];
 			if (o.z1 < nz0 || o.z0 > nz1) {
@@ -717,25 +787,27 @@ void VoxColLayers::paint(uint32_t cellOffset, int z0, int z1,
 		}
 	}
 
-	setColumn(cellOffset, merged.data(), static_cast<int>(merged.size()));
+	setColumnImpl(cellOffset, merged.data(), static_cast<int>(merged.size()));
 }
 
 void VoxColLayers::solidify(uint32_t cellOffset, int z0, int z1,
                             uint8_t r, uint8_t g, uint8_t b)
 {
-	std::lock_guard<std::recursive_mutex> lock(accessMtx);
+	std::unique_lock<std::shared_mutex> lock(accessMtx);
 	if (z1 < z0 || z0 < 0) {
 		return;
 	}
 	if (z1 > 0xFFFF) {
 		z1 = 0xFFFF;
 	}
-	const int idx = findColumn(cellOffset);
+	const int idx = findColumnImpl(cellOffset);
 	if (idx < 0) {
 		return;
 	}
-	int count = 0;
-	const VoxLayerRange* old = columnRanges(idx, &count);
+	const uint32_t rangeBegin = begin_[static_cast<size_t>(idx)];
+	const uint32_t rangeEnd = end_[static_cast<size_t>(idx)];
+	const int count = static_cast<int>(rangeEnd - rangeBegin);
+	const VoxLayerRange* old = ranges_.data() + rangeBegin;
 	// C1: нет пересечений с прозрачными — setColumn не нужен (иначе
 	// бампается version и оверлей rebuild'ит rect впустую).
 	bool any = false;
@@ -775,18 +847,20 @@ void VoxColLayers::solidify(uint32_t cellOffset, int z0, int z1,
 			next.push_back(right);
 		}
 	}
-	setColumn(cellOffset, next.data(), static_cast<int>(next.size()));
+	setColumnImpl(cellOffset, next.data(), static_cast<int>(next.size()));
 }
 
 void VoxColLayers::pruneAbove(uint32_t cellOffset, int height)
 {
-	std::lock_guard<std::recursive_mutex> lock(accessMtx);
-	const int idx = findColumn(cellOffset);
+	std::unique_lock<std::shared_mutex> lock(accessMtx);
+	const int idx = findColumnImpl(cellOffset);
 	if (idx < 0) {
 		return;
 	}
-	int count = 0;
-	const VoxLayerRange* r = columnRanges(idx, &count);
+	const uint32_t b = begin_[static_cast<size_t>(idx)];
+	const uint32_t e = end_[static_cast<size_t>(idx)];
+	const VoxLayerRange* r = ranges_.data() + b;
+	const int count = static_cast<int>(e - b);
 	// Диапазоны отсортированы по z0: всё от первого с z0 >= height — над
 	// поверхностью.
 	int kept = 0;
@@ -796,12 +870,12 @@ void VoxColLayers::pruneAbove(uint32_t cellOffset, int height)
 	if (kept == count) {
 		return;
 	}
-	setColumn(cellOffset, r, kept);
+	setColumnImpl(cellOffset, r, kept);
 }
 
 void VoxColLayers::clear()
 {
-	std::lock_guard<std::recursive_mutex> lock(accessMtx);
+	std::unique_lock<std::shared_mutex> lock(accessMtx);
 	col_.clear();
 	begin_.clear();
 	end_.clear();
@@ -810,18 +884,21 @@ void VoxColLayers::clear()
 	blockCount_.clear();
 	blockLive_.clear();
 	blockBegin_.clear();
-	blockBeginDirty_ = false;
 	liveRanges_ = 0;
 	tombstones_ = 0;
 }
 
 void VoxColLayers::buildBlockIndex()
 {
-	std::lock_guard<std::recursive_mutex> lock(accessMtx);
+	std::unique_lock<std::shared_mutex> lock(accessMtx);
+	buildBlockIndexImpl();
+}
+
+void VoxColLayers::buildBlockIndexImpl()
+{
 	blockCount_.clear();
 	blockLive_.clear();
 	blockBegin_.clear();
-	blockBeginDirty_ = false;
 	if (col_.empty()) {
 		return;
 	}
@@ -862,26 +939,29 @@ void VoxColLayers::growBlockIndex(uint32_t cellOffset)
 std::pair<int, int> VoxColLayers::columnIndexRange(uint32_t offBeg,
                                                    uint32_t offEnd) const
 {
-	std::lock_guard<std::recursive_mutex> lock(accessMtx);
-	const auto lo = std::lower_bound(col_.begin(), col_.end(), offBeg);
-	const auto hi = std::upper_bound(col_.begin(), col_.end(), offEnd);
+	std::shared_lock<std::shared_mutex> lock(accessMtx);
+	if (col_.empty() || offEnd < offBeg) {
+		return {0, 0};
+	}
+	const size_t blocks = blockBegin_.size() - 1;
+	const size_t first = static_cast<size_t>(offBeg) >> kBlockShift;
+	if (first >= blocks) {
+		const int end = static_cast<int>(col_.size());
+		return {end, end};
+	}
+	const size_t last = std::min(
+	    static_cast<size_t>(offEnd) >> kBlockShift, blocks - 1);
+	const auto begin = col_.begin() + blockBegin_[first];
+	const auto end = col_.begin() + blockBegin_[last + 1];
+	const auto lo = std::lower_bound(begin, end, offBeg);
+	const auto hi = std::upper_bound(lo, end, offEnd);
 	return {static_cast<int>(lo - col_.begin()),
 	        static_cast<int>(hi - col_.begin())};
 }
 
 bool VoxColLayers::columnHasTransparent(uint32_t cellOffset) const
 {
-	std::lock_guard<std::recursive_mutex> lock(accessMtx);
-	const int idx = findColumn(cellOffset);
-	if (idx < 0) {
-		return false;
-	}
-	int count = 0;
-	const VoxLayerRange* ranges = columnRanges(idx, &count);
-	for (int i = 0; i < count; ++i) {
-		if (ranges[i].flags & VOX_LAYER_TRANSPARENT) {
-			return true;
-		}
-	}
-	return false;
+	std::shared_lock<std::shared_mutex> lock(accessMtx);
+	const int idx = findColumnImpl(cellOffset);
+	return idx >= 0 && colHasTransparent_[static_cast<size_t>(idx)] != 0;
 }

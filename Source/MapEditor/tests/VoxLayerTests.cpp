@@ -35,6 +35,7 @@
 #include "VoxCavity.h"
 #include "VoxLayers.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -937,3 +938,80 @@ bool runVoxNormalizeManyRangesTests()
 
 MAP_EDITOR_REGISTER_TEST("VoxLayers normalize many-range solidify", 140,
                          runVoxNormalizeManyRangesTests);
+
+namespace {
+
+bool runVoxSurfaceQueryTests()
+{
+    const uint32_t off = 4242;
+    const uint32_t red = 0x00AA2244u;
+    const uint32_t green = 0x0022CC66u;
+    VoxColLayers layers;
+    layers.paint(off, 10, 20, 0xAA, 0x22, 0x44, false);
+    layers.paint(off, 30, 40, 0, 0, 0, true);
+
+    uint32_t rgb = 0;
+    bool cutVoid = true;
+    TEST_REQUIRE(layers.querySurfaceColor(off, 70, 70, -1, &rgb, &cutVoid) &&
+                     rgb == red && !cutVoid,
+                 "cavity-floor query must fall through to the solid layer.");
+    TEST_REQUIRE(layers.querySurfaceColor(off, 70, 70, 15, &rgb, &cutVoid) &&
+                     rgb == red && !cutVoid,
+                 "slice query must preserve the solid layer color.");
+
+    layers.paint(off, 25, 25, 0x22, 0xCC, 0x66, false);
+    TEST_REQUIRE(layers.querySurfaceColor(off, 25, 25, -1, &rgb, &cutVoid) &&
+                     rgb == green && !cutVoid,
+                 "a solid surface layer must resolve directly.");
+
+    VoxColLayers voidOnly;
+    voidOnly.paint(off, 30, 40, 0, 0, 0, true);
+    TEST_REQUIRE(!voidOnly.querySurfaceColor(off, 70, 70, -1, &rgb, &cutVoid) &&
+                     cutVoid,
+                 "an unnamed cavity floor must suppress the top decal.");
+    TEST_REQUIRE(!voidOnly.querySurfaceColor(off + 1, 70, 70, -1, &rgb,
+                                             &cutVoid) &&
+                     rgb == 0 && !cutVoid,
+                 "an empty column must use the ordinary surface fallback.");
+    std::printf("[PASS] unified surface-color query preserves cavity semantics.\n");
+    return true;
+}
+
+} // namespace
+
+MAP_EDITOR_REGISTER_TEST("VoxLayers unified surface-color query", 141,
+                         runVoxSurfaceQueryTests);
+
+namespace {
+
+bool runVoxBlockBeginInsertTests()
+{
+    VoxColLayers layers;
+    const std::uint32_t offsets[] = {
+        5000, 10, 3000, 1, 2048, 70, 4096, 1024, 2, 65535, 5001, 0, 500,
+    };
+    for (const std::uint32_t off : offsets) {
+        layers.paint(off, 1, 2, 10, 20, 30, false);
+        TEST_REQUIRE(layers.findColumn(off) >= 0,
+                     "inserted column %u was not found through blockBegin_.", off);
+        for (size_t b = 0; b + 1 < layers.blockBegin_.size(); ++b) {
+            const std::uint32_t expectedOff =
+                static_cast<std::uint32_t>(b) << VoxColLayers::kBlockShift;
+            const auto expected = static_cast<std::uint32_t>(
+                std::lower_bound(layers.col_.begin(), layers.col_.end(),
+                                 expectedOff) - layers.col_.begin());
+            TEST_REQUIRE(layers.blockBegin_[b] == expected,
+                         "blockBegin_[%zu]=%u, expected %u after inserting %u.",
+                         b, layers.blockBegin_[b], expected, off);
+        }
+        TEST_REQUIRE(layers.blockBegin_.back() == layers.col_.size(),
+                     "blockBegin_ sentinel is not the current column count.");
+    }
+    std::printf("[PASS] blockBegin_ stays correct after incremental inserts.\n");
+    return true;
+}
+
+} // namespace
+
+MAP_EDITOR_REGISTER_TEST("VoxLayers incremental blockBegin_ insertion", 142,
+                         runVoxBlockBeginInsertTests);

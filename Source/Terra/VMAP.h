@@ -692,28 +692,11 @@ struct vrtMap {
 		//верхний сплошной воксель ниже него (срез проваливается сквозь
 		//пустоту), иначе — обычный цвет поверхности.
 		bool surfaceIsCutVoid = false;
-		if(!voxLayers.empty()){
-			// Цвет считаем для той поверхности, которую РЕНДЕРИТ heightfield:
-			// у колонки с прозрачными вокселями это display height (основание
-			// под полостью), а не полная высота дамбы — иначе пол под островом
-			// красился бы цветом вершины колонки, а не слоем под полостью.
-			const int rawSurface=SGetAlt(off)>>VX_FRACTION;
-			const int displayH=cavityDisplayHeight(off);
-			const int surface=(displayH>=0&&displayH<rawSurface)?displayH:rawSurface;
-			const int h=(viewSliceHeight>=0&&viewSliceHeight<surface)?viewSliceHeight:surface;
-			uint32_t rgb;
-			uint8_t flags=0;
-			if(voxLayers.lookup(static_cast<uint32_t>(off),h,&rgb,&flags) &&
-			   !(flags&VOX_LAYER_TRANSPARENT))
-				return trueColor16(0xFF000000u|rgb, RnrBuf[off]&0x7F);
-			if((flags&VOX_LAYER_TRANSPARENT) &&
-			   voxLayers.lookupSolidBelow(static_cast<uint32_t>(off),h,&rgb))
-				return trueColor16(0xFF000000u|rgb, RnrBuf[off]&0x7F);
-			// Поверхность — срез полости, а под ней БЕЗЫМЯННАЯ порода:
-			// декаль топа сюда не протекает (краска «наверх» по верхнему
-			// параллелепипеду не должна перекрашивать и пол, см. репорт).
-			surfaceIsCutVoid = (flags&VOX_LAYER_TRANSPARENT) != 0;
-		}
+		uint32_t rgb = 0;
+		if(voxLayers.querySurfaceColor(
+		       static_cast<uint32_t>(off), SGetAlt(off)>>VX_FRACTION,
+		       VxDBuf[off], viewSliceHeight, &rgb, &surfaceIsCutVoid))
+			return trueColor16(0xFF000000u|rgb, RnrBuf[off]&0x7F);
 		//True-color: прямой RGB с освещением вместо палитры SurBuf.
 		if(SurColBuf && !surfaceIsCutVoid){
 			const unsigned int c=SurColBuf[off];
@@ -755,28 +738,11 @@ struct vrtMap {
 		//верхний сплошной воксель ниже него (срез проваливается сквозь
 		//пустоту), иначе — обычный цвет поверхности.
 		bool surfaceIsCutVoid = false;
-		if(!voxLayers.empty()){
-			// Цвет считаем для той поверхности, которую РЕНДЕРИТ heightfield:
-			// у колонки с прозрачными вокселями это display height (основание
-			// под полостью), а не полная высота дамбы — иначе пол под островом
-			// красился бы цветом вершины колонки, а не слоем под полостью.
-			const int rawSurface=SGetAlt(off)>>VX_FRACTION;
-			const int displayH=cavityDisplayHeight(off);
-			const int surface=(displayH>=0&&displayH<rawSurface)?displayH:rawSurface;
-			const int h=(viewSliceHeight>=0&&viewSliceHeight<surface)?viewSliceHeight:surface;
-			uint32_t rgb;
-			uint8_t flags=0;
-			if(voxLayers.lookup(static_cast<uint32_t>(off),h,&rgb,&flags) &&
-			   !(flags&VOX_LAYER_TRANSPARENT))
-				return trueColor32(0xFF000000u|rgb, RnrBuf[off]&0x7F);
-			if((flags&VOX_LAYER_TRANSPARENT) &&
-			   voxLayers.lookupSolidBelow(static_cast<uint32_t>(off),h,&rgb))
-				return trueColor32(0xFF000000u|rgb, RnrBuf[off]&0x7F);
-			// Поверхность — срез полости, а под ней БЕЗЫМЯННАЯ порода:
-			// декаль топа сюда не протекает (краска «наверх» по верхнему
-			// параллелепипеду не должна перекрашивать и пол, см. репорт).
-			surfaceIsCutVoid = (flags&VOX_LAYER_TRANSPARENT) != 0;
-		}
+		uint32_t rgb = 0;
+		if(voxLayers.querySurfaceColor(
+		       static_cast<uint32_t>(off), SGetAlt(off)>>VX_FRACTION,
+		       VxDBuf[off], viewSliceHeight, &rgb, &surfaceIsCutVoid))
+			return trueColor32(0xFF000000u|rgb, RnrBuf[off]&0x7F);
 		//True-color: прямой RGB с освещением вместо палитры SurBuf.
 		if(SurColBuf && !surfaceIsCutVoid){
 			const unsigned int c=SurColBuf[off];

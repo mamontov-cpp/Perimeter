@@ -20,6 +20,7 @@
 
 #include <cstdint>
 #include <mutex>
+#include <shared_mutex>
 #include <utility>
 #include <vector>
 
@@ -64,8 +65,7 @@ public:
 	VoxColLayers& operator=(const VoxColLayers& o)
 	{
 		if (this != &o) {
-			std::lock_guard<std::recursive_mutex> srcLock(o.accessMtx);
-			std::lock_guard<std::recursive_mutex> dstLock(accessMtx);
+			std::scoped_lock lock(accessMtx, o.accessMtx);
 			col_ = o.col_;
 			begin_ = o.begin_;
 			end_ = o.end_;
@@ -74,7 +74,6 @@ public:
 			blockCount_ = o.blockCount_;
 			blockLive_ = o.blockLive_;
 			blockBegin_ = o.blockBegin_;
-			blockBeginDirty_ = o.blockBeginDirty_;
 			liveRanges_ = o.liveRanges_;
 			tombstones_ = o.tombstones_;
 			version = o.version;
@@ -103,6 +102,13 @@ public:
 	// Верхний непрозрачный воксель на высоте ≤ height: проходит сквозь
 	// прозрачные диапазоны вниз. true + цвет, если такой есть.
 	bool lookupSolidBelow(uint32_t cellOffset, int height, uint32_t* rgb) const;
+
+	// Resolve the heightfield's visible layer color under one lock. Returns
+	// true when rgb was found; cutVoid suppresses a top decal on an unnamed
+	// cavity floor. rawSurface/damHeight/viewSliceHeight are whole voxels.
+	bool querySurfaceColor(uint32_t cellOffset, int rawSurface, int damHeight,
+	                       int viewSliceHeight, uint32_t* rgb,
+	                       bool* cutVoid) const;
 
 	// Для кепок полостей (B5): под ОДНИМ локом отдаёт display height и
 	// цвет/флаги верхнего вокселя (vxd-1) колонки по её ИНДЕКСУ — RowCaps
@@ -167,11 +173,14 @@ public:
 	// Сырые данные колонки (для undo/diff/сериализации). colIdx — индекс
 	// в col_/begin_ (-1 = колонки нет).
 	int findColumn(uint32_t cellOffset) const;
+	// Same search without locking; caller must hold accessMtx and keep the
+	// returned index valid for the duration of that lock.
+	int findColumnImpl(uint32_t cellOffset) const;
 	const VoxLayerRange* columnRanges(int colIdx, int* count) const;
 	int columnCount() const { return static_cast<int>(col_.size()); }
 	uint32_t columnOffset(int colIdx) const
 	{
-		std::lock_guard<std::recursive_mutex> lock(accessMtx);
+		std::shared_lock<std::shared_mutex> lock(accessMtx);
 		return col_[static_cast<size_t>(colIdx)];
 	}
 
@@ -196,10 +205,9 @@ public:
 	// колонки с offset >= b<<kBlockShift (+sentinel на конце). findColumn
 	// ищет ВНУТРИ блока (единицы записей, горячий кэш) вместо бинарника по
 	// всему col_ (192k записей, 768 KB, промахи кэша на каждом шаге).
-	// Инвалидируется вставкой колонки (сдвиг индексов) и compact();
-	// пересобирается лениво в findColumn под локом.
-	mutable std::vector<uint32_t> blockBegin_;
-	mutable bool blockBeginDirty_ = false;
+	// Insertions and compact() rebuild blockBegin_ on the writer, so readers
+	// never mutate index state under a shared lock.
+	std::vector<uint32_t> blockBegin_;
 	// Число живых диапазонов (сумма end_[i]-begin_[i]) и удалённых колонок —
 	// триггеры ленивой упаковки в compact().
 	uint64_t liveRanges_ = 0;
@@ -212,18 +220,10 @@ public:
 	// слои — см. voxperf.log).
 	uint32_t lastMutationOff = 0;
 
-	// Потоковая защита структуры. Логический поток игры мутирует колонки
-	// во время терраформинга (normalizeTransparentColumn -> solidify ->
-	// setColumn: erase/insert с реаллокацией векторов), графический поток
-	// в это же время ходит по тем же векторам (getColor32,
-	// TerraInterface::GetZ/GetZf, мешер и хэш оверлея полостей) — без
-	// блокировки перестройка с логики даёт subscript-out-of-range на
-	// рендере. recursive: методы вызывают друг друга (isTransparent ->
-	// lookup, paint/solidify -> findColumn/columnRanges/setColumn), а
-	// внешние проходы с сырым columnRanges держат лок на всё тело
-	// (voxCavityAppendColumn, columnInputHash). Проходы, гонящиеся только
-	// с самим собой (редактор, MT выключен), платят один неконтендед-лок.
-	mutable std::recursive_mutex accessMtx;
+	// Readers (render, mesher, color lookup) share accessMtx; terraforming
+	// writers take it exclusively. Internal *Impl helpers and external raw
+	// walks assume an already-held lock, so shared locks are never nested.
+	mutable std::shared_mutex accessMtx;
 
 	// Заменить данные колонки целиком (undo/diff). Пересоздаёт запись;
 	// ranges == nullptr или count == 0 — удалить колонку (томбстоун).
@@ -237,7 +237,7 @@ public:
 
 	bool empty() const
 	{
-		std::lock_guard<std::recursive_mutex> lock(accessMtx);
+		std::shared_lock<std::shared_mutex> lock(accessMtx);
 		return liveRanges_ == 0;
 	}
 	void clear();
@@ -258,7 +258,7 @@ public:
 	static const uint32_t kBlockShift = 10; // 1024 клетки на блок
 	bool mightHaveColumn(uint32_t cellOffset) const
 	{
-		std::lock_guard<std::recursive_mutex> lock(accessMtx);
+		std::shared_lock<std::shared_mutex> lock(accessMtx);
 		const size_t b = static_cast<size_t>(cellOffset) >> kBlockShift;
 		return b < blockCount_.size() && blockCount_[b] != 0;
 	}
@@ -268,7 +268,7 @@ public:
 	// живые колонки: срезанная под ноль колонка перестаёт звать normalize.
 	bool hasLiveColumn(uint32_t cellOffset) const
 	{
-		std::lock_guard<std::recursive_mutex> lock(accessMtx);
+		std::shared_lock<std::shared_mutex> lock(accessMtx);
 		const size_t b = static_cast<size_t>(cellOffset) >> kBlockShift;
 		return b < blockLive_.size() && blockLive_[b] != 0;
 	}
@@ -280,10 +280,11 @@ private:
 	                      uint8_t b, bool transparent);
 	// Докинуть размер индекса блоков под offset (вставка колонки).
 	void growBlockIndex(uint32_t cellOffset);
-	// Ленивая пересборка blockBegin_ (вызывать под локом).
-	void ensureBlockBegin() const;
-	// Поиск колонки БЕЗ захвата лока (вызывать под захваченным accessMtx).
-	int findColumnImpl(uint32_t cellOffset) const;
+	// Rebuild blockBegin_ after insertion (unique lock already held).
+	void rebuildBlockBegin();
+	void buildBlockIndexImpl();
+	void setColumnImpl(uint32_t cellOffset, const VoxLayerRange* ranges,
+	                   int count);
 };
 
 #endif // VOX_LAYERS_H

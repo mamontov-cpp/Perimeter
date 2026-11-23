@@ -29,6 +29,8 @@
 #include "VoxCavityOverlay.h"
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <vector>
@@ -39,6 +41,53 @@ struct Quad {
     float x0, y0, x1, y1, z0, z1;
     int plane; // 0 = horizontal (z const), 1 = x const, 2 = y const
 };
+
+bool isCapQuad(const VoxCavityVertex* q)
+{
+    const float w = static_cast<float>(vMap.H_SIZE);
+    const float h = static_cast<float>(vMap.V_SIZE);
+    for (int k : {0, 1, 2, 5}) {
+        if (q[k].diffuse != 0xFFFFFFFFu || q[k].u != q[k].x / w ||
+            q[k].v != q[k].y / h) {
+            return false;
+        }
+    }
+    return true;
+}
+
+using CapCellCoverage =
+    std::map<std::pair<int, int>, std::array<int, 4>>;
+
+CapCellCoverage capCellCoverage(const std::vector<VoxCavityVertex>& mesh,
+                                int* duplicates = nullptr)
+{
+    CapCellCoverage out;
+    if (duplicates) *duplicates = 0;
+    auto scaled = [](float z) { return static_cast<int>(std::lround(z * 256.f)); };
+    auto lerp = [](float a, float b, float t) { return a + (b - a) * t; };
+    for (size_t i = 0; i + 6 <= mesh.size(); i += 6) {
+        const VoxCavityVertex* q = mesh.data() + i;
+        if (!isCapQuad(q)) continue;
+        const float left = q[0].x, right = q[1].x;
+        if (right <= left) continue;
+        const int y = static_cast<int>(std::lround(q[0].y));
+        const int first = static_cast<int>(std::ceil(left - 1e-4f));
+        const int last = static_cast<int>(std::floor(right + 1e-4f));
+        for (int x = first; x < last; ++x) {
+            const float t0 = (x - left) / (right - left);
+            const float t1 = (x + 1 - left) / (right - left);
+            const std::array<int, 4> corners = {
+                scaled(lerp(q[0].z, q[1].z, t0)),
+                scaled(lerp(q[0].z, q[1].z, t1)),
+                scaled(lerp(q[5].z, q[2].z, t1)),
+                scaled(lerp(q[5].z, q[2].z, t0))};
+            if (!out.emplace(std::make_pair(x, y), corners).second && duplicates) {
+                ++*duplicates;
+            }
+        }
+    }
+    return out;
+}
 
 void composeRect(int x0, int y0, int x1, int y1,
                  std::vector<VoxCavityVertex>& out)
@@ -250,32 +299,24 @@ bool runZfightTests()
     // have exactly one cap quad at z=500 — a fresh-load hole anywhere on
     // the plateau shows the striped heightfield floor beneath.
     {
-        std::map<std::pair<int,int>, int> cover;
-        for (size_t i = 0; i + 6 <= mesh.size(); i += 6) {
-            float z0=mesh[i].z, z1=mesh[i].z, x0=mesh[i].x, x1=mesh[i].x;
-            float y0=mesh[i].y, y1=mesh[i].y;
-            for (int k=1;k<6;++k){
-                z0=std::min(z0,mesh[i+k].z); z1=std::max(z1,mesh[i+k].z);
-                x0=std::min(x0,mesh[i+k].x); x1=std::max(x1,mesh[i+k].x);
-                y0=std::min(y0,mesh[i+k].y); y1=std::max(y1,mesh[i+k].y);
-            }
-            if (z1-z0>0.01f || z0<499.5f || z0>500.5f) continue;
-            for (int x=(int)x0; x<(int)x1; ++x)
-                for (int y=(int)y0; y<(int)y1; ++y)
-                    cover[{x,y}]++;
-        }
-        int missing=0, multi=0, plateau=0;
+        int multi = 0;
+        const CapCellCoverage cover = capCellCoverage(mesh, &multi);
+        int missing=0, plateau=0;
         int missPrint = 0;
         for (int y=2278;y<2518;++y)
             for (int x=2050;x<2290;++x) {
                 const int off=y*vMap.H_SIZE+x;
                 if (vMap.VxDBuf[off]!=500) continue;
                 ++plateau;
-                const int c=cover[{x,y}];
-                if (c==0){++missing; if(missPrint<8){std::printf("[ZF] hole at %d,%d (disp=%d); ",x,y,vMap.cavityDisplayHeight(off));++missPrint;}}
-                else if (c>1) ++multi;
+                if (cover.find({x,y}) == cover.end()) {
+                    ++missing;
+                    if(missPrint<8){std::printf("[ZF] hole at %d,%d (disp=%d); ",x,y,vMap.cavityDisplayHeight(off));++missPrint;}
+                }
             }
         std::printf("[ZF] FULL cap coverage: plateau=%d missing=%d multi=%d; ", plateau, missing, multi);
+        TEST_REQUIRE(missing == 0 && multi == 0,
+                     "interpolated cap coverage has %d missing and %d duplicate cells",
+                     missing, multi);
         // Stripe regression: relief shading of an EDGE cell used to paint
         // the whole merged cap row (run-start light). Signature: rows of
         // the flat plateau whose cells are predominantly dark. Legitimate
@@ -438,9 +479,13 @@ bool runRemeshReproTests()
 
     overlay.debugRebuildRect(2177 - 21, 2405 - 21, 2177 + 21, 2405 + 21);
     const auto incr = capColors();
+    std::vector<VoxCavityVertex> incrMesh;
+    overlay.debugDumpMesh(incrMesh);
 
     overlay.rebuildAll();
     const auto full = capColors();
+    std::vector<VoxCavityVertex> fullMesh;
+    overlay.debugDumpMesh(fullMesh);
 
     size_t changedVsBase = 0, changedVsFull = 0, n = 0;
     for (const auto& kv : full) {
@@ -457,6 +502,35 @@ bool runRemeshReproTests()
     TEST_REQUIRE(changedVsBase == 0 && changedVsFull == 0,
                  "incremental remesh changed cap colors: vs base %zu, vs full %zu",
                  changedVsBase, changedVsFull);
+
+    int incrDuplicates = 0, fullDuplicates = 0;
+    const CapCellCoverage incrCoverage =
+        capCellCoverage(incrMesh, &incrDuplicates);
+    const CapCellCoverage fullCoverage =
+        capCellCoverage(fullMesh, &fullDuplicates);
+    TEST_REQUIRE(incrDuplicates == 0 && fullDuplicates == 0,
+                 "incremental/full cap meshes contain duplicate cells");
+    if (incrCoverage != fullCoverage) {
+        std::printf("[REM] cap signature sizes incr=%zu full=%zu; ",
+                    incrCoverage.size(), fullCoverage.size());
+        int shown = 0;
+        for (const auto& kv : fullCoverage) {
+            const auto it = incrCoverage.find(kv.first);
+            if (it != incrCoverage.end() && it->second == kv.second) continue;
+            std::printf("cell(%d,%d) full=[%d %d %d %d] ", kv.first.first,
+                        kv.first.second, kv.second[0], kv.second[1],
+                        kv.second[2], kv.second[3]);
+            if (it == incrCoverage.end()) {
+                std::printf("incr=missing; ");
+            } else {
+                std::printf("incr=[%d %d %d %d]; ", it->second[0],
+                            it->second[1], it->second[2], it->second[3]);
+            }
+            if (++shown >= 6) break;
+        }
+    }
+    TEST_REQUIRE(incrCoverage == fullCoverage,
+                 "incremental cap splicing changed cell coverage or corner heights");
     session.unloadWorld();
     return true;
 }
@@ -701,15 +775,17 @@ bool runWallSideRegressionTests()
     std::printf("[WALL] verts before=%zu incr=%zu full=%zu; ",
                 before.size(), incr.size(), full.size());
     // Coverage comparison: the incremental path may SPLIT a merged wall
-    // run at the rect band boundary (two adjacent quads instead of one —
-    // same plane, same color, shared edge, identical rendering), so
-    // compare unioned per-plane coverage instead of raw quad streams.
+    // run at the rect band boundary (two adjacent quads instead of one),
+    // so compare unioned per-plane geometry instead of raw quad streams.
+    // Vertex colors are checked independently below: a gradient cannot be
+    // represented by one diffuse value in this geometric coverage key.
     auto coverage = [](const std::vector<VoxCavityVertex>& m) {
-        // key: plane axis+coord, z range, color -> union of along-intervals
-        std::map<std::tuple<int, int, int, int, std::uint32_t>,
+        // key: plane axis+coord, z range -> union of along-intervals
+        std::map<std::tuple<int, int, int, int>,
                  std::vector<std::pair<int, int>>>
             cov;
         for (size_t i = 0; i + 6 <= m.size(); i += 6) {
+            if (isCapQuad(m.data() + i)) continue;
             float x0 = m[i].x, x1 = m[i].x, y0 = m[i].y, y1 = m[i].y;
             float z0 = m[i].z, z1 = m[i].z;
             for (int k = 1; k < 6; ++k) {
@@ -732,7 +808,7 @@ bool runWallSideRegressionTests()
             auto& v = cov[std::make_tuple(
                 axis, static_cast<int>(coord * 8.f + 0.5f),
                 static_cast<int>(z0 * 2.f + 0.5f),
-                static_cast<int>(z1 * 2.f + 0.5f), m[i].diffuse)];
+                static_cast<int>(z1 * 2.f + 0.5f))];
             v.push_back({static_cast<int>(lo * 8.f + 0.5f),
                          static_cast<int>(hi * 8.f + 0.5f)});
         }
@@ -759,11 +835,9 @@ bool runWallSideRegressionTests()
             const auto it = covIncr.find(kv.first);
             if (it == covIncr.end() || it->second != kv.second) {
                 if (shown++ < 4) {
-                    std::printf("[WALL] coverage diff key(a%d c%d z%d-%d "
-                                "%X): full=[",
+                    std::printf("[WALL] coverage diff key(a%d c%d z%d-%d): full=[",
                                 std::get<0>(kv.first), std::get<1>(kv.first),
-                                std::get<2>(kv.first), std::get<3>(kv.first),
-                                std::get<4>(kv.first));
+                                std::get<2>(kv.first), std::get<3>(kv.first));
                     for (auto& iv : kv.second)
                         std::printf("%d-%d ", iv.first, iv.second);
                     std::printf("] incr=[");
@@ -776,9 +850,79 @@ bool runWallSideRegressionTests()
             }
         }
     }
+    if (covIncr != covFull) {
+        auto dumpWallQuads = [](const char* tag,
+                                const std::vector<VoxCavityVertex>& mesh) {
+            std::printf("[WALLQ] %s: ", tag);
+            for (size_t i = 0; i + 6 <= mesh.size(); i += 6) {
+                const VoxCavityVertex& a = mesh[i];
+                const VoxCavityVertex& b = mesh[i + 1];
+                const VoxCavityVertex& c = mesh[i + 2];
+                const VoxCavityVertex& d = mesh[i + 5];
+                if (std::fabs(a.x - 2291.3f) > 0.01f ||
+                    std::fabs(b.x - a.x) > 0.01f || a.y < 2407.f ||
+                    a.y > 2415.f || b.y < 2407.f || b.y > 2416.f ||
+                    a.z < 390.f) {
+                    continue;
+                }
+                std::printf("(%.2f,%.2f,%.1f)->(%.2f,%.2f,%.1f) top "
+                            "(%.2f,%.2f,%.1f)/(%.2f,%.2f,%.1f); ",
+                            a.x, a.y, a.z, b.x, b.y, b.z,
+                            d.x, d.y, d.z, c.x, c.y, c.z);
+            }
+        };
+        dumpWallQuads("incremental", incr);
+        dumpWallQuads("full", full);
+    }
     TEST_REQUIRE(covIncr == covFull,
                  "incremental rebuild after a level stamp lost wall coverage "
                  "(transparent side holes)");
+    TEST_REQUIRE(capCellCoverage(incr) == capCellCoverage(full),
+                 "incremental rebuild changed interpolated cap coverage");
+    auto cornerColors = [](const std::vector<VoxCavityVertex>& mesh) {
+        std::map<std::tuple<int, int, int>, std::uint32_t> colors;
+        for (size_t i = 0; i + 6 <= mesh.size(); i += 6) {
+            float x0 = mesh[i].x, x1 = mesh[i].x;
+            float y0 = mesh[i].y, y1 = mesh[i].y;
+            float z0 = mesh[i].z, z1 = mesh[i].z;
+            for (int k = 1; k < 6; ++k) {
+                x0 = std::min(x0, mesh[i + k].x);
+                x1 = std::max(x1, mesh[i + k].x);
+                y0 = std::min(y0, mesh[i + k].y);
+                y1 = std::max(y1, mesh[i + k].y);
+                z0 = std::min(z0, mesh[i + k].z);
+                z1 = std::max(z1, mesh[i + k].z);
+            }
+            if (z1 - z0 < 0.01f ||
+                (x1 - x0 >= 0.01f && y1 - y0 >= 0.01f)) {
+                continue;
+            }
+            for (int k : {0, 1, 2, 5}) {
+                const VoxCavityVertex& v = mesh[i + k];
+                const auto key = std::make_tuple(
+                    static_cast<int>(v.x * 8.f + 0.5f),
+                    static_cast<int>(v.y * 8.f + 0.5f),
+                    static_cast<int>(v.z * 8.f + 0.5f));
+                const auto inserted = colors.emplace(key, v.diffuse);
+                if (!inserted.second && inserted.first->second != v.diffuse) {
+                    inserted.first->second = 0;
+                }
+            }
+        }
+        return colors;
+    };
+    const auto cornersIncr = cornerColors(incr);
+    const auto cornersFull = cornerColors(full);
+    size_t cornerMismatches = 0;
+    for (const auto& kv : cornersFull) {
+        const auto it = cornersIncr.find(kv.first);
+        if (it == cornersIncr.end() || it->second != kv.second) {
+            ++cornerMismatches;
+        }
+    }
+    TEST_REQUIRE(cornerMismatches == 0,
+                 "incremental wall clipping left %zu different smoothing "
+                 "colors than a full rebuild", cornerMismatches);
     TEST_REQUIRE(incr != before, "the level stamp changed nothing?");
     session.unloadWorld();
     return true;
@@ -793,11 +937,9 @@ MAP_EDITOR_REGISTER_TEST("Top paint lands on the island cap (cylinder)",
                          133, runPaintReproTests);
 MAP_EDITOR_REGISTER_TEST("Level-stamp remesh repro (cylinder cap)",
                          131, runRemeshReproTests);
-// Mesh-content regression for the texture filtering layout: caps must be
-// WHITE quads with corner UVs into the W×H bake; merged walls WHITE with
-// (along/mapW, z/VOX_WALL_TEX_ZCAP) UVs; interior slab faces keep vertex
-// colors. A regression here means the GPU receives no/!wrong UVs and the
-// "filtering" degenerates to flat fills.
+// Mesh-content regression for the smoothing layout: caps must be WHITE
+// quads with corner UVs into the W×H bake; merged walls carry smoothly
+// interpolated vertex colors; interior slab faces keep vertex colors.
 bool runUvLayoutTests()
 {
     MapEditor::Tests::TestContext& ctx = MapEditor::Tests::context();
@@ -847,12 +989,10 @@ bool runUvLayoutTests()
         } else if (z1 - z0 > 0.01f && (x1 - x0 < 0.01f || y1 - y0 < 0.01f) &&
                    x0 >= 2050.f && x1 <= 2290.f && y0 >= 2278.f &&
                    y1 <= 2518.f) {
-            // Merged wall quad on the cylinder: white, UV in [0,1].
+            // Merged wall quad on the cylinder: interpolated vertex colors.
             ++walls;
-            TEST_REQUIRE(d == 0xFFFFFFFFu, "wall quad not white: %X", d);
-            TEST_REQUIRE(m[i].u >= 0.f && m[i].u <= 1.f &&
-                             m[i].v >= 0.f && m[i].v <= 1.f,
-                         "wall UV out of range: %f %f", m[i].u, m[i].v);
+            TEST_REQUIRE((d & 0xFF000000u) == 0xFF000000u,
+                         "wall quad lost its opaque vertex color: %X", d);
         }
     }
     // Interior slab faces (chunks) keep shaded colors, not white.
@@ -863,6 +1003,68 @@ bool runUvLayoutTests()
                 caps, walls);
     TEST_REQUIRE(caps > 100, "no cap quads sampled: %d", caps);
     TEST_REQUIRE(walls > 100, "no wall quads sampled: %d", walls);
+
+    const CapCellCoverage interpolated = capCellCoverage(m);
+    auto expectedHeight = [](int x, int y) {
+        x = vMap.XCYCL(x);
+        y = vMap.YCYCL(y);
+        const int off = y * vMap.H_SIZE + x;
+        const int dam = vMap.VxDBuf[off];
+        const int display = vMap.cavityDisplayHeight(off);
+        if (display >= 0) return display < dam ? dam : display;
+        return dam != 0 ? dam : static_cast<int>(vMap.VxGBuf[off]);
+    };
+    int slopedCells = 0, largeCliffCells = 0, heightMismatches = 0;
+    for (const auto& kv : interpolated) {
+        const int x = kv.first.first, y = kv.first.second;
+        if (x < 2050 || x >= 2290 || y < 2278 || y >= 2518) continue;
+        const auto& actual = kv.second;
+        const int cellHeight = vMap.VxDBuf[y * vMap.H_SIZE + x];
+        auto expectedCorner = [&](int cx, int cy) {
+            const int corner = expectedHeight(cx, cy);
+            const int delta = corner - cellHeight;
+            return (delta >= -10 && delta <= 10 ? corner : cellHeight) * 256;
+        };
+        const std::array<int, 4> expected = {
+            expectedCorner(x, y), expectedCorner(x + 1, y),
+            expectedCorner(x + 1, y + 1), expectedCorner(x, y + 1)};
+        const int rightDelta = expectedHeight(x + 1, y) - cellHeight;
+        if (rightDelta < -10 || rightDelta > 10) ++largeCliffCells;
+        if (actual != expected) {
+            if (++heightMismatches <= 4) {
+                std::printf("[UVH] cell(%d,%d) actual=[%d %d %d %d] "
+                            "expected=[%d %d %d %d]; ", x, y,
+                            actual[0], actual[1], actual[2], actual[3],
+                            expected[0], expected[1], expected[2], expected[3]);
+            }
+        }
+        if (actual[0] != actual[1] || actual[0] != actual[2] ||
+            actual[0] != actual[3]) {
+            ++slopedCells;
+        }
+    }
+    std::printf("[UVH] interpolated cap cells=%d cliff cells=%d height "
+                "mismatches=%d; ", slopedCells, largeCliffCells,
+                heightMismatches);
+    TEST_REQUIRE(heightMismatches == 0,
+                 "cap corners do not match the thresholded display surface");
+    TEST_REQUIRE(largeCliffCells > 0,
+                 "the cylinder fixture no longer exercises the >10 cliff rule");
+
+    VoxCavityVertex a{2155.f, 2278.f, 500.f};
+    VoxCavityVertex b{2186.f, 2278.f, 500.f};
+    VoxCavityVertex c{2186.f, 2279.f, 500.f};
+    VoxCavityVertex d{2155.f, 2279.f, 500.f};
+    VoxCavityVertex spatial[6] = {a, b, c, a, c, d};
+    TEST_REQUIRE(ov.debugSpatialQuadVertices(spatial, true) == 12,
+                 "a cap crossing a tile boundary must split into two quads.");
+    b.x = c.x = 2176.f;
+    spatial[0] = spatial[3] = a;
+    spatial[1] = b;
+    spatial[2] = spatial[4] = c;
+    spatial[5] = d;
+    TEST_REQUIRE(ov.debugSpatialQuadVertices(spatial, true) == 6,
+                 "an exact upper tile edge must not cause a zero-progress split.");
     // TEMP probe: is the terrain's visible pattern the leveled-material
     // (LvdTex) branch of getColor32? Compare getColor32 (terrain color)
     // vs the plain palette fallback (what the overlay would use) on the
@@ -952,9 +1154,88 @@ bool runTerraformSmoothnessProbe()
     return true;
 }
 
+bool runTilePublishRegressionTests()
+{
+    MapEditor::Tests::TestContext& ctx = MapEditor::Tests::context();
+    MapEditor::setupErrHWrapper();
+
+    MapEditor::EditorSession session;
+    session.setGameDir(ctx.gameDir.u8string());
+    session.scanWorlds();
+    TEST_REQUIRE(session.loadWorldByName("EXTDEMO"),
+                 "the EXTDEMO world could not be loaded.");
+    vMap.WorldRender();
+
+    VoxCavityOverlay overlay;
+    overlay.rebuildAll(1);
+
+    const int ey = 2405;
+    int ex = -1;
+    for (int x = 2400; x > 2100; --x) {
+        if (vMap.VxDBuf[ey * vMap.H_SIZE + x] == 500) {
+            ex = x;
+            break;
+        }
+    }
+    TEST_REQUIRE(ex > 0, "the island edge fixture moved (no 500-column)");
+    MapEditor::BrushTool brush(session);
+    MapEditor::BrushParams p;
+    p.shape = MapEditor::BrushShape::FilledCircle;
+    p.radius = 2;
+    p.effect = MapEditor::BrushEffect::Align4ZP;
+    p.mode = MapEditor::BrushMode::Dam;
+    TEST_REQUIRE(brush.applyStamp(ex, ey, p), "edge terraform stamp refused");
+
+    const int x0 = ex - 3, y0 = ey - 3;
+    const int x1 = ex + 3, y1 = ey + 3;
+    overlay.debugRebuildRect(x0, y0, x1, y1);
+    std::vector<VoxCavityVertex> partial, full;
+    overlay.debugDumpTileMesh(x0, y0, x1, y1, true, partial);
+    overlay.debugDumpTileMesh(x0, y0, x1, y1, false, full);
+
+    size_t untouchedUpper = 0;
+    for (const VoxCavityVertex& v : full) {
+        if (v.z > 499.5f && v.z < 500.5f &&
+            (v.x < x0 || v.x > x1 + 1 || v.y < y0 || v.y > y1 + 1)) {
+            ++untouchedUpper;
+        }
+    }
+    std::printf("[TILE] edge=(%d,%d) partial=%zu full=%zu untouched upper "
+                "vertices=%zu; ",
+                ex, ey, partial.size(), full.size(), untouchedUpper);
+    TEST_REQUIRE(untouchedUpper > 100,
+                 "tile regression did not sample untouched upper-cylinder "
+                 "geometry");
+    if (partial != full) {
+        const size_t common = std::min(partial.size(), full.size());
+        size_t different = partial.size() != full.size();
+        for (size_t i = 0; i < common; ++i) {
+            if (partial[i] == full[i]) continue;
+            ++different;
+            if (different <= 3) {
+                const VoxCavityVertex& a = partial[i];
+                const VoxCavityVertex& b = full[i];
+                std::printf("[TILE] vertex %zu partial=(%.3f,%.3f,%.3f "
+                            "%08X %.5f,%.5f) full=(%.3f,%.3f,%.3f %08X "
+                            "%.5f,%.5f); ",
+                            i, a.x, a.y, a.z, a.diffuse, a.u, a.v,
+                            b.x, b.y, b.z, b.diffuse, b.u, b.v);
+            }
+        }
+        TEST_REQUIRE(false,
+                     "partial tile publish lost or changed %zu vertices / "
+                     "attributes near the cylinder edge (partial=%zu full=%zu)",
+                     different, partial.size(), full.size());
+    }
+    session.unloadWorld();
+    return true;
+}
+
+MAP_EDITOR_REGISTER_TEST("Tile publish preserves cylinder edge geometry", 143,
+                         runTilePublishRegressionTests);
 MAP_EDITOR_REGISTER_TEST("Dig through island descends smoothly", 137,
                          runTerraformSmoothnessProbe);
-MAP_EDITOR_REGISTER_TEST("Overlay mesh UV layout (textured caps/walls)",
+MAP_EDITOR_REGISTER_TEST("Overlay mesh smoothing layout (caps/walls)",
                          136, runUvLayoutTests);
 MAP_EDITOR_REGISTER_TEST("Level-stamp wall side regression (island edge)",
                          135, runWallSideRegressionTests);

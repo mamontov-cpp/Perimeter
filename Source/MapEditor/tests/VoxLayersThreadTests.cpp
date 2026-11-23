@@ -118,6 +118,23 @@ bool runVoxLayersThreadTests()
     std::uint64_t lookupHits = 0;
     std::uint64_t solidHits = 0;
     std::uint64_t walked = 0;
+    std::atomic<std::uint64_t> parallelReads = 0;
+    std::thread parallelReader([&]() {
+        std::uint32_t seed2 = 1717;
+        for (int iter = 0; iter < 200000; ++iter) {
+            seed2 = seed2 * 1664525u + 1013904223u;
+            const int c = static_cast<int>((seed2 >> 8) % kColumns);
+            const std::uint32_t off =
+                static_cast<std::uint32_t>(c * kStride + 17);
+            std::uint32_t rgb = 0;
+            bool cutVoid = false;
+            layers.querySurfaceColor(off, 200, 200, -1, &rgb, &cutVoid);
+            layers.columnHasTransparent(off);
+            layers.columnIndexRange(off, off + 8);
+            parallelReads.fetch_add(1, std::memory_order_relaxed);
+        }
+    });
+
     for (int iter = 0; iter < 400000; ++iter) {
         const int c = static_cast<int>(rnd() % kColumns);
         const std::uint32_t off = static_cast<std::uint32_t>(c * kStride + 17);
@@ -131,21 +148,28 @@ bool runVoxLayersThreadTests()
             ++solidHits;
         }
         layers.isTransparent(off, h);
-        const int idx = layers.findColumn(off);
-        int count = 0;
-        const VoxLayerRange* r = layers.columnRanges(idx, &count);
-        for (int k = 0; k < count; ++k) {
-            // Raw-pointer walk — the pattern the render mesher uses; it
-            // must see a consistent snapshot for the whole iteration.
-            walked += (r[k].z0 <= h && h <= r[k].z1) ? 1u : 0u;
+        {
+            std::shared_lock<std::shared_mutex> lock(layers.accessMtx);
+            const int idx = layers.findColumnImpl(off);
+            if (idx >= 0) {
+                const uint32_t b = layers.begin_[static_cast<size_t>(idx)];
+                const uint32_t e = layers.end_[static_cast<size_t>(idx)];
+                const VoxLayerRange* r = layers.ranges_.data() + b;
+                for (uint32_t k = b; k < e; ++k) {
+                    walked += (r[k - b].z0 <= h && h <= r[k - b].z1) ? 1u : 0u;
+                }
+            }
         }
         layers.columnHasTransparent(off);
         layers.mightHaveColumn(off);
     }
 
+    parallelReader.join();
     stop.store(true, std::memory_order_relaxed);
     writer.join();
 
+    TEST_REQUIRE(parallelReads.load() == 200000,
+                 "the parallel shared-lock reader did not finish its walk.");
     TEST_REQUIRE(writerOps.load() > 0, "writer thread did no work.");
     TEST_REQUIRE(lookupHits > 0 && solidHits > 0 && walked > 0,
                  "readers found no layer data — test setup is wrong.");

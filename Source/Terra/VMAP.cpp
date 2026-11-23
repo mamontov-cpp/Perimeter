@@ -182,22 +182,22 @@ int vrtMap::cavityDisplayHeight(int off) const
 {
 	// Указатель columnRanges живёт вне вызова — лок на всё тело: логика
 	// игры может параллельно править слои (solidify при терраформинге).
-	std::lock_guard<std::recursive_mutex> lock(voxLayers.accessMtx);
+	std::shared_lock<std::shared_mutex> lock(voxLayers.accessMtx);
 	const int height = VxDBuf[off];
-	if (height <= 0 ||
-	    !voxLayers.mightHaveColumn(static_cast<uint32_t>(off))) {
+	if (height <= 0) {
 		return -1;
 	}
-	const int idx = voxLayers.findColumn(static_cast<uint32_t>(off));
+	const int idx = voxLayers.findColumnImpl(static_cast<uint32_t>(off));
 	if (idx < 0) {
 		return -1;
 	}
-	int count = 0;
-	const VoxLayerRange* ranges = voxLayers.columnRanges(idx, &count);
+	const uint32_t b = voxLayers.begin_[static_cast<size_t>(idx)];
+	const uint32_t e = voxLayers.end_[static_cast<size_t>(idx)];
 	int display = -1;
-	for (int i = 0; i < count; ++i) {
-		if (ranges[i].flags & VOX_LAYER_TRANSPARENT) {
-			const int t0 = ranges[i].z0;
+	for (uint32_t i = b; i < e; ++i) {
+		const VoxLayerRange& range = voxLayers.ranges_[i];
+		if (range.flags & VOX_LAYER_TRANSPARENT) {
+			const int t0 = range.z0;
 			if (t0 < height && (display < 0 || t0 < display)) {
 				display = t0;
 			}

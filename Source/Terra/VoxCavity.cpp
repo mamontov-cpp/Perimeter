@@ -24,6 +24,13 @@ const float kBottomShade = 0.55f;
 // скользящих углах (репорт: полосатая крышка цилиндра-острова EXTDEMO
 // при далёкой камере) — 0.3 перекрывает запас точности буфера глубины.
 const float kSideEps = 0.3f;
+const int kMaxSmoothHeightDelta = 10;
+
+bool canSmoothHeightPair(int a, int b)
+{
+	const int delta = a - b;
+	return delta >= -kMaxSmoothHeightDelta && delta <= kMaxSmoothHeightDelta;
+}
 
 struct Segment
 {
@@ -68,14 +75,16 @@ struct RangeCopy
 
 void copyRanges(vrtMap& m, std::uint32_t off, RangeCopy& out)
 {
-	std::lock_guard<std::recursive_mutex> lock(m.voxLayers.accessMtx);
-	const int idx = m.voxLayers.findColumn(off);
+	std::shared_lock<std::shared_mutex> lock(m.voxLayers.accessMtx);
+	const int idx = m.voxLayers.findColumnImpl(off);
 	if (idx < 0) {
 		out.count = 0;
 		return;
 	}
-	int count = 0;
-	const VoxLayerRange* r = m.voxLayers.columnRanges(idx, &count);
+	const uint32_t b = m.voxLayers.begin_[static_cast<size_t>(idx)];
+	const uint32_t e = m.voxLayers.end_[static_cast<size_t>(idx)];
+	const int count = static_cast<int>(e - b);
+	const VoxLayerRange* r = m.voxLayers.ranges_.data() + b;
 	if (count <= RangeCopy::kStack) {
 		std::copy_n(r, count, out.stack);
 		out.data = out.stack;
@@ -270,6 +279,32 @@ int neighborDisplayHeight(vrtMap& m, int cx, int cy)
 	return m.VxDBuf[noff] != 0 ? m.VxDBuf[noff] : m.VxGBuf[noff];
 }
 
+// Continuous display surface at a heightfield grid vertex. Cavity columns use
+// their upper cap; ordinary columns use the same height as TerraInterface.
+int continuousSurfaceHeight(vrtMap& m, int off)
+{
+	const int dam = m.VxDBuf[off];
+	const int display = m.cavityDisplayHeight(off);
+	if (display >= 0) {
+		return display < dam ? dam : display;
+	}
+	return dam != 0 ? dam : m.VxGBuf[off];
+}
+
+int continuousSurfaceHeight(vrtMap& m, int cx, int cy)
+{
+	cx = m.XCYCL(cx);
+	cy = m.YCYCL(cy);
+	return continuousSurfaceHeight(
+	    m, cy * static_cast<int>(m.H_SIZE) + cx);
+}
+
+int capCornerHeight(vrtMap& m, int cellHeight, int cx, int cy)
+{
+	const int corner = continuousSurfaceHeight(m, cx, cy);
+	return canSmoothHeightPair(cellHeight, corner) ? corner : cellHeight;
+}
+
 /// True when any side face of this column borders on emptiness — i.e. the
 /// cavity (or the column's island) is visible from outside. Cheap display-
 /// height test: a neighbor rendering below this column's top leaves a gap.
@@ -355,62 +390,40 @@ bool sideRunsFor(vrtMap& m, int x, int y, bool dirY,
 	// sideRunsFor на каждого кандидата — десятки тысяч раз на drain).
 	static thread_local std::vector<SolidRun> mineBuf;
 	static thread_local std::vector<SolidRun> neighborBuf;
-	static thread_local std::vector<int> boundsBuf;
 	mineBuf.clear();
 	neighborBuf.clear();
-	boundsBuf.clear();
 	std::vector<SolidRun>& mine = mineBuf;
 	std::vector<SolidRun>& neighbor = neighborBuf;
 	runsOfRanges(myCopy.data, myCopy.count, height, m.defaultColumnRgb(off),
 	             mine);
 	runsOfRanges(nCopy.data, nCopy.count, nh, m.defaultColumnRgb(noff),
 	             neighbor);
-	// События — все границы ранов обеих колонок + walkMax.
 	const int walkMax = height > nh ? height : nh;
-	std::vector<int>& bounds = boundsBuf;
-	bounds.reserve(2 + 2 * (mine.size() + neighbor.size()) + 2);
-	bounds.push_back(0);
-	bounds.push_back(walkMax);
-	for (const SolidRun& r : mine) {
-		bounds.push_back(r.z0);
-		if (r.z1 + 1 < walkMax) bounds.push_back(r.z1 + 1);
-	}
-	for (const SolidRun& r : neighbor) {
-		bounds.push_back(r.z0);
-		if (r.z1 + 1 < walkMax) bounds.push_back(r.z1 + 1);
-	}
-	std::sort(bounds.begin(), bounds.end());
-	bounds.erase(std::unique(bounds.begin(), bounds.end()), bounds.end());
-	auto solidAt = [](const std::vector<SolidRun>& runs, int z,
-	                  std::uint32_t* col) {
-		for (const SolidRun& r : runs) {
-			if (z < r.z0) break;
-			if (z <= r.z1) {
-				*col = r.color;
-				return true;
-			}
+	size_t ai = 0;
+	size_t bi = 0;
+	int z = 0;
+	while (z < walkMax && (ai < mine.size() || bi < neighbor.size())) {
+		const bool aSolid = ai < mine.size() && mine[ai].z0 <= z &&
+		                    z <= mine[ai].z1;
+		const bool bSolid = bi < neighbor.size() && neighbor[bi].z0 <= z &&
+		                    z <= neighbor[bi].z1;
+		int z1 = walkMax;
+		if (ai < mine.size()) {
+			z1 = std::min(z1, aSolid ? mine[ai].z1 + 1 : mine[ai].z0);
 		}
-		return false;
-	};
-	for (size_t k = 0; k + 1 < bounds.size(); ++k) {
-		const int z0 = bounds[k];
-		const int z1 = bounds[k + 1];
-		if (z0 >= walkMax || z0 >= z1) {
-			continue;
+		if (bi < neighbor.size()) {
+			z1 = std::min(z1, bSolid ? neighbor[bi].z1 + 1 : neighbor[bi].z0);
 		}
-		std::uint32_t colA = 0;
-		std::uint32_t colB = 0;
-		const bool aSolid = solidAt(mine, z0, &colA);
-		const bool bSolid = solidAt(neighbor, z0, &colB);
-		if (aSolid == bSolid) {
-			continue; // void==void или solid==solid — грань не нужна
+		if (aSolid != bSolid && z < z1) {
+			out.push_back({z, z1, aSolid ? mine[ai].color : neighbor[bi].color});
 		}
-		// НЕзатененный цвет: мерж серий сравнивает раны по цвету, а
-		// затенение от рельефного света колонки делало соседние
-		// идентичные клетки "разными" — стены не сливались и меш
-		// оставался ~700k вершин. Затенение — на эмите (владелец
-		// серии / колонки), как у кепок.
-		out.push_back({z0, z1, aSolid ? colA : colB});
+		if (aSolid && z1 == mine[ai].z1 + 1) {
+			++ai;
+		}
+		if (bSolid && z1 == neighbor[bi].z1 + 1) {
+			++bi;
+		}
+		z = z1;
 	}
 	return true;
 }
@@ -420,9 +433,10 @@ namespace {
 // Merged wall walker core: iterates a sorted list of candidate cell
 // offsets on one line (row y for dirY, column x otherwise), computes
 // each cell's side runs and coalesces runs of CONSECUTIVE cells with
-// identical run lists (same spans, same shaded colors) into ONE long
-// quad. A cell without walls (or a gap between candidates) breaks the
-// run. Это схлопывает стены полостей с ~100 квадов на колонку до
+// identical run lists (same spans, same unshaded colors) and light into
+// ONE long quad. Shared corner colors smooth material and light changes.
+// A cell without walls (or a gap between candidates) breaks the run.
+// Это схлопывает стены полостей с ~100 квадов на колонку до
 // единиц квадов на серию — меш оверлея падает на порядки (иначе
 // ~700k вершин рисуются КАЖДЫЙ КАДР, см. voxperf.log RawMeshObj::Draw
 // 20+ ms). Кандидаты — кавити-колонки ректа И их 4-соседи: владельцем
@@ -433,60 +447,162 @@ namespace {
 // светом — полосы на стенах/крышках (тот же дефект, что у кепок).
 template <bool dirY>
 void appendMergedWalls(vrtMap& m, int line, const std::uint32_t* offs,
-                       size_t n, std::vector<VoxCavityVertex>& out,
-                       std::vector<VoxWallRun>* runs)
+                       size_t n, std::vector<VoxCavityVertex>& out)
 {
 	const int mapW = static_cast<int>(m.H_SIZE);
+	const int lineSize =
+	    dirY ? mapW : static_cast<int>(m.V_SIZE);
+	struct SampledWall
+	{
+		int along = 0;
+		unsigned light = 0;
+		int physicalTop = 0;
+		int smoothTop = 0;
+		std::vector<SideRun> runs;
+	};
+	std::vector<int> sampleAlong;
+	sampleAlong.reserve(n * 3);
+	for (size_t i = 0; i < n; ++i) {
+		const int t = dirY ? static_cast<int>(offs[i] % mapW)
+		                   : static_cast<int>(offs[i] / mapW);
+		for (int d = -1; d <= 1; ++d) {
+			if (t + d >= 0 && t + d < lineSize) {
+				sampleAlong.push_back(t + d);
+			}
+		}
+	}
+	std::sort(sampleAlong.begin(), sampleAlong.end());
+	sampleAlong.erase(std::unique(sampleAlong.begin(), sampleAlong.end()),
+	                  sampleAlong.end());
+	std::vector<SampledWall> samples(sampleAlong.size());
+	for (size_t i = 0; i < sampleAlong.size(); ++i) {
+		SampledWall& sample = samples[i];
+		sample.along = sampleAlong[i];
+		const int x = dirY ? sample.along : line;
+		const int y = dirY ? line : sample.along;
+		const int off = y * mapW + x;
+		sample.light = m.RnrBuf[off] & 0x7F;
+		const int nx = dirY ? x : m.XCYCL(x + 1);
+		const int ny = dirY ? m.YCYCL(y + 1) : y;
+		const int noff = ny * mapW + nx;
+		const int nh = m.VxDBuf[noff] != 0 ? m.VxDBuf[noff] : m.VxGBuf[noff];
+		sample.physicalTop = std::max<int>(m.VxDBuf[off], nh);
+		const int surface = continuousSurfaceHeight(m, off);
+		const int neighborSurface = continuousSurfaceHeight(m, noff);
+		sample.smoothTop = canSmoothHeightPair(surface, neighborSurface)
+		    ? std::min(surface, neighborSurface)
+		    : sample.physicalTop;
+		sideRunsFor(m, x, y, dirY, sample.runs);
+	}
+	auto sampledAt = [&samples](int along) -> const SampledWall* {
+		const auto it = std::lower_bound(
+		    samples.begin(), samples.end(), along,
+		    [](const SampledWall& sample, int value) {
+			    return sample.along < value;
+		    });
+		return it != samples.end() && it->along == along ? &*it : nullptr;
+	};
+	auto sampleColor = [&](int along, int z, std::uint32_t* color) {
+		const SampledWall* sample = sampledAt(along);
+		if (!sample) {
+			return false;
+		}
+		for (const SideRun& run : sample->runs) {
+			if (z < run.z0) {
+				break;
+			}
+			if (z < run.z1) {
+				*color = shade(run.color, kSideShade, sample->light);
+				return true;
+			}
+		}
+		return false;
+	};
+	auto cornerColor = [&](int along, int z, std::uint32_t fallback) {
+		std::uint32_t sums[4] = {0, 0, 0, 0};
+		int count = 0;
+		for (int da = -1; da <= 0; ++da) {
+			for (int dz = -1; dz <= 0; ++dz) {
+				std::uint32_t color = 0;
+				if (!sampleColor(along + da, z + dz, &color)) {
+					continue;
+				}
+				++count;
+				for (int shift = 0; shift < 32; shift += 8) {
+					sums[shift / 8] += (color >> shift) & 0xFFu;
+				}
+			}
+		}
+		if (count == 0) {
+			return fallback;
+		}
+		std::uint32_t color = 0;
+		for (int shift = 0; shift < 32; shift += 8) {
+			color |= (sums[shift / 8] / static_cast<unsigned>(count)) << shift;
+		}
+		return color;
+	};
+
 	std::vector<SideRun> accRuns;
-	std::vector<SideRun> cur;
 	bool accActive = false;
 	int accA = 0;
 	int accB = 0;
 	unsigned accLight = 0;
+	int accSmoothTop = 0;
+	bool accClipTop = false;
+	float whiteU = 0.f;
+	float whiteV = 0.f;
+	voxCavityWhiteUv(m, whiteU, whiteV);
 	auto flush = [&]() {
 		if (!accActive) {
 			return;
 		}
-		// Квады БЕЛЫЕ с UV в стенную текстуру (u — координата вдоль
-		// линии на mapW, v — высота на kWallTexZCap; углы по границам
-		// клеток/вокселей — билинейная выборка сглаживает соседей).
-		// Затенённый цвет уходит в runs — бейк той текстуры.
-		const float alongScale =
-		    1.0f / static_cast<float>(m.H_SIZE);
-		const float zScale = 1.0f / static_cast<float>(VOX_WALL_TEX_ZCAP);
-		for (const SideRun& r : accRuns) {
-			const std::uint32_t col = shade(r.color, kSideShade, accLight);
-			const float zf = static_cast<float>(r.z0);
-			const float zf1 = static_cast<float>(r.z1);
-			const float ua = static_cast<float>(accA) * alongScale;
-			const float ub = static_cast<float>(accB) * alongScale;
-			const float va = zf * zScale;
-			const float vb = zf1 * zScale;
+		for (const SideRun& run : accRuns) {
+			const std::uint32_t fallback =
+			    shade(run.color, kSideShade, accLight);
+			const std::uint32_t c00 =
+			    cornerColor(accA, run.z0, fallback);
+			const std::uint32_t c10 =
+			    cornerColor(accB, run.z0, fallback);
+			const std::uint32_t c11 =
+			    cornerColor(accB, run.z1, fallback);
+			const std::uint32_t c01 =
+			    cornerColor(accA, run.z1, fallback);
+			const float z0 = static_cast<float>(run.z0);
+			const float z1 = static_cast<float>(run.z1);
+			float z1A = z1, z1B = z1;
+			const SampledWall* first = sampledAt(accA);
+			const SampledWall* last = sampledAt(accB);
+			if (accClipTop && first && run.z1 == first->physicalTop) {
+				z1A = std::max(z0, std::min(z1, static_cast<float>(first->smoothTop)));
+				if (last) {
+					z1B = std::max(z0, std::min(z1, static_cast<float>(last->smoothTop)));
+				}
+			}
+			if (z1A <= z0 && z1B <= z0) {
+				continue;
+			}
 			VoxCavityVertex a, b, c, d;
 			if (dirY) {
-				const float ye =
+				const float plane =
 				    static_cast<float>(line + 1) + kSideEps;
-				a = {static_cast<float>(accA), ye, zf, 0xFFFFFFFFu, ua, va};
-				b = {static_cast<float>(accB), ye, zf, 0xFFFFFFFFu, ub, va};
-				c = {static_cast<float>(accB), ye, zf1, 0xFFFFFFFFu, ub, vb};
-				d = {static_cast<float>(accA), ye, zf1, 0xFFFFFFFFu, ua, vb};
+				a = {static_cast<float>(accA), plane, z0, c00, whiteU, whiteV};
+				b = {static_cast<float>(accB), plane, z0, c10, whiteU, whiteV};
+				c = {static_cast<float>(accB), plane, z1B, c11, whiteU, whiteV};
+				d = {static_cast<float>(accA), plane, z1A, c01, whiteU, whiteV};
 			} else {
-				const float xe =
+				const float plane =
 				    static_cast<float>(line + 1) + kSideEps;
-				a = {xe, static_cast<float>(accA), zf, 0xFFFFFFFFu, ua, va};
-				b = {xe, static_cast<float>(accB), zf, 0xFFFFFFFFu, ub, va};
-				c = {xe, static_cast<float>(accB), zf1, 0xFFFFFFFFu, ub, vb};
-				d = {xe, static_cast<float>(accA), zf1, 0xFFFFFFFFu, ua, vb};
+				a = {plane, static_cast<float>(accA), z0, c00, whiteU, whiteV};
+				b = {plane, static_cast<float>(accB), z0, c10, whiteU, whiteV};
+				c = {plane, static_cast<float>(accB), z1B, c11, whiteU, whiteV};
+				d = {plane, static_cast<float>(accA), z1A, c01, whiteU, whiteV};
 			}
 			setWorldUv(m, a);
 			setWorldUv(m, b);
 			setWorldUv(m, c);
 			setWorldUv(m, d);
 			quad(out, a, b, c, d);
-			if (runs) {
-				runs->push_back(
-				    {accA, accB, r.z0, r.z1, col});
-			}
 		}
 		accActive = false;
 	};
@@ -495,28 +611,34 @@ void appendMergedWalls(vrtMap& m, int line, const std::uint32_t* offs,
 		const std::uint32_t off = offs[i];
 		const int t = dirY ? static_cast<int>(off % mapW)
 		                   : static_cast<int>(off / mapW);
-		const int x = dirY ? t : line;
-		const int y = dirY ? line : t;
-		if (!sideRunsFor(m, x, y, dirY, cur)) {
-			flush(); // дамбы нет — стен нет, серия рвётся
-			prev = -10;
+		const SampledWall* sample = sampledAt(t);
+		if (!sample || sample->runs.empty()) {
+			flush();
+			prev = t;
 			continue;
 		}
-		const unsigned cellLight = m.RnrBuf[off] & 0x7F;
-		if (accActive && t == prev + 1 && cur == accRuns &&
-		    cellLight == accLight) {
+		bool smoothCompatible = true;
+		if (accActive && accClipTop) {
+			const SampledWall* next = sampledAt(t + 1);
+			smoothCompatible = sample->smoothTop == accSmoothTop && next &&
+			                   next->smoothTop == accSmoothTop;
+		}
+		if (accActive && t == prev + 1 && sample->runs == accRuns &&
+		    sample->light == accLight && smoothCompatible) {
 			accB = t + 1;
 			prev = t;
 			continue;
 		}
 		flush();
-		if (!cur.empty()) {
-			accActive = true;
-			accA = t;
-			accB = t + 1;
-			accLight = cellLight;
-			accRuns = cur;
-		}
+		accActive = true;
+		accA = t;
+		accB = t + 1;
+		accLight = sample->light;
+		accSmoothTop = sample->smoothTop;
+		accClipTop = !sample->runs.empty() &&
+		             sample->runs.back().z1 == sample->physicalTop &&
+		             sample->smoothTop < sample->physicalTop;
+		accRuns = sample->runs;
 		prev = t;
 	}
 	flush();
@@ -525,17 +647,15 @@ void appendMergedWalls(vrtMap& m, int line, const std::uint32_t* offs,
 } // namespace
 
 void voxCavityAppendRowWallY(vrtMap& m, int y, const std::uint32_t* offs,
-                             size_t n, std::vector<VoxCavityVertex>& out,
-                             std::vector<VoxWallRun>* runs)
+                             size_t n, std::vector<VoxCavityVertex>& out)
 {
-	appendMergedWalls<true>(m, y, offs, n, out, runs);
+	appendMergedWalls<true>(m, y, offs, n, out);
 }
 
 void voxCavityAppendColWallX(vrtMap& m, int x, const std::uint32_t* offs,
-                             size_t n, std::vector<VoxCavityVertex>& out,
-                             std::vector<VoxWallRun>* runs)
+                             size_t n, std::vector<VoxCavityVertex>& out)
 {
-	appendMergedWalls<false>(m, x, offs, n, out, runs);
+	appendMergedWalls<false>(m, x, offs, n, out);
 }
 
 void voxCavityAppendRowCaps(vrtMap& m, int y, int x0, int x1,
@@ -551,8 +671,7 @@ void voxCavityAppendRowCaps(vrtMap& m, int y, int x0, int x1,
 	int runStart = -1;
 	int runEndXCached = -1;
 	int runH = -1;
-	std::uint32_t runRgb = 0;
-	unsigned runLight = 0;
+	int runNextH = -1;
 	// Кепки рисуются БЕЛЫМИ с UV в топ-даун текстуру цветов: оверлей
 	// печёт mipmapped-текстуру (тот же затенённый цвет, что раньше жил в
 	// diffuse) и получает трилинейную фильтрацию как террейн. Затенённый
@@ -563,29 +682,28 @@ void voxCavityAppendRowCaps(vrtMap& m, int y, int x0, int x1,
 		if (runStart < 0) {
 			return;
 		}
-		const std::uint32_t col = shade(runRgb, kTopShade, runLight);
-		const float z = static_cast<float>(runH);
+		const float zA = static_cast<float>(runH);
+		const float zB = static_cast<float>(
+		    capCornerHeight(m, runH, runEndX + 1, y));
+		const float zC = static_cast<float>(
+		    capCornerHeight(m, runH, runEndX + 1, y + 1));
+		const float zD = static_cast<float>(runNextH);
 		const float uA = voxCavityCapU(m, runStart);
 		const float uB = voxCavityCapU(m, runEndX + 1);
 		VoxCavityVertex a, b, c, d;
-		a = {static_cast<float>(runStart), static_cast<float>(y), z,
+		a = {static_cast<float>(runStart), static_cast<float>(y), zA,
 		     0xFFFFFFFFu, uA, vA};
-		b = {static_cast<float>(runEndX + 1), static_cast<float>(y), z,
+		b = {static_cast<float>(runEndX + 1), static_cast<float>(y), zB,
 		     0xFFFFFFFFu, uB, vA};
-		c = {static_cast<float>(runEndX + 1), static_cast<float>(y + 1), z,
+		c = {static_cast<float>(runEndX + 1), static_cast<float>(y + 1), zC,
 		     0xFFFFFFFFu, uB, vB};
-		d = {static_cast<float>(runStart), static_cast<float>(y + 1), z,
+		d = {static_cast<float>(runStart), static_cast<float>(y + 1), zD,
 		     0xFFFFFFFFu, uA, vB};
 		setWorldUv(m, a);
 		setWorldUv(m, b);
 		setWorldUv(m, c);
 		setWorldUv(m, d);
 		quad(out, a, b, c, d);
-		if (cellColors) {
-			for (int x = runStart; x <= runEndX; ++x) {
-				(*cellColors)[static_cast<size_t>(x - x0)] = col;
-			}
-		}
 		runStart = -1;
 	};
 	if (cellColors) {
@@ -638,12 +756,16 @@ void voxCavityAppendRowCaps(vrtMap& m, int y, int x0, int x1,
 		} else {
 			rgb = capInherit;
 		}
-		// Свет — в условие мержа: рельефное затенение краевых клеток
-		// (склон у западного края плато) иначе красит ВСЮ серию цветом
-		// её первой клетки — полосатая крышка цилиндра EXTDEMO.
-		const unsigned cellLight = m.RnrBuf[off] & 0x7F;
+		if (cellColors) {
+			const unsigned cellLight = m.RnrBuf[off] & 0x7F;
+			(*cellColors)[static_cast<size_t>(cx - x0)] =
+			    shade(rgb, kTopShade, cellLight);
+		}
+		const int nextH = capCornerHeight(m, h, cx, y + 1);
+		const int rightH = capCornerHeight(m, h, cx + 1, y);
+		const int rightNextH = capCornerHeight(m, h, cx + 1, y + 1);
 		if (runStart >= 0 && cx == runEndXCached + 1 && h == runH &&
-		    rgb == runRgb && cellLight == runLight) {
+		    nextH == runNextH && rightH == runH && rightNextH == runNextH) {
 			runEndXCached = cx;
 			continue;
 		}
@@ -651,8 +773,7 @@ void voxCavityAppendRowCaps(vrtMap& m, int y, int x0, int x1,
 		runStart = cx;
 		runEndXCached = cx;
 		runH = h;
-		runRgb = rgb;
-		runLight = cellLight;
+		runNextH = nextH;
 	}
 	flush(runEndXCached);
 }
@@ -680,16 +801,12 @@ void voxCavityAppendColumn(vrtMap& m, int x, int y,
 			break;
 		}
 	}
+	if (!emitSides && !hasTransparent) {
+		return;
+	}
 
 	std::vector<Segment> segments;
 	segmentsOfRanges(myCopy.data, myCopy.count, height, segments);
-	if (!hasTransparent) {
-		// No transparent ranges: a SOLID column — it gets a chunk when it
-		// borders a void (the overlay enumerates cavity neighbors too):
-		// its faces against emptied neighbors render the boolean-cut /
-		// cliff walls from the solid side. One solid segment.
-		segments.push_back({0, height - 1});
-	}
 	// The heightfield renders the base surface at the display height
 	// (cavityDisplayHeight) — the overlay must NOT re-emit that floor
 	// (z-fighting), but MUST cap the island top: the heightfield no longer
@@ -737,10 +854,10 @@ void voxCavityAppendColumn(vrtMap& m, int x, int y,
 	for (const Segment& s : segments) {
 		// Top face: emitted for every EXCEPT the display-height floor
 		// (the heightfield renders the cavity floor) — but NOT for the
-		// topmost segment: the island CAP is a flat surface spanning all
-		// cavity columns of the same height and is MERGED PER ROW by
-		// voxCavityAppendRowCaps (a per-column cap made the mesh ~1M
-		// vertices — 13 ms of upload per frame).
+		// topmost segment: the island CAP is emitted per row by
+		// voxCavityAppendRowCaps with interpolated corner heights (a
+		// per-column cap made the mesh ~1M vertices — 13 ms of upload per
+		// frame).
 		const bool isDisplayFloor =
 			display >= 0 && s.z1 + 1 == display;
 		const bool isTopmost = s.z1 + 1 == height;

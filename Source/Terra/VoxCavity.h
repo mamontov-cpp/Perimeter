@@ -90,25 +90,6 @@ void voxCavityAppendColumn(vrtMap& m, int x, int y,
                            std::vector<VoxCavityVertex>& out,
                            bool emitSides = true);
 
-/// Прямоугольник одной серии стены (источник пикселей стенных текстур):
-/// [along0..along1) — координата вдоль линии (x для +y стен, y для +x),
-/// [z0..z1) — высоты; color — ЗАТЕНЁННЫЙ цвет серии (тот, что раньше
-/// жил в diffuse квадов).
-/// Ёмкость стенных текстур по высоте (воксели): статическая степень
-/// двойки. Стены выше лимита сэмплят завёрнутые строки — карт выше 2048
-/// вокселей нет (EXTDEMO: 500, движковый максимум 8191). Совпадает с
-/// масштабом v в UV эмиссии стен (v = z / VOX_WALL_TEX_ZCAP).
-const int VOX_WALL_TEX_ZCAP = 2048;
-
-struct VoxWallRun
-{
-	int along0;
-	int along1;
-	int z0;
-	int z1;
-	std::uint32_t color;
-};
-
 /// SIDE WALLS, merged across consecutive cells (the per-column chunks
 /// emit up to ~100 quads per cavity column once trucks level the ground
 /// around/through an island — 700k+ vertices drawn every frame. Walls
@@ -122,23 +103,24 @@ struct VoxWallRun
 ///   * Column form: the +x boundary walls owned by cells of column x;
 ///     `offs` sorted by y. Every x-facing plane exactly once.
 ///
-/// Квады стен эмитятся БЕЛЫМИ с UV в текстуру (row walls: u = x/W, v =
-/// z/Z; col walls: u = y/W, v = z/Z — углы по границам клеток/вокселей,
-/// билинейная выборка сглаживает соседей как у террейна). Затенённый цвет
-/// дублируется в `runs` (может быть nullptr) — источник пикселей той
-/// текстуры. Стены и плиты внутри плит (voxCavityAppendColumn/emitSide)
-/// НЕ текстурируются — рисуются вершинными цветами отдельной нодой.
+/// Wall quad corner colors are averaged from the adjacent wall cells and
+/// vertical runs. Adjacent quads therefore assign the same color to a
+/// shared edge, and the rasterizer smoothly interpolates material and
+/// lighting changes without a spatially ambiguous wall-color texture.
+/// Topmost wall runs are clipped to the continuous cap/terrain surface when
+/// the height difference is at most 10 voxels. Larger cliffs and all internal
+/// cavity walls keep their voxel heights.
 void voxCavityAppendRowWallY(vrtMap& m, int y, const std::uint32_t* offs,
-                             size_t n, std::vector<VoxCavityVertex>& out,
-                             std::vector<VoxWallRun>* runs = nullptr);
+                             size_t n, std::vector<VoxCavityVertex>& out);
 void voxCavityAppendColWallX(vrtMap& m, int x, const std::uint32_t* offs,
-                             size_t n, std::vector<VoxCavityVertex>& out,
-                             std::vector<VoxWallRun>* runs = nullptr);
+                             size_t n, std::vector<VoxCavityVertex>& out);
 
-/// Island caps for one map row, merged: consecutive cavity columns in
-/// [x0..x1] whose top sits at the SAME height with the SAME top-voxel
-/// color become ONE quad (the cap is a flat surface — per-column quads
-/// multiplied the mesh by the cavity area).
+/// Island caps for one map row. Corners follow the continuous display
+/// surface (upper cap for cavity columns, ordinary heightfield otherwise)
+/// when the height difference is at most 10 voxels; larger cliffs keep the
+/// cell's own height. Consecutive columns in [x0..x1] merge only while all
+/// corner heights stay constant; transitions are confined to their own cell.
+/// Per-cell colors and lighting live in the cap bake and do not split geometry.
 ///
 /// Цвет кепки идёт в ТЕКСТУРУ (мешер оверлея печёт топ-даун текстуру и
 /// рисует кепки белыми с UV — трилинейная фильтрация сглаживает их так же,
