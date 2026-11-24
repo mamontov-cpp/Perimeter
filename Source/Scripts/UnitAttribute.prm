@@ -3407,6 +3407,7 @@ struct terUnitAttributeDataTable
 
 		weaponSetup = new terWeaponSetup {
 			weaponType = WEAPON_LIGHTING;
+			fireDelay = 250; // WEAPON_LIGHTING: damage tick interval; must fit the NEED_CHARGE discharge window
 			flags = WEAPON_HAS_FIRE_CONTROLLER|WEAPON_NEED_CHARGE;
 
 			controllerSetup = new terWeaponControllerSetup {
@@ -3480,6 +3481,7 @@ struct terUnitAttributeDataTable
 
 		weaponSetup = new terWeaponSetup {
 			weaponType = WEAPON_LIGHTING;
+			fireDelay = 250; // WEAPON_LIGHTING: damage tick interval; must fit the NEED_CHARGE discharge window
 			flags = WEAPON_HAS_FIRE_CONTROLLER|WEAPON_NEED_CHARGE;
 
 			controllerSetup = new terWeaponControllerSetup {
@@ -4368,6 +4370,7 @@ struct terUnitAttributeDataTable
 
 		weaponSetup = new terWeaponSetup {
 			weaponType = WEAPON_LIGHTING;
+			fireDelay = 250; // WEAPON_LIGHTING: damage tick interval; must fit the NEED_CHARGE discharge window
 			flags = WEAPON_HAS_FIRE_CONTROLLER|WEAPON_NEED_CHARGE;
 
 			controllerSetup = new terWeaponControllerSetup {

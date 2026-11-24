@@ -2555,3 +2555,71 @@ surface-query с прозрачным полом/срезом (order 141); су�
   геометрию при разном разбиению quads; order 130 дополнительно требует ровно
   одну кепку на каждую из 45903 plateau-клеток, order 143 сохраняет вершины и
   атрибуты после spatial tile publication.
+
+## Шокер (Impaler) не наносил урон: два сломанных звена одной цепочки
+
+**Симптом:** ET-юнит Impaler (рус. «Шокер») атакует, но не наносит урона
+ни зданиям, ни юнитам.
+
+**Звено 1 — engine: `AimAngleController::checkAngle` (SecondGun.cpp).**
+Безусловный `cycleAngle()` (wrap в [0..2π)) перед сверкой с лимитами. У
+тета-контроллера пределы симметричные (±0.5π у Impaler, ±0.3 у Eflair) и
+limit-оп нормализует через `getDeltaAngle(·,0)` (±π) — любой ОТРИЦАТЕЛЬНЫЙ
+требуемый угол заворачивался в +[0..2π) и проваливал проверку →
+BORDER_ANGLE на КАЖДЫЙ выстрел по цели ниже горизонта (т.е. всегда).
+BORDER_ANGLE входит в маску сброса атаки ИИ (IronLegion.cpp) и в маску
+сброса цели самого оружия — атака отменялась каждый квант. Фикс:
+нормализация тем limit-опом, которым пользуется сам контроллер.
+
+**Звено 2 — баланс: окно разряда NEED_CHARGE короче тика урона.**
+`terWeapon::quant` снимает заряд со скоростью `dischargeSpeed` за КВАНТ;
+`EnergyConsumer::discharge` копит `energy_ += speed` и при переполнении
+(`energy_ > total_`) выключает оружие. В встроенном балансе ET
+(GameBalance.inl) у Impaler стояло ReloadEnergy=0.2 / DischargeSpeed=1 —
+заряд сгорал за ОДИН квант, а fireDelay по умолчанию 1000 мс: лучевое
+оружие создаёт дугу на первом fire-тике и наносит урон только со
+ВТОРОГО (через fireDelay) — оружие выключалось раньше первого тика урона.
+Ноль урона математически гарантирован. Eflair и GunElectro — то же самое.
+Фикс: каноничные значения из PerimeterET AttributeLibraryExtra (автор тех
+же правок оружия): fireDelay=250, Impaler 2.0/1000/0.4, Eflair 1.5/1000/0.3,
+GunElectro 1.5/1000/0.3. Источники: Source/Scripts/GameBalance.inl +
+UnitAttribute.prm (.prm/.inl — источники, .cppi регенерируется таргетом
+ScriptsCompile через инструмент XPrm; по умолчанию OPTION_PROCESS_SCRIPTS
+OFF, .cppi лежит в репо).
+
+Диагностический слепок: временный хук `lightingtest`/`lightinglog` (spawn
+Impaler + цель, трейс fireRequest/aim/fireTest/setDamage). Без фиксов
+fireRequest стабильно падает со status=0x1c0 (H|V|BORDER); после звена 1 —
+0x40 (turret догоняет цель); после звена 2 — setDamage по цели.
+
+## Звуки и элементы электро-юнитов ET — приведены к PerimeterET
+
+Встроенные атрибуты использовали «чужие» звуки выстрела и множители для
+числа элементов (атомов) юнитов. Приведено к каноничным значениям
+PerimeterET (AttributeLibraryExtra):
+
+- **Eflair**: выстрел `Unit_Shot_Gyroid` → `Unit_Shot_Eflair`; элементы
+  {0,8,0,0,32} → {0,8,0,0,8} (было elOfficers=4×2, щит по формуле ×4).
+- **Impaler**: выстрел `Unit_Shot_Leamo` → `Unit_Shot_Impaler`; элементы
+  {2,12,4,0,72} → {0,8,4,0,36}.
+- **Conductor (Кондуктор)**: выстрел `Unit_Shot_Heater` →
+  `Unit_Shot_Conductor`; элементы {8,16,4,0,112} → {32,48,20,0,400}.
+
+WAV-файлы (`Unit_Shot_Eflair/Impaler/Conductor.wav`) и строки таблицы
+звуков в базовой игре уже есть — менялись только атрибутные ссылки.
+Источники: Source/Scripts/Sound.inl (soundSetup'ы) + GameBalance.inl
+(el*); .cppi регенерируется ScriptsCompile. ВНИМАНИЕ: Gyroid/Leamo/
+ScumHeater — отдельные юниты со своими звуками, их сетапы трогать нельзя
+(первые правки промахнулись именно туда).
+
+## Электроган (ELECTRO_CANNON) — звук и урон приведены к PerimeterET
+
+- Выстрел `Struct_Proc_Shot_LaserGun` → `Struct_Proc_Shot_ElectroGun`
+  (WAV и строка таблицы звуков уже есть в базе).
+- Урон/элементы по PerimeterET: elHard 150→300, maWidth 15→20, maPower
+  15→30, RangeFire 300→250, RangeSight 400→300, ReloadEnergy 1.5→2.0,
+  DischargeSpeed 0.3→0.4 (последние два — точная сводка с модом; в
+  прошлом фиксе окна разряда стояли промежуточные 1.5/0.3).
+- Не тронуто (отличается от модa, но не «урон»): turnSpeed 0.3 vs 0.2,
+  targetingObjectName "targeting a" vs "fire" (зависит от нод
+  встроенной модели).

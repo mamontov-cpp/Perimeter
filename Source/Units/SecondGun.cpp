@@ -78,11 +78,15 @@ public:
 
 	bool checkAngle(float angle) const
 	{
-		angle = cycleAngle(angle);
-		if(angle >= valueMin_ && angle <= valueMax_)
-			return true;
-		else
-			return false;
+		// Нормализация ОБЯЗАНА совпадать с limit-опом контроллера:
+		// psi использует cycleAngle ([0..2π)), theta — getDeltaAngle(·,0)
+		// (±π). Прежний безусловный cycleAngle() заворачивал любой
+		// ОТРИЦАТЕЛЬНЫЙ требуемый угол в +[0..2π), и для тета-контроллера
+		// с симметричными пределами (±0.5π у Impaler/Шокера и др.) ЛЮБАЯ
+		// цель ниже горизонта получала BORDER_ANGLE: ИИ сбрасывал атаку
+		// каждый квант и юнит не мог выстрелить в принципе.
+		float clamped = AngleLimitOp()(angle, valueMin_, valueMax_);
+		return xm::abs(getDeltaAngle(clamped, angle)) <= 1e-5f;
 	}
 
 	void setSpeed(float speed){ speed_ = speed; }
@@ -320,6 +324,7 @@ protected:
 		bool ret = aimController_.isAimed(psi,theta,status);
 
 		aimController_.aim(psi,theta);
+
 
 		return ret;
 	}
@@ -751,6 +756,7 @@ bool AimControllerDirectional::isAimed(float psi,float theta,int& status) const
 		if(!theta_.checkAngle(theta))
 			status |= LEGION_FIRE_STATUS_BORDER_ANGLE;
 	}
+
 
 	return ret;
 }
@@ -2162,6 +2168,7 @@ void terWeaponLighting::quant()
 {
 	WeaponDirectionalBase::quant();
     
+
     if (!target_ || !isSwitchedOn()) {
         //No target active currently
         if (lighting_) {

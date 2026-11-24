@@ -641,53 +641,68 @@ static struct Balance
 	// Electro special
 	
 	MobileUnit Impaler = {
-        elSoldiers = 1 * SPECIAL_ELECTRO_UNITS_EL_MUL;
-		elOfficers = 6 * SPECIAL_ELECTRO_UNITS_EL_MUL;
-		elTechnicians = 2 * SPECIAL_ELECTRO_UNITS_EL_MUL;
+        // Элементы — каноничные значения PerimeterET: {0,8,4,0,36} вместо
+        // {2,12,4,0,72} через множители.
+		elSoldiers = 0;
+		elOfficers = 8;
+		elTechnicians = 4;
 
-		elShield = ((elSoldiers + elOfficers + elTechnicians)*SHIELD_SPECIAL_MUL);
+		elShield = 36;
 
 		AttackClass = UNIT_CLASS_BASE|UNIT_CLASS_LIGHT|UNIT_CLASS_MEDIUM|UNIT_CLASS_HEAVY|UNIT_CLASS_STRUCTURE|UNIT_CLASS_STRUCTURE_GUN|UNIT_CLASS_STRUCTURE_SPECIAL|UNIT_CLASS_STRUCTURE_CORE|UNIT_CLASS_FRAME|UNIT_CLASS_BUILDER|UNIT_CLASS_GROUND_FILTH;
 
 		maPower = 10;
 		maWidth = 10;
 
-		ReloadEnergy = 0.2;
-		ReloadTime = 2000;
+		// Canonical ET values (PerimeterET AttributeLibraryExtra): the old
+		// numbers (energy 0.2 / speed 1) drain the whole charge in ONE
+		// logic quant, so the WEAPON_LIGHTING arc is cut before its first
+		// damage tick (fireDelay 1000 ms) — the Impaler/Шокер could never
+		// deal any damage.
+		ReloadEnergy = 2.0;
+		ReloadTime = 1000;
 		ReloadPriority = 10;
 
-		DischargeSpeed = 1;
+		DischargeSpeed = 0.4;
 
 		RangeFire = RADIUS_MIDDLE;
 		RangeSight = RADIUS_MIDDLE +RADIUS_ADD;
 	};
 
 	MobileUnit Eflair = {
-		elOfficers = 4 * SPECIAL_ELECTRO_UNITS_EL_MUL;
+		// Элементы — каноничные значения PerimeterET (AttributeLibraryExtra):
+		// раньше считались через множители и давали {0,8,0,0,32} вместо
+		// авторских {0,8,0,0,8}.
+		elSoldiers = 0;
+		elOfficers = 8;
+		elTechnicians = 0;
 
-		elShield = ((elSoldiers + elOfficers + elTechnicians)*SHIELD_SPECIAL_MUL);
+		elShield = 8;
 
 		AttackClass = UNIT_CLASS_MEDIUM|UNIT_CLASS_HEAVY|UNIT_CLASS_AIR|UNIT_CLASS_AIR_HEAVY|UNIT_CLASS_STRUCTURE|UNIT_CLASS_STRUCTURE_GUN|UNIT_CLASS_STRUCTURE_SPECIAL|UNIT_CLASS_STRUCTURE_CORE|UNIT_CLASS_FRAME|UNIT_CLASS_BUILDER|UNIT_CLASS_AIR_FILTH|UNIT_CLASS_GROUND_FILTH;
 
 		maPower = 3;
 		maWidth = 6;
 
-		ReloadEnergy = 0.1;
+		// Same charge-window fix as the Impaler (see above).
+		ReloadEnergy = 1.5;
 		ReloadTime = 1000;
 		ReloadPriority = 10;
 
-        DischargeSpeed = 0.5;
+        DischargeSpeed = 0.3;
 
 		RangeFire = RADIUS_MIDDLE;
 		RangeSight = RADIUS_MIDDLE +RADIUS_ADD;
 	};
 
 	MobileUnit Conductor = {
-		elSoldiers = 4 * SPECIAL_ELECTRO_UNITS_EL_MUL;
-		elOfficers = 8 * SPECIAL_ELECTRO_UNITS_EL_MUL;
-		elTechnicians = 2 * SPECIAL_ELECTRO_UNITS_EL_MUL;
+		// Элементы — каноничные значения PerimeterET: {32,48,20,0,400}
+		// вместо {8,16,4,0,112} через множители.
+		elSoldiers = 32;
+		elOfficers = 48;
+		elTechnicians = 20;
 
-		elShield = ((elSoldiers + elOfficers + elTechnicians)*SHIELD_SPECIAL_MUL);
+		elShield = 400;
 
 		AttackClass = UNIT_CLASS_BASE|UNIT_CLASS_LIGHT|UNIT_CLASS_MEDIUM|UNIT_CLASS_HEAVY|UNIT_CLASS_AIR|UNIT_CLASS_AIR_HEAVY|UNIT_CLASS_UNDERGROUND|UNIT_CLASS_STRUCTURE|UNIT_CLASS_STRUCTURE_GUN|UNIT_CLASS_STRUCTURE_SPECIAL|UNIT_CLASS_STRUCTURE_CORE|UNIT_CLASS_STRUCTURE_ENVIRONMENT|UNIT_CLASS_FRAME|UNIT_CLASS_BUILDER|UNIT_CLASS_AIR_FILTH|UNIT_CLASS_GROUND_FILTH|UNIT_CLASS_UNDERGROUND_FILTH|UNIT_CLASS_GROUND;
 
@@ -707,21 +722,27 @@ static struct Balance
 	};
 
 	StaticUnit GunElectro = {
-		elHard = 150;
+		// Элементы/урон — каноничные значения PerimeterET (ELECTRO_CANNON):
+		// elHard 300, урон 20/30, радиусы 250/300. Раньше: 150, 15/15,
+		// RADIUS_MIDDLE/ADD (300/400).
+		elHard = 300;
 
         AttackClass = UNIT_CLASS_BASE|UNIT_CLASS_LIGHT|UNIT_CLASS_MEDIUM|UNIT_CLASS_HEAVY|UNIT_CLASS_AIR|UNIT_CLASS_AIR_HEAVY|UNIT_CLASS_STRUCTURE_CORE|UNIT_CLASS_BUILDER|UNIT_CLASS_AIR_FILTH|UNIT_CLASS_GROUND_FILTH;
 
-		ReloadEnergy = 0.1;
+		maPower = 30;
+		maWidth = 20;
+
+		// Same charge-window fix as the Impaler (see above) — the
+		// building electro gun shares WEAPON_LIGHTING and had an equally
+		// sub-quant discharge window. Values per PerimeterET.
+		ReloadEnergy = 2.0;
 		ReloadTime = 1000;
 		ReloadPriority = 10;
 
-		DischargeSpeed = 0.5;
+		DischargeSpeed = 0.4;
 
-		maPower = 15;
-		maWidth = 15;
-
-		RangeFire = RADIUS_MIDDLE;
-		RangeSight = RADIUS_MIDDLE +RADIUS_ADD;
+		RangeFire = 250;
+		RangeSight = 300;
 	};
 
 	// Harkbakchood special units

@@ -153,15 +153,20 @@ void cLighting::Animate(float dt)
 	}
 
 	float fade_dt=dt/param.fade_time;
-	std::list<OneLight*>::iterator it;
-	FOR_EACH(lights,it)
+	std::list<OneLight*>::iterator it = lights.begin();
+    while (it != lights.end())
 	{
-		OneLight* p=*it;
+		OneLight* p = *it;
 		p->Animate(fade_dt);
-		if(p->time>=1)
-		{
+		if (p->time >= 1) {
 			delete *it;
-			it=lights.erase(it);
+			it = lights.erase(it);
+			if (lights.empty())
+			{
+				break;
+			}
+		} else {
+			++it;
 		}
 	}
 }

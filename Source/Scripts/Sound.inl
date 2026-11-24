@@ -189,7 +189,7 @@ SoundSetup laserGunSound = {
 SoundSetup electroGunSound = {
 	sounds = new SoundControllerSetup[]
 	{
-		{ ID = SOUND_SHOT; name = "Struct_Proc_Shot_LaserGun"; }
+		{ ID = SOUND_SHOT; name = "Struct_Proc_Shot_ElectroGun"; }
 	};
 
 	events = new SoundEventSetup[]
@@ -295,7 +295,7 @@ SoundSetup gyroidSound = {
 SoundSetup eflairSound = {
 	sounds = new SoundControllerSetup[]
 	{
-		{ ID = SOUND_SHOT; name = "Unit_Shot_Gyroid"; },
+		{ ID = SOUND_SHOT; name = "Unit_Shot_Eflair"; },
 		{ ID = SOUND_MOVE; name = "Unit_Move_Gyroid"; cycled = 1; }
 	};
 
@@ -360,7 +360,7 @@ SoundSetup leamoSound = {
 SoundSetup impalerSound = {
 	sounds = new SoundControllerSetup[]
 	{
-		{ ID = SOUND_SHOT; name = "Unit_Shot_Leamo"; },
+		{ ID = SOUND_SHOT; name = "Unit_Shot_Impaler"; },
 		{ ID = SOUND_MOVE; name = "Unit_Move_Leamo"; cycled = 1; }
 	};
 
@@ -757,7 +757,7 @@ SoundSetup scumHeaterSound = {
 SoundSetup conductorSound = {
 	sounds = new SoundControllerSetup[]
 	{
-		{ ID = SOUND_SHOT; name = "Unit_Shot_Heater"; cycled = 1; },
+		{ ID = SOUND_SHOT; name = "Unit_Shot_Conductor"; cycled = 1; },
 		{ ID = SOUND_MOVE; name = "Unit_Move_Heater"; cycled = 1; }
 	};
 
